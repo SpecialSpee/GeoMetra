@@ -66,9 +66,15 @@ async function trainFromReplayBatch() {
   }
 
   const states = tf.tensor2d(batch.map(exp => exp.state));
+  
+  // Формируем целевые векторы ПРАВИЛЬНО
   const targets = batch.map(exp => {
-    const targetVec = new Array(actions.length).fill(0.05);
-    targetVec[exp.actionIndex] = Math.max(0.1, exp.reward);
+    const targetVec = new Array(actions.length).fill(0.05); // Базовый фон (низкая вероятность)
+    
+    // 🔥 ИСПРАВЛЕНИЕ: Если награда положительная -> стремимся к 0.9. Если отрицательная -> к 0.01
+    const targetValue = exp.reward > 0 ? 0.9 : 0.01;
+    
+    targetVec[exp.actionIndex] = targetValue; 
     return targetVec;
   });
   const targetTensor = tf.tensor2d(targets);
@@ -549,8 +555,6 @@ function updateNeuralAI() {
     console.warn("[NeuralAI] ❌ Ошибка выбора действия. Fallback на idle.");
     return;
   }
-
-  lastInputArray = inputArray.slice();
   lastNeuralAction = chosen;
   if (actionUsageStats[chosen] !== undefined) actionUsageStats[chosen]++;
 
@@ -1191,7 +1195,7 @@ function calculateReward(action, prevState, currentState) {
 }
 
 function rewardGoodDecision(isRealOutcome = false) {
-  if (!Array.isArray(lastInputArray) || lastInputArray.length !== 77 || !actions.includes(lastNeuralAction)) return;
+  if (!Array.isArray(lastInputArray) || lastInputArray.length !== 82 || !actions.includes(lastNeuralAction)) return;
   const action = lastNeuralAction;
   const score = evaluateActionScore(action);
   const index = actions.indexOf(action);
@@ -1254,7 +1258,7 @@ function logNeuralPreferences(inputArray, cachedLogits = null) {
   if (now - lastLogTime < 3000) return;
   lastLogTime = now;
 
-  if (!neuralModel || !Array.isArray(inputArray) || inputArray.length !== 77) return;
+  if (!neuralModel || !Array.isArray(inputArray) || inputArray.length !== 82) return;
 
   const raw = cachedLogits;
 
@@ -1274,7 +1278,7 @@ function logNeuralPreferences(inputArray, cachedLogits = null) {
 }
 
 function safePushTraining({ inputs, targetOverride, action, info = "" }) {
-  if (!inputs || !Array.isArray(inputs) || inputs.length !== 77) return;
+  if (!inputs || !Array.isArray(inputs) || inputs.length !== 82) return;
   if (inputs.some(v => !isFinite(v) || isNaN(v))) return;
   if (!action || typeof action !== "string" || !actions.includes(action)) return;
   if (!Array.isArray(targetOverride) || targetOverride.length !== actions.length || targetOverride.some(v => typeof v !== "number" || isNaN(v))) return;
@@ -1601,7 +1605,7 @@ async function processTrainingQueue() {
 }
 
 function trainNeuralModel(action, inputs) {
-  if (!Array.isArray(inputs) || inputs.length !== 77 || !actions.includes(action)) return;
+  if (!Array.isArray(inputs) || inputs.length !== 82 || !actions.includes(action)) return;
   safePushTraining({ inputs: lastInputArray, targetOverride: actions.map(a => (a === action ? 1 : 0)), action: lastNeuralAction, info: "[reward]" });
   processTrainingQueue();
 }
