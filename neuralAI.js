@@ -1288,24 +1288,44 @@ function handleExpandAction() {
   const aiRes = gameState.aiResources;
   const base = gameState.buildings.find(b => b.owner === "ai" && b.type.includes("base"));
   if (!aiRes || !base) { penalizeBadDecision(); return; }
+  
   const existingBeacons = gameState.buildings.filter(b => b.owner === "ai" && b.type === "beacon");
   if (existingBeacons.length >= 5) { penalizeBadDecision(); return; }
 
-  for (let i = 0; i < 10; i++) {
+  // 🔥 Ищем валидную точку для маяка в радиусе 300 от базы
+  for (let attempt = 0; attempt < 30; attempt++) {
     const angle = Math.random() * Math.PI * 2;
-    const dist = 800 + Math.random() * 300;
+    const dist = 250 + Math.random() * 50; // На краю радиуса, чтобы расширять территорию
     const x = base.x + Math.cos(angle) * dist;
     const y = base.y + Math.sin(angle) * dist;
-    const tooClose = gameState.buildings.some(b => b.owner === "ai" && Math.hypot(b.x - x, b.y - y) < 300 && ["beacon", "warehouse", "base"].includes(b.type));
-    if (!tooClose && x > 100 && y > 100 && x < worldWidth - 100 && y < worldHeight - 100) {
-      if (canAfford(BEACON_COST, "ai")) {
-        aiBuildQueue.push({ type: "beacon", x, y, cost: BEACON_COST });
-        console.log(`[NeuralAI] 📡 Расширение: beacon в ${x.toFixed(0)}, ${y.toFixed(0)}`);
-        rewardGoodDecision();
-      } else { penalizeBadDecision(); }
-      return;
+    
+    // Проверяем границы
+    if (x < 100 || x > worldWidth - 100 || y < 100 || y > worldHeight - 100) continue;
+    
+    // Проверяем, что не слишком близко к другим зданиям ИИ
+    const tooClose = gameState.buildings.some(b => 
+      b.owner === "ai" && Math.hypot(b.x - x, b.y - y) < 80
+    );
+    if (tooClose) continue;
+
+    // 🔥 ГЛАВНАЯ ПРОВЕРКА: точка должна быть в радиусе 300 от базы или маяка
+    const anchorBuildings = gameState.buildings.filter(b => 
+      b.owner === "ai" && ["base", "base2", "base3", "beacon"].includes(b.type)
+    );
+    const inRadius = anchorBuildings.some(b => Math.hypot(b.x - x, b.y - y) <= 300);
+    if (!inRadius) continue;
+
+    if (canAfford(BEACON_COST, "ai")) {
+      aiBuildQueue.push({ type: "beacon", x, y, cost: BEACON_COST });
+      console.log(`[NeuralAI] 📡 Расширение: beacon в (${x.toFixed(0)}, ${y.toFixed(0)})`);
+      rewardGoodDecision();
+    } else { 
+      penalizeBadDecision(); 
     }
+    return;
   }
+  
+  console.warn("[NeuralAI] ❌ Не удалось найти валидную точку для маяка");
   penalizeBadDecision();
 }
 
@@ -1698,18 +1718,23 @@ function processAiBuildQueue() {
   let x = job.x || 0;
   let y = job.y || 0;
 
+  // 🔥 ПРОВЕРКА РАДИУСА: если координаты не заданы или вне радиуса — ищем валидную точку
   if (job.near) {
     const angle = Math.random() * Math.PI * 2;
     const dist = 60 + Math.random() * 40;
     x = job.near.x + Math.cos(angle) * dist;
     y = job.near.y + Math.sin(angle) * dist;
   } else {
-    const near = gameState.buildings.find(b => b.owner === "ai" && b.type === "base");
-    if (near) {
-      const angle = Math.random() * Math.PI * 2;
-      const dist = 120 + Math.random() * 180;
-      x = near.x + Math.cos(angle) * dist;
-      y = near.y + Math.sin(angle) * dist;
+    // 🔥 Ищем валидную точку в радиусе 300 от базы/маяка ИИ
+    const validPosition = findValidBuildPosition("ai", 300);
+    if (validPosition) {
+      x = validPosition.x;
+      y = validPosition.y;
+    } else {
+      // Если валидной точки нет — отменяем постройку
+      console.warn(`[AI Build] ❌ Нет валидной точки для ${job.type} в радиусе 300. Отмена.`);
+      aiBuildQueue.shift();
+      return;
     }
   }
 
@@ -1738,7 +1763,52 @@ function processAiBuildQueue() {
 
   if (typeof updateResourceUI === "function") updateResourceUI();
 
-  console.log(`[AI Build] Построено: ${job.type} (Owner: ai)`);
+  console.log(`[AI Build] ✅ Построено: ${job.type} в (${x.toFixed(0)}, ${y.toFixed(0)})`);
 
   aiBuildQueue.shift();
+}
+
+// 🔥 ПОИСК ВАЛИДНОЙ ТОЧКИ ДЛЯ СТРОИТЕЛЬСТВА В РАДИУСЕ
+function findValidBuildPosition(owner, maxRadius) {
+  // Находим все "якорные" здания (база, маяки)
+  const anchorBuildings = gameState.buildings.filter(b => 
+    b.owner === owner && 
+    ["base", "base2", "base3", "beacon"].includes(b.type)
+  );
+
+  if (anchorBuildings.length === 0) {
+    console.warn(`[Build] Нет якорных зданий для ${owner}!`);
+    return null;
+  }
+
+  // Пытаемся найти валидную точку (до 20 попыток)
+  for (let attempt = 0; attempt < 20; attempt++) {
+    // Выбираем случайное якорное здание
+    const anchor = anchorBuildings[Math.floor(Math.random() * anchorBuildings.length)];
+    
+    // Случайная точка в радиусе maxRadius
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 50 + Math.random() * (maxRadius - 50);
+    const x = anchor.x + Math.cos(angle) * dist;
+    const y = anchor.y + Math.sin(angle) * dist;
+
+    // Проверяем границы карты
+    if (x < 50 || x > worldWidth - 50 || y < 50 || y > worldHeight - 50) continue;
+
+    // Проверяем, нет ли уже здания слишком близко (минимум 40 пикселей)
+    const tooClose = gameState.buildings.some(b => 
+      b.owner === owner && Math.hypot(b.x - x, b.y - y) < 40
+    );
+    if (tooClose) continue;
+
+    // Проверяем, что точка в радиусе от какого-либо якорного здания
+    const inRadius = anchorBuildings.some(b => 
+      Math.hypot(b.x - x, b.y - y) <= maxRadius
+    );
+    if (!inRadius) continue;
+
+    return { x, y };
+  }
+
+  return null; // Не удалось найти валидную точку
 }

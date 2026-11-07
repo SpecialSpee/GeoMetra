@@ -432,48 +432,96 @@ function buildClusterAt(target) {
 function tryContinueCluster(x, y) {
   const beacon = gameState.buildings.find(b =>
     b.owner === "ai" && b.type === "beacon" && b.active &&
-    Math.hypot(b.x - x, b.y - y) < 15 // достаточно близко к центру кластера
+    Math.hypot(b.x - x, b.y - y) < 15
   );
 
   if (!beacon) {
-    // Маяк не найден или ещё не активен — повторим попытку через 1 секунду
     setTimeout(() => tryContinueCluster(x, y), 1000);
     return;
   }
 
-  // Маяк активен — начинаем строительство остальных объектов
+  // 🔥 ИСПРАВЛЕНО: Ищем валидные позиции для каждого здания кластера
+  const buildingsToPlace = [
+    { type: "warehouse", desiredX: x - 40, desiredY: y },
+    { type: "repairWorkshop", desiredX: x, desiredY: y + 40 },
+    { type: "turret", desiredX: x, desiredY: y - 60 },
+    { type: "turret", desiredX: x + 60, desiredY: y - 60 },
+    { type: "warehouse", desiredX: x, desiredY: y + 80 }
+  ];
 
-  if (!canSpendResources(WAREHOUSE_COST, "ai")) {
-    scheduleAIBuilding("warehouse", x - 40, y, 0); 
-  }
-
-  setTimeout(() => {
-    if (!canSpendResources(REPAIR_WORKSHOP_COST, "ai")) {
-      scheduleAIBuilding("repairWorkshop", x, y + 40, 0); 
-    }
-  }, 1000);
-
-  setTimeout(() => {
-    if (!canSpendResources(TURRET_COST, "ai")) {
-      scheduleAIBuilding("turret", x, y - 60, 0); 
-    }
-  }, 1500);
-
-  setTimeout(() => {
-    if (!canSpendResources(TURRET_COST, "ai")) {
-      scheduleAIBuilding("turret", x + 60, y - 60, 0); 
-    }
-  }, 2000);
-
-  setTimeout(() => {
-    if (!canSpendResources(WAREHOUSE_COST, "ai")) {
-      scheduleAIBuilding("warehouse", x, y + 80, 0); 
-    }
-  }, 2500);
+  buildingsToPlace.forEach((item, index) => {
+    setTimeout(() => {
+      if (canSpendResources(buildingCosts[item.type], "ai")) {
+        const validPos = findValidBuildPositionNear(item.desiredX, item.desiredY, item.type, 10);
+        if (validPos) {
+          scheduleAIBuilding(item.type, validPos.x, validPos.y, 0);
+        }
+      }
+    }, index * 500);
+  });
 }
 
-
-
+// 🔥 НОВАЯ ФУНКЦИЯ: Поиск валидной позиции для постройки рядом с желаемой точкой
+function findValidBuildPositionNear(desiredX, desiredY, buildingType, maxAttempts = 20) {
+  const buildingDimensions = {
+    warehouse: { w: 10, h: 10 },
+    repairWorkshop: { w: 10, h: 10 },
+    barracks: { w: 15, h: 15 },
+    barracks2: { w: 15, h: 15 },
+    barracks3: { w: 15, h: 15 },
+    turret: { w: 12, h: 12 },
+    turret2: { w: 15, h: 17 },
+    turret3: { w: 14, h: 15 },
+    beacon: { w: 20, h: 20 },
+    base2: { w: 25, h: 30 },
+    base3: { w: 30, h: 30 }
+  };
+  
+  const dims = buildingDimensions[buildingType] || { w: 20, h: 20 };
+  
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // Спиральный поиск: чем дальше попытка, тем больше отклонение
+    const angle = (attempt / maxAttempts) * Math.PI * 2 + Math.random() * 0.5;
+    const radius = 30 + attempt * 15; // от 30 до 330 пикселей
+    
+    const x = desiredX + Math.cos(angle) * radius;
+    const y = desiredY + Math.sin(angle) * radius;
+    
+    // Проверка границ карты
+    if (x < 50 || x > worldWidth - 50 || y < 50 || y > worldHeight - 50) continue;
+    
+    // 🔥 ГЛАВНАЯ ПРОВЕРКА: правило радиуса 320px
+    if (!isValidAiBuildLocation(x, y)) continue;
+    
+    // Проверка коллизий с другими зданиями
+    const newRect = {
+      left: x - dims.w / 2 - 5,
+      top: y - dims.h / 2 - 5,
+      right: x + dims.w / 2 + 5,
+      bottom: y + dims.h / 2 + 5
+    };
+    
+    let hasCollision = false;
+    for (let b of gameState.buildings) {
+      const bRect = {
+        left: b.x - b.width / 2 - 5,
+        top: b.y - b.height / 2 - 5,
+        right: b.x + b.width / 2 + 5,
+        bottom: b.y + b.height / 2 + 5
+      };
+      if (rectsOverlap(newRect, bRect)) {
+        hasCollision = true;
+        break;
+      }
+    }
+    
+    if (!hasCollision) {
+      return { x, y };
+    }
+  }
+  
+  return null; // Не удалось найти валидную позицию
+}
 //////////////////////////////////////////////////////////////
 // Функции поиска целевых точек
 function findOptimalWarehousePosition() {
@@ -657,43 +705,57 @@ function aiBuildImprovedBuildings() {
 //////////////////////////////////////////////////////////////
 // Функция размещения здания для ИИ
 function aiPlaceBuilding(buildingType, x, y) {
+  // 🔥 ГЛАВНЫЙ ФИКС: Проверка правила радиуса строительства
+  if (!isValidAiBuildLocation(x, y)) {
+    console.warn(`[AI Build] ❌ Отмена постройки ${buildingType}: позиция (${x.toFixed(0)}, ${y.toFixed(0)}) вне радиуса 320 от зданий ИИ.`);
+    markConstructionFailure(x, y); // Помечаем зону как неудачную, чтобы ИИ не пытался здесь снова
+    return false;
+  }
+
   // Корректируем координаты, чтобы они находились в пределах игрового мира
   x = Math.max(0, Math.min(worldWidth, x));
   y = Math.max(0, Math.min(worldHeight, y));
 
   let cost, buildingWidth, buildingHeight;
   switch (buildingType) {
-    case "warehouse":
-      cost = WAREHOUSE_COST; buildingWidth = 10; buildingHeight = 10; break;
-    case "repairWorkshop":
-      cost = REPAIR_WORKSHOP_COST; buildingWidth = 10; buildingHeight = 10; break;
-    case "barracks":
-      cost = BARRACKS_COST; buildingWidth = 15; buildingHeight = 15; break;
-    case "turret":
-      cost = TURRET_COST; buildingWidth = 12; buildingHeight = 12; break;
-    case "beacon":
-      cost = BEACON_COST; buildingWidth = 20; buildingHeight = 20; break;
-    case "base2":
-      cost = BASE2_COST; buildingWidth = 25; buildingHeight = 30; break;
-    case "barracks2":
-      cost = BARRACKS2_COST; buildingWidth = 25; buildingHeight = 15; break;
-    case "turret2":
-      cost = TURRET2_COST; buildingWidth = 15; buildingHeight = 17; break;
-    case "base3":
-      cost = BASE3_COST; buildingWidth = 30; buildingHeight = 30; break;
-    case "barracks3":
-      cost = BARRACKS3_COST; buildingWidth = 20; buildingHeight = 15; break;
-    default:
-      return false;
+    case "warehouse": cost = WAREHOUSE_COST; buildingWidth = 10; buildingHeight = 10; break;
+    case "repairWorkshop": cost = REPAIR_WORKSHOP_COST; buildingWidth = 10; buildingHeight = 10; break;
+    case "barracks": cost = BARRACKS_COST; buildingWidth = 15; buildingHeight = 15; break;
+    case "turret": cost = TURRET_COST; buildingWidth = 12; buildingHeight = 12; break;
+    case "beacon": cost = BEACON_COST; buildingWidth = 20; buildingHeight = 20; break;
+    case "base2": cost = BASE2_COST; buildingWidth = 25; buildingHeight = 30; break;
+    case "barracks2": cost = BARRACKS2_COST; buildingWidth = 25; buildingHeight = 15; break;
+    case "turret2": cost = TURRET2_COST; buildingWidth = 15; buildingHeight = 17; break;
+    case "base3": cost = BASE3_COST; buildingWidth = 30; buildingHeight = 30; break;
+    case "barracks3": cost = BARRACKS3_COST; buildingWidth = 20; buildingHeight = 15; break;
+    default: return false;
   }
 
-  // Дополнительная проверка на коллизию и возможность строительства
   const newRect = { 
     left: x - buildingWidth / 2, 
     top: y - buildingHeight / 2, 
     right: x + buildingWidth / 2, 
     bottom: y + buildingHeight / 2 
   };
+
+  // 🔥 ГЛАВНЫЙ ФИКС 2: Реальная проверка коллизий (раньше newRect просто игнорировался)
+  for (let b of gameState.buildings) {
+    const bRect = {
+      left: b.x - b.width / 2 - 5,
+      top: b.y - b.height / 2 - 5,
+      right: b.x + b.width / 2 + 5,
+      bottom: b.y + b.height / 2 + 5
+    };
+    if (rectsOverlap(newRect, bRect)) {
+      console.warn(`[AI Build] ❌ Отмена: перекрытие с другим зданием (${b.type}).`);
+      return false;
+    }
+  }
+
+  // Проверка ресурсов перед списанием
+  if (!canSpendResources(cost, "ai")) {
+    return false;
+  }
 
   // Списание ресурсов
   gameState.aiResources.gold -= cost.gold;
@@ -702,14 +764,11 @@ function aiPlaceBuilding(buildingType, x, y) {
   updateResourceUI();
 
   const building = new Building(buildingType, "ai", x, y);
-  building.active = false;  // Здание сразу после постройки не активно
+  building.active = false;
 
-  // Устанавливаем активацию с задержкой из констант
-  const activationDelay = BUILDING_ACTIVATION_DELAYS[buildingType] || 3000; // по умолчанию 3 секунды
+  const activationDelay = BUILDING_ACTIVATION_DELAYS[buildingType] || 3000;
   setTimeout(() => {
     building.active = true;
-
-    // Запускаем циклы для турелей сразу после активации
     if (buildingType === "turret" || buildingType === "turret2" || buildingType === "turret3") {
       startTurretCycle(building);
     }
@@ -720,9 +779,6 @@ function aiPlaceBuilding(buildingType, x, y) {
 
   return building;
 }
-
-
-
 //////////////////////////////////////////////////////////////
 // Функции найма и строительства
 function aiHireWorker(building) {
@@ -1912,13 +1968,19 @@ function analyzePlayerBehavior() {
 // Адаптация защиты
 function adaptDefenses() {
   const zone = analyzePlayerBehavior();
-  if (zone && canAfford(TURRET_COST, "ai")) {
-    const pos = randomizePosition(zone, 50);
-    aiPlaceBuilding("turret", pos.x, pos.y);
+  if (!zone || !canAfford(TURRET_COST, "ai")) return;
+  
+  // 🔥 ИСПРАВЛЕНО: Ищем валидную позицию рядом с зоной атаки
+  const validPos = findValidBuildPositionNear(zone.x, zone.y, "turret", 20);
+  
+  if (validPos) {
+    aiPlaceBuilding("turret", validPos.x, validPos.y);
+  } else {
+    // Если не нашли валидную позицию — помечаем зону как неудачную
+    markConstructionFailure(zone.x, zone.y);
   }
 }
-
-
+	
 // Адаптивная атака
 function initiateAdaptiveAttack() {
   const freeUnits = getFreeReserveUnits();
@@ -1991,24 +2053,30 @@ function hasBuildingNearby(buildingType, x, y, radius, owner) {
   );
 }
 
-
-
-
-
-
-// В функции проверки неудачных построек (например, checkAndSellUnprofitableBuildings),
-// если здание находится в опасной зоне, его можно продать, и его координаты добавить в soldBuildings
-// (если такой массив используется для аналогичных целей).
-
 // Также, если вы используете очередь построек, можно добавить проверку перед вызовом aiPlaceBuilding:
 function scheduleAIBuilding(type, x, y, delay = 2000) {
   cleanupFailedClusters();
-  // Если в этой зоне есть неудачная метка, не планируем строительство
+  
+  // 🔥 ИСПРАВЛЕНО: Проверка неудачных зон
   const failureRadius = 10;
   if (failedClusters.some(pt => Math.hypot(pt.x - x, pt.y - y) < failureRadius)) {
     return;
   }
-  // Иначе добавляем в очередь построек
+  
+  // 🔥 ИСПРАВЛЕНО: Проверка валидности позиции ДО добавления в очередь
+  if (!isValidAiBuildLocation(x, y)) {
+    console.warn(`[AI Queue] ❌ Позиция (${x.toFixed(0)}, ${y.toFixed(0)}) вне радиуса. Ищем альтернативу...`);
+    
+    const validPos = findValidBuildPositionNear(x, y, type, 15);
+    if (validPos) {
+      x = validPos.x;
+      y = validPos.y;
+    } else {
+      markConstructionFailure(x, y);
+      return; // Не планируем постройку вообще
+    }
+  }
+  
   buildQueue.push({
     type,
     x,
@@ -2017,8 +2085,6 @@ function scheduleAIBuilding(type, x, y, delay = 2000) {
     delay
   });
 }
-
-
 function aiCaptureAllControlPoints() {
   // не выполняем ИИ‑захват в PvP или если точек нет
   if (gameMode === 'pvp' || !gameState || !Array.isArray(gameState.capturePoints)) {
