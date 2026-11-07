@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, maximum-scale=3, viewport-fit=cover">
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+  <title>GeoMetra</title>
+ <link rel="stylesheet" href="/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500&display=swap" rel="stylesheet">
+
+
+  <link rel="preload" href="/src/icons/warehouse.png" as="image">
+  <link rel="preload" href="/src/icons/repairWorkshop.png" as="image">
+  <link rel="preload" href="/src/icons/turret.png" as="image">
+  <link rel="preload" href="/src/icons/turret2.png" as="image">
+  <link rel="preload" href="/src/icons/turret3.png" as="image">
+  <link rel="preload" href="/src/icons/base.png" as="image">
+  <link rel="preload" href="/src/icons/base2.png" as="image">
+  <link rel="preload" href="/src/icons/base3.png" as="image">
+  <link rel="preload" href="/src/icons/barracks.png" as="image">
+  <link rel="preload" href="/src/icons/barracks2.png" as="image">
+  <link rel="preload" href="/src/icons/barracks3.png" as="image">
+	
+
+	
+	<script>
+(function () {
+  const isMobile = /Mobi|Android/i.test(navigator.userAgent);
+  const isPortrait = window.innerHeight > window.innerWidth;
+
+  if (isMobile && isPortrait) {
+    window.addEventListener("DOMContentLoaded", () => {
+      const warning = document.createElement("div");
+      warning.id = "orientationWarning";
+      warning.style.position = "fixed";
+      warning.style.top = "0";
+      warning.style.left = "0";
+      warning.style.width = "100%";
+      warning.style.height = "100%";
+      warning.style.backgroundColor = "#000";
+      warning.style.color = "#fff";
+      warning.style.display = "flex";
+      warning.style.justifyContent = "center";
+      warning.style.alignItems = "center";
+      warning.style.fontSize = "22px";
+      warning.style.zIndex = "99999";
+      warning.innerText = "Пожалуйста, поверните устройство в альбомную ориентацию";
+      document.body.appendChild(warning);
+    });
+
+    window.addEventListener("orientationchange", () => {
+      const isNowLandscape = window.innerWidth > window.innerHeight;
+      if (isNowLandscape) {
+        location.reload();
+      }
+    });
+  }
+})();
+</script>
+
+</head>
+<body>
+	<!-- В файле index.html, сразу после открытия <body> добавьте этот блок (представление) -->
+<div id="presentationScreen">
+  <canvas id="matrixCanvas"></canvas>
+  <div id="logoContainer">
+  <!-- Вставьте следующий код внутрь блока #logoContainer в index.html -->
+<svg id="logoSvg" viewBox="0 0 600 100" xmlns="http://www.w3.org/2000/svg">
+  <text id="logoText" x="50" y="80" font-size="72" fill="#0f0" font-family="Orbitron">
+    <tspan class="logo-letter">a</tspan>
+    <tspan class="logo-letter">i</tspan>
+    <tspan class="logo-letter">G</tspan>
+    <tspan class="logo-letter">a</tspan>
+    <tspan class="logo-letter">m</tspan>
+    <tspan class="logo-letter">e</tspan>
+    <tspan class="logo-letter">D</tspan>
+    <tspan class="logo-letter">e</tspan>
+    <tspan class="logo-letter">v</tspan>
+    <tspan class="logo-letter">e</tspan>
+    <tspan class="logo-letter">l</tspan>
+  </text>
+</svg>
+
+  </div>
+  <div id="presentationText">
+    <h1 id="presentationTitle">aiGameDevel</h1>
+    <p id="presentsText"></p>
+  </div>
+</div>
+
+<!-- После экрана представления будет основной загрузочный экран, который содержит видео и кнопку "Исследовать..." -->
+<div id="loadingScreen" style="display: none;">
+  <video autoplay muted loop playsinline id="loadingVideo">
+    <source src="/src/video/background.mp4" type="video/mp4">
+    Ваш браузер не поддерживает видео.
+  </video>
+  <h1 id="welcomeTitle">Добро пожаловать на создание мира GeoMetra!</h1>
+	<button id="tutorialButton">обучение</button>
+    <button id="startButton">нечестный бот</button>
+    <button id="pvpButton">не работает PvP</button>
+	<button id="neuralButton">Нееросеть</button>
+ 
+	 <!-- Версия игры -->
+  <input type="text" id="versionInput" value="v 1.0.2.1.6" readonly>
+</div>
+
+	<div id="chat-container">
+  <div id="chat-controls">
+    <select id="chat-channel">
+      <option value="global">Общий</option>
+      <option value="team">Командный</option>
+    </select>
+    <input type="text" id="chat-input" placeholder="Введите..." />
+    <button id="chat-send">➤</button>
+  </div>
+
+  <!-- история — может скрываться -->
+  <div id="chat-messages"></div>
+
+  <!-- кнопка переключения истории -->
+  <button id="chat-toggle">🡇 Скрыть чат</button>
+</div>
+
+<!-- всплывающее сообщение -->
+<div id="chat-float"></div>
+
+	<div id="orientationWarning" style="
+  display: none; position: fixed; top: 0; left: 0;
+  width: 100vw; height: 100vh; background: #000;
+  color: white; font-size: 24px; text-align: center;
+  z-index: 9999; display: flex; flex-direction: column;
+  justify-content: center; align-items: center;
+">
+  <p>Пожалуйста, поверните устройство в альбомную ориентацию</p>
+</div>
+
+	  <canvas id="loading-canvas"></canvas>
+<button id="fsToggle">…</button>
+  <canvas id="gameCanvas"></canvas>
+	
+
+	
+ <div id="controlsWrapper" style="display: none;">
+	  <!-- UI: счетчики ресурсов -->
+  <div id="resourceCounters">
+    💰: <span id="playerGold">250</span> | ⚙: <span id="playerSilicon">250</span> | 🧪: <span id="playerPlasma">150</span>
+    &nbsp;&nbsp;&nbsp;
+    <span id="aiResources" style="display: none;">
+      ИИ: Золото: <span id="aiGold">100</span> | Кремний: <span id="aiSilicon">100</span> | Плазма: <span id="aiPlasma">50</span>
+    </span>
+  </div>
+    <div id="leftControlPanel">
+      <button id="group1">Ⅰ</button>
+      <button id="group2">Ⅱ</button>
+      <button id="group3">Ⅲ</button>
+      <button onclick="setFormation(1)">🔷</button>
+      <button onclick="setFormation(2)">📏</button>
+      <button onclick="setFormation(3)">🔺</button>
+    </div>
+    <div id="rightControlPanel">
+		
+		<button id="trainNeuralAIButton">ХОРОШО</button>
+		<button id="badDecisionButton">ПЛОХО</button>
+		<button id="resetNeuralAIButton">СБРОС</button>
+
+
+
+      <button onclick="selectAllFighters()">🌐</button>
+      <button onclick="commandScout()">🛰️</button>
+      <button onclick="commandAttack()">⚔️</button>
+      <button onclick="commandDefence()">🛡️</button>
+      <button id="clearSelectionBtn">🚫</button>
+    </div>
+	 <div id="buildingTooltip" style="
+  position: fixed;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.75);
+  color: white;
+  border-radius: 4px;
+  font-size: 13px;
+  pointer-events: none;
+  z-index: 9999;
+  display: none;
+  white-space: nowrap;
+"></div>
+	 
+	 
+	 <div id="perkSlots">
+  <div class="perk-slot" data-slot="0"></div>
+  <div class="perk-slot" data-slot="1"></div>
+  <div class="perk-slot" data-slot="2"></div>
+</div>
+
+<div id="perkMenu" style="display: none;">
+  <!-- Здесь будут все доступные перки -->
+</div>
+
+	  <div id="scoreCounter">
+    GEO: 0
+  </div>
+	
+
+  </div>
+
+  <div id="panelToggleTab">◀</div>
+
+<script>
+  // Очистка кэша при необходимости (раскомментировать при обновлении)
+  // if (confirm('Очистить кэш?')) {
+  //   caches.keys().then(names => Promise.all(names.map(n => caches.delete(n))));
+  //   location.reload();
+  // }
+</script>
+  <script src="/constants.js" defer></script>
+  <script src="entities.js" defer></script>
+  <script src="utils.js" defer></script>
+  <script src="core.js" defer></script>  
+  <script src="render.js" defer></script>
+  <script src="/inputs.js" defer></script>
+  <script src="/script.js" defer></script>
+  <script src="/aiLogic.js" defer></script>
+  <script src="/pvp.js" defer></script>
+	<script src="/tutorial.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.14.0"></script>
+  <script src="/neuralAI.js"></script>
+
+</body>
+</html>

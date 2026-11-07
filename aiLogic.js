@@ -705,78 +705,51 @@ function aiBuildImprovedBuildings() {
 //////////////////////////////////////////////////////////////
 // Функция размещения здания для ИИ
 function aiPlaceBuilding(buildingType, x, y) {
-  // 🔥 ГЛАВНЫЙ ФИКС: Проверка правила радиуса строительства
-  if (!isValidAiBuildLocation(x, y)) {
-    console.warn(`[AI Build] ❌ Отмена постройки ${buildingType}: позиция (${x.toFixed(0)}, ${y.toFixed(0)}) вне радиуса 320 от зданий ИИ.`);
-    markConstructionFailure(x, y); // Помечаем зону как неудачную, чтобы ИИ не пытался здесь снова
-    return false;
-  }
-
-  // Корректируем координаты, чтобы они находились в пределах игрового мира
   x = Math.max(0, Math.min(worldWidth, x));
   y = Math.max(0, Math.min(worldHeight, y));
 
-  let cost, buildingWidth, buildingHeight;
-  switch (buildingType) {
-    case "warehouse": cost = WAREHOUSE_COST; buildingWidth = 10; buildingHeight = 10; break;
-    case "repairWorkshop": cost = REPAIR_WORKSHOP_COST; buildingWidth = 10; buildingHeight = 10; break;
-    case "barracks": cost = BARRACKS_COST; buildingWidth = 15; buildingHeight = 15; break;
-    case "turret": cost = TURRET_COST; buildingWidth = 12; buildingHeight = 12; break;
-    case "beacon": cost = BEACON_COST; buildingWidth = 20; buildingHeight = 20; break;
-    case "base2": cost = BASE2_COST; buildingWidth = 25; buildingHeight = 30; break;
-    case "barracks2": cost = BARRACKS2_COST; buildingWidth = 25; buildingHeight = 15; break;
-    case "turret2": cost = TURRET2_COST; buildingWidth = 15; buildingHeight = 17; break;
-    case "base3": cost = BASE3_COST; buildingWidth = 30; buildingHeight = 30; break;
-    case "barracks3": cost = BARRACKS3_COST; buildingWidth = 20; buildingHeight = 15; break;
-    default: return false;
-  }
-
-  const newRect = { 
-    left: x - buildingWidth / 2, 
-    top: y - buildingHeight / 2, 
-    right: x + buildingWidth / 2, 
-    bottom: y + buildingHeight / 2 
-  };
-
-  // 🔥 ГЛАВНЫЙ ФИКС 2: Реальная проверка коллизий (раньше newRect просто игнорировался)
-  for (let b of gameState.buildings) {
-    const bRect = {
-      left: b.x - b.width / 2 - 5,
-      top: b.y - b.height / 2 - 5,
-      right: b.x + b.width / 2 + 5,
-      bottom: b.y + b.height / 2 + 5
-    };
-    if (rectsOverlap(newRect, bRect)) {
-      console.warn(`[AI Build] ❌ Отмена: перекрытие с другим зданием (${b.type}).`);
-      return false;
-    }
-  }
-
-  // Проверка ресурсов перед списанием
-  if (!canSpendResources(cost, "ai")) {
+  // Правило радиуса: только от базы/маяков ИИ
+  if (!isValidAiBuildLocation(x, y)) {
+    if (typeof markConstructionFailure === "function") markConstructionFailure(x, y);
     return false;
   }
 
-  // Списание ресурсов
-  gameState.aiResources.gold -= cost.gold;
-  gameState.aiResources.silicon -= cost.silicon;
-  gameState.aiResources.plasma -= cost.plasma;
+  const dims = {
+    warehouse: [10, 10], repairWorkshop: [10, 10],
+    barracks: [15, 15], barracks2: [25, 15], barracks3: [20, 15],
+    turret: [12, 12], turret2: [15, 17], turret3: [14, 15],
+    beacon: [20, 20], base2: [25, 30], base3: [30, 30]
+  };
+  if (!dims[buildingType] || !buildingCosts[buildingType]) return false;
+  const cost = buildingCosts[buildingType];
+  const bw = dims[buildingType][0], bh = dims[buildingType][1];
+
+  const newRect = { left: x - bw / 2, top: y - bh / 2, right: x + bw / 2, bottom: y + bh / 2 };
+  for (const b of gameState.buildings) {
+    const bRect = {
+      left: b.x - b.width / 2 - 5, top: b.y - b.height / 2 - 5,
+      right: b.x + b.width / 2 + 5, bottom: b.y + b.height / 2 + 5
+    };
+    if (rectsOverlap(newRect, bRect)) return false;
+  }
+
+  if (!canSpendResources(cost, "ai")) return false;
+
+  gameState.aiResources.gold -= cost.gold || 0;
+  gameState.aiResources.silicon -= cost.silicon || 0;
+  gameState.aiResources.plasma -= cost.plasma || 0;
   updateResourceUI();
 
   const building = new Building(buildingType, "ai", x, y);
   building.active = false;
-
-  const activationDelay = BUILDING_ACTIVATION_DELAYS[buildingType] || 3000;
-  setTimeout(() => {
-    building.active = true;
-    if (buildingType === "turret" || buildingType === "turret2" || buildingType === "turret3") {
-      startTurretCycle(building);
-    }
-  }, activationDelay);
-
+  building.builtAt = performance.now();
   gameState.buildings.push(building);
-  assignDefendersToBuildings();
 
+  gameState.recentBuilds = gameState.recentBuilds || [];
+  gameState.recentBuilds.push({ time: performance.now(), type: buildingType, owner: "ai" });
+  gameState.lastAiBuildTime = performance.now();
+
+  if (typeof assignDefendersToBuildings === "function") assignDefendersToBuildings();
   return building;
 }
 //////////////////////////////////////////////////////////////
@@ -1038,14 +1011,7 @@ function attemptToEnqueueMilitaryOrders() {
 }
 
 // Пример таймера, который каждые 1000 мс (1 сек) проверяет очередь заказов и добавляет новые заказы
- if (gameMode !== "neural") {
-   setInterval(() => {
-     if (gameStarted) {
-       processAIMilitaryProductionQueue();
-       attemptToEnqueueMilitaryOrders();
-     }
-   }, 1000);
- }
+// legacy setInterval удалён — см. AIScheduler
 
 
 
@@ -1888,27 +1854,39 @@ function attemptToBuild(buildingType, requiredCount) {
 
 function startAssaultEliteCycle(unit) {
   if (!unit) return;
+  
   function cycle() {
     if (unit.health <= 0) return;
     
     // Если есть команды – обрабатываем их и продолжаем цикл
     if (unit.commandQueue && unit.commandQueue.length > 0) {
-      processCommandQueue(unit);
+      // 🔥 ЗАЩИТА ОТ ДРУЖЕСТВЕННОГО ОГНЯ В ОЧЕРЕДИ:
+      const nextCmd = unit.commandQueue[0];
+      if (nextCmd.type === "attack" && nextCmd.target && nextCmd.target.owner === unit.owner) {
+        console.warn("[AI Cycle] Отмена атаки по своему объекту:", nextCmd.target.type);
+        unit.commandQueue.shift(); // Удаляем ошибочную команду
+        unit.target = null;        // Сбрасываем цель
+      } else {
+        processCommandQueue(unit);
+      }
       requestAnimationFrame(cycle);
       return;
     }
     
-    // Если у юнита есть цель, и она жива, вызываем динамическую атаку
-    if (unit.target && unit.target.health > 0) {
+    // 🔥 ГЛАВНЫЙ ФИКС: Проверяем не только здоровье, но и ВЛАДЕЛЬЦА цели!
+    if (unit.target && unit.target.health > 0 && unit.target.owner !== unit.owner) {
       if (unit.type === "assault") {
         dynamicAttackAssault(unit, unit.target, 1/60);
       } else if (unit.type === "elite") {
         dynamicAttackElite(unit, unit.target, 1/60);
       }
     } else {
-      // Если цели нет или она мертва, ищем новую цель
+      // Если цели нет, она мертва, или (ВАЖНО!) она оказалась своей — ищем новую
+      unit.target = null; // Сбрасываем "липкую" цель, чтобы начать поиск заново
+      
       let enemies = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
                     .filter(e => e.owner !== unit.owner && e.health > 0);
+                    
       if (enemies.length > 0) {
         unit.target = enemies.sort((a, b) =>
           Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
@@ -1917,6 +1895,7 @@ function startAssaultEliteCycle(unit) {
     }
     requestAnimationFrame(cycle);
   }
+  
   cycle();
 }
 
@@ -2142,30 +2121,7 @@ function distance(x1, y1, x2, y2) {
 
 
 
-function initAILogic() {
-  if (initAILogic._inited) return;
-  initAILogic._inited = true;
-
-  // Построечная очередь
-  setInterval(processBuildQueue, 1500);
-  // Найм экономических юнитов
-  setInterval(attemptToHireWorkers, 1500);
-  setInterval(attemptToHireRepairman, 1500);
-  // Военно-производственные заказы
-  setInterval(attemptToEnqueueMilitaryOrders, 1500);
-  // Обработка готовых заказов
-  setInterval(() => {
-    if (gameStarted) {
-      processAIMilitaryProductionQueue();
-      attemptToEnqueueMilitaryOrders();
-    }
-  }, 1000);
-  // Продажа неэффективных зданий
-  setInterval(processAISaleQueue, 10000);
-  // Анализ поведения игрока и адаптация защит
-  setInterval(analyzePlayerBehavior, 15000);
-  setInterval(adaptDefenses, 20000);
-}
+function initAILogic() { initAILogic._inited = true; }
 
 // aiLogic.js
 
@@ -2232,26 +2188,9 @@ function isCombatUnit(u) {
 }
 
 // Функция кадра ИИ
-function gameLoopAI() {
-  // В PvP или туториале этот цикл не нужен
-  if (gameMode === 'pvp' || gameMode === 'tutorial') return;
+function gameLoopAI() { /* устарело: AIScheduler */ }
 
-  if (gameMode === "single") {
-    aiLogic();
-  } else if (gameMode === "neural") {
-    // Для нейро-ИИ обрабатываем только очереди, основная логика в updateNeuralAI
-    gameState.buildings.forEach(b => {
-      if (["barracks", "barracks2", "barracks3"].includes(b.type)) {
-        processProductionQueue(b);
-      }
-    });
-  }
-
-  requestAnimationFrame(gameLoopAI);
-}
-
-// Сразу запускаем цикл
-requestAnimationFrame(gameLoopAI);
+// автозапуск удалён: AIScheduler.start() вызывается при старте матча
 
 	// только для строительства/найма ИИ, но не для игрока
 if (gameMode === "neural") {

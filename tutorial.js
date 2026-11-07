@@ -440,11 +440,11 @@ setTimeout(() => {
 }, 100);
 
 // Подключаем обработчик для кнопки обучения
-document.getElementById("tutorialButton").addEventListener("click", () => {
-  console.log("📘 Кнопка обучения нажата!");
-  document.getElementById("loadingScreen").style.display = "none";
-  startTutorial();
-});
+//document.getElementById("tutorialButton").addEventListener("click", () => {
+//  console.log("📘 Кнопка обучения нажата!");
+//  document.getElementById("loadingScreen").style.display = "none";
+ // startTutorial();
+//});
 
 function waitForWorkers(count, callback) {
   const interval = setInterval(() => {

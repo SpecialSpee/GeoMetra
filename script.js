@@ -335,6 +335,7 @@ if (resetBtn) {
 }
 
   gameStarted = true; gameMode = "neural";
+  AIScheduler.start("neural");
   if (typeof initAILogic === "function") initAILogic(); 
   lastTime = performance.now();
   gameState.buildings = []; gameState.units = []; gameState.fragments = []; gameState.particles = []; gameState.resources = [];
@@ -374,8 +375,7 @@ function startNewGame() {
   gameStarted = true; isPaused = false; lastTime = performance.now();
   gameLoopId = requestAnimationFrame(gameLoop);
   if (typeof initAILogic === "function") initAILogic();
-  requestAnimationFrame(gameLoopAI);
-  aiLogicInterval = setInterval(aiLogic, 25000);
+  AIScheduler.start("single");
   if (!gameState.units.some(u => u.owner === "ai" && u.type === "fighter")) {
     setTimeout(() => {
       const fighter = getUnitFromPool("fighter", "ai", aiBase.x, aiBase.y);

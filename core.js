@@ -377,11 +377,28 @@ function processCommandQueue(unit) {
 }
 
 function checkForEnemiesAndAttack(unit) {
-  const enemiesInRange = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range).filter(e => e.owner !== unit.owner && e.health > 0);
+  if (!unit || !unit.range) return;
+  
+  // 🔥 ФИКС: getEnemiesInRange уже фильтрует по owner, но проверим еще раз для надежности
+  const enemiesInRange = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
+    .filter(e => e.owner !== unit.owner && e.health > 0);
+    
   if (enemiesInRange.length > 0) {
+    // Если цель уже найдена и жива, не меняем её постоянно
+    if (unit.target && unit.target.health > 0 && enemiesInRange.includes(unit.target)) {
+      return; 
+    }
+    
     unit.commandQueue = [];
-    unit.target = enemiesInRange.sort((a, b) => Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y))[0];
+    // Сортируем по расстоянию и берем самого ближнего
+    unit.target = enemiesInRange.sort((a, b) => 
+      Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
+    )[0];
+    
     unit.commandQueue.push({ type: "attack", target: unit.target });
+  } else {
+    // Если врагов нет, сбрасываем цель, чтобы юнит не стоял тупо
+    if (unit.target) unit.target = null;
   }
 }
 
@@ -532,19 +549,38 @@ function showVictoryScreen(message) {
   exitButton.onclick = () => location.reload();
   container.appendChild(exitButton);
   victoryScreen.appendChild(container);
-  let highestId = setInterval(() => {}, 1000);
-  for (let i = 0; i <= highestId; i++) clearInterval(i);
+  stopAllIntervals();
 }
 
-function startFighterCycleAI(fighter) {
+function startFighterCycle(fighter) {
   if (!fighter) return;
   function cycle() {
     if (fighter.health <= 0) return;
-    const enemies = getEnemiesInRange({ x: fighter.x, y: fighter.y }, fighter.range).filter(e => e.owner !== fighter.owner && e.health > 0);
-    if (enemies.length > 0) {
-      fighter.target = enemies.sort((a, b) => Math.hypot(a.x - fighter.x, a.y - fighter.y) - Math.hypot(b.x - fighter.x, b.y - fighter.y))[0];
-      dynamicAttack(fighter, fighter.target, 1/60);
-    } else { moveUnit(fighter, playerBase.x, playerBase.y, () => {}); }
+    
+    // Если есть приказ — исполняем
+    if (fighter.commandQueue.length > 0) { 
+      processCommandQueue(fighter); 
+      requestAnimationFrame(cycle); 
+      return; 
+    }
+    
+    // 🔥 ФИКС: Проверяем, что цель существует, ЖИВА и принадлежит ДРУГОМУ владельцу
+    if (fighter.target && fighter.target.health > 0 && fighter.target.owner !== fighter.owner) {
+      dynamicAttack(fighter, fighter.target, 1/60); 
+    } else {
+      // Цель потеряна или мертва — ищем новую
+      fighter.target = null;
+      
+      // Используем безопасный поиск через utils.js
+      let enemies = getEnemiesInRange({ x: fighter.x, y: fighter.y }, fighter.range)
+        .filter(e => e.owner !== fighter.owner && e.health > 0);
+        
+      if (enemies.length > 0) {
+        fighter.target = enemies.sort((a, b) => 
+          Math.hypot(a.x - fighter.x, a.y - fighter.y) - Math.hypot(b.x - fighter.x, b.y - fighter.y)
+        )[0];
+      }
+    }
     requestAnimationFrame(cycle);
   }
   cycle();
@@ -1327,10 +1363,7 @@ function processAISaleQueue() {
   }, 6000);
 }
 
-// Один интервал обработки очереди продаж
-if (!window.__aiSaleQueueInterval) {
-  window.__aiSaleQueueInterval = setInterval(processAISaleQueue, 10000);
-}
+// Очередь продаж обрабатывает AIScheduler
 
 // ============================================================
 // Обработка очереди производства юнитов
@@ -1427,8 +1460,7 @@ function gameLoop(time) {
     if (frameCounter !== 0) { gameLoopId = requestAnimationFrame(gameLoop); return; }
   }
   if (gameMode === "tutorial") checkTutorialProgress();
-  if (gameMode === "neural" && neuralAIActive && typeof updateNeuralAI === "function") { updateNeuralAI(); processAiBuildQueue(); }
-  if (gameMode === "single") aiLogic();
+  // ИИ вынесен в AIScheduler (aiScheduler.js)
   if (gameMode !== 'pvp') updateCapturePoints();
   updateBuildingsActivation();
   updateUnits(deltaTime);
@@ -1456,7 +1488,6 @@ function gameLoop(time) {
     } catch (err) {
     console.error("[Render Error]", err);
     }
-  if (gameMode === "neural") updateAIProductionQueues();
   gameLoopId = requestAnimationFrame(gameLoop);
 }
 

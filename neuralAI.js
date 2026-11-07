@@ -324,12 +324,23 @@ function splitIntoGroups(units, size = 4) {
 }
 
 function findNearestEnemyTarget(unit) {
-  const possibleTargets = [...gameState.units.filter(u => u.owner !== unit.owner), ...gameState.buildings.filter(b => b.owner !== unit.owner)];
+  if (!unit || !gameState) return null;
+  
+  // 🔥 ФИКС: Ищем только вражеские ЮНИТЫ и ЗДАНИЯ
+  const possibleTargets = [
+    ...gameState.units.filter(u => u.owner !== unit.owner && u.health > 0),
+    ...gameState.buildings.filter(b => b.owner !== unit.owner && b.health > 0)
+  ];
+  
   if (possibleTargets.length === 0) return null;
+  
   let best = null, bestDist = Infinity;
   for (const target of possibleTargets) {
     const d = Math.hypot(target.x - unit.x, target.y - unit.y);
-    if (d < bestDist) { bestDist = d; best = target; }
+    if (d < bestDist) { 
+      bestDist = d; 
+      best = target; 
+    }
   }
   return best;
 }
