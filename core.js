@@ -172,25 +172,46 @@ function fireBullet(shooter, enemy) {
 
   let bulletConfig, bulletType = 'regular';
 
-  if (shooter.type === "turret2") {
+  // 🔥 ИСПРАВЛЕНИЕ: Строгий порядок проверок!
+  // Сначала проверяем ТУРЕЛИ (они имеют приоритет)
+  if (shooter.type === "turret") {
+    bulletConfig = TURRET_BULLET_CONFIG;
+  } 
+  else if (shooter.type === "turret2") {
     bulletConfig = MISSILE_CONFIG;
     bulletType = 'missile';
-  } else if (shooter.type === "turret") {
-    bulletConfig = TURRET_BULLET_CONFIG;
-  } else if (shooter.type === "turret3") {
+  } 
+  else if (shooter.type === "turret3") {
     bulletConfig = TURRET_LASER_CONFIG;
-  } else if (shooter.type === "fighter") {
+    // Для лазерной турели не создаем обычную пулю, она стреляет через fireLaserShot
+    return; 
+  }
+  // Потом проверяем ЮНИТОВ
+  else if (shooter.type === "fighter") {
     bulletConfig = FIGHTER_BULLET_CONFIG;
-  } else {
+  }
+  else if (shooter.type === "assault") {
+    // Штурмовик стреляет через dynamicAttackAssault, не через fireBullet!
+    bulletConfig = FIGHTER_BULLET_CONFIG; // Используем конфигурацию файтера для пулемета
+  }
+  else if (shooter.type === "elite") {
+    // Элита стреляет через dynamicAttackElite, не через fireBullet!
+    bulletConfig = MELEE_BULLET_CONFIG;
+  }
+  else {
     bulletConfig = { speed: 300, lifetime: 1.5, damage: 10 };
   }
   
   const bullet = getBulletFromPool(bulletType, shooter, enemy, bulletConfig);
+  
+  // Цвета для визуального различия
   if (shooter.type === "assault") {
-    bullet.color = "128,0,128";
+    bullet.color = "128,0,128"; // Фиолетовый для штурмовика
+  } else if (shooter.type === "elite") {
+    bullet.color = "255,165,0"; // Оранжевый для элиты
   }
   
-  if (gameMode === "pvp" && (shooter.type === "turret" || shooter.type === "turret2" || shooter.type === "turret3") && shooter.owner === playerId) {
+  if (gameMode === "pvp" && (shooter.type === "turret" || shooter.type === "turret2") && shooter.owner === playerId) {
     sendPvpAction({
       type: "turretFire",
       turretId: shooter.id,
@@ -203,90 +224,155 @@ function fireBullet(shooter, enemy) {
 }
 
 function dynamicAttack(unit, target, deltaTime) {
-  if (unit.type === "elite") { dynamicAttackElite(unit, target, deltaTime); return; }
-  if (unit.type === "assault") { dynamicAttackAssault(unit, target, deltaTime); return; }
-  if (!target || target.health <= 0) { unit.target = null; return; }
+  // 🔥 ИСПРАВЛЕНИЕ: Разделяем логику атаки по типам юнитов!
+  if (unit.type === "elite") { 
+    dynamicAttackElite(unit, target, deltaTime); 
+    return; 
+  }
+  if (unit.type === "assault") { 
+    dynamicAttackAssault(unit, target, deltaTime); 
+    return; 
+  }
+  
+  // Обычный fighter
+  if (!target || target.health <= 0) { 
+    unit.target = null; 
+    return; 
+  }
+  
   const currentDistance = Math.hypot(target.x - unit.x, target.y - unit.y);
-  if (currentDistance > unit.range) { unit.target = null; return; }
+  if (currentDistance > unit.range) { 
+    unit.target = null; 
+    return; 
+  }
+  
   const now = performance.now();
   if (unit.type === "fighter") {
     if (unit.shocked) return;
-    if (now - unit.lastFireTime >= unit.fireRate) { fireBullet(unit, target); unit.lastFireTime = now; }
+    if (now - unit.lastFireTime >= unit.fireRate) { 
+      fireBullet(unit, target); 
+      unit.lastFireTime = now; 
+    }
     dynamicMove(unit, target, deltaTime);
   }
 }
 
 function dynamicAttackAssault(unit, target, deltaTime) {
-  if (unit.health <= 0 || !target || target.health <= 0) { unit.target = null; return; }
-  const currentDistance = Math.hypot(target.x - unit.x, target.y - unit.y);
-  if (currentDistance > unit.range) { unit.target = null; return; }
-  const now = performance.now();
-  if (currentDistance <= unit.machineGunRange && (now - unit.lastMachineGunFireTime >= unit.machineGunFireRate)) {
-    fireBullet(unit, target); unit.lastMachineGunFireTime = now;
+  if (unit.health <= 0 || !target || target.health <= 0) { 
+    unit.target = null; 
+    return; 
   }
+  
+  const currentDistance = Math.hypot(target.x - unit.x, target.y - unit.y);
+  if (currentDistance > unit.range) { 
+    unit.target = null; 
+    return; 
+  }
+  
+  const now = performance.now();
+  
+  // Пулемет (ближний бой)
+  if (currentDistance <= unit.machineGunRange && (now - unit.lastMachineGunFireTime >= unit.machineGunFireRate)) {
+    fireBullet(unit, target); // Теперь fireBullet правильно определит конфигурацию
+    unit.lastMachineGunFireTime = now;
+  }
+  
+  // Ракеты (дальний бой)
   if (currentDistance <= unit.rocketRange && (now - unit.lastRocketFireTime >= unit.rocketCooldown)) {
     const targetAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
     let rocket = new Bullet(unit.x, unit.y, targetAngle, MISSILE_CONFIG.speed, unit, target);
-    rocket.lifetime = MISSILE_CONFIG.lifetime; rocket.damage = MISSILE_CONFIG.damage;
-    rocket.splashRadius = MISSILE_CONFIG.splashRadius; rocket.splashDamage = MISSILE_CONFIG.splashDamage;
-    rocket.isMissile = true; rocket.target = target; rocket.color = "255,0,0";
-    gameState.bullets.push(rocket); unit.lastRocketFireTime = now;
+    rocket.lifetime = MISSILE_CONFIG.lifetime;
+    rocket.damage = MISSILE_CONFIG.damage;
+    rocket.splashRadius = MISSILE_CONFIG.splashRadius;
+    rocket.splashDamage = MISSILE_CONFIG.splashDamage;
+    rocket.isMissile = true;
+    rocket.target = target;
+    rocket.color = "255,0,0"; // Красный для ракет штурмовика
+    gameState.bullets.push(rocket);
+    unit.lastRocketFireTime = now;
   }
+  
   dynamicMove(unit, target, deltaTime);
 }
 
 function dynamicAttackElite(unit, target, deltaTime) {
-  if (unit.health <= 0 || !target || target.health <= 0) { unit.target = null; return; }
+  if (unit.health <= 0 || !target || target.health <= 0) { 
+    unit.target = null; 
+    return; 
+  }
+  
   const currentDistance = Math.hypot(target.x - unit.x, target.y - unit.y);
   const preferredRange = unit.artilleryPreferredRange || unit.artilleryRange || 500;
   const now = performance.now();
+  
+  // Держим дистанцию
   if (currentDistance < preferredRange * 0.8) {
     const angleAway = Math.atan2(unit.y - target.y, unit.x - target.x);
     dynamicMove(unit, { x: target.x + Math.cos(angleAway) * preferredRange, y: target.y + Math.sin(angleAway) * preferredRange }, deltaTime);
   } else if (currentDistance > preferredRange * 1.2) {
     dynamicMove(unit, target, deltaTime);
   }
+  
+  // Ближний бой (дробовик)
   if (currentDistance <= unit.meleeRange && now - unit.lastMeleeAttack >= unit.meleeCooldown) {
     const desiredAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
     const pelletCount = 7, spreadAngle = 30 * Math.PI / 180;
     for (let i = 0; i < pelletCount; i++) {
       const angleOffset = -spreadAngle / 2 + (spreadAngle * i) / (pelletCount - 1);
       let pellet = new Bullet(unit.x, unit.y, desiredAngle + angleOffset, MELEE_BULLET_CONFIG.speed, unit, target);
-      pellet.lifetime = MELEE_BULLET_CONFIG.lifetime; pellet.damage = MELEE_BULLET_CONFIG.damage;
-      pellet.isMelee = true; pellet.color = "255,165,0";
+      pellet.lifetime = MELEE_BULLET_CONFIG.lifetime;
+      pellet.damage = MELEE_BULLET_CONFIG.damage;
+      pellet.isMelee = true;
+      pellet.color = "255,165,0"; // Оранжевый для элиты
       gameState.bullets.push(pellet);
     }
     unit.lastMeleeAttack = now;
   }
+  
+  // Артиллерия (дальний бой)
   if (currentDistance <= unit.artilleryRange && now - unit.lastArtilleryAttack >= unit.artilleryCooldown) {
     const desiredAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
     const artilleryCount = 5 + Math.floor(Math.random() * 6);
     for (let i = 0; i < artilleryCount; i++) {
       let artillery = new Bullet(unit.x, unit.y, desiredAngle + (Math.random() - 0.5) * 0.2, ARTILLERY_BULLET_CONFIG.speed, unit, target);
-      artillery.lifetime = ARTILLERY_BULLET_CONFIG.lifetime; artillery.damage = ARTILLERY_BULLET_CONFIG.damage;
-      artillery.splashRadius = ARTILLERY_BULLET_CONFIG.splashRadius; artillery.splashDamage = ARTILLERY_BULLET_CONFIG.splashDamage;
-      artillery.color = "0,255,0"; artillery.isArtillery = true;
+      artillery.lifetime = ARTILLERY_BULLET_CONFIG.lifetime;
+      artillery.damage = ARTILLERY_BULLET_CONFIG.damage;
+      artillery.splashRadius = ARTILLERY_BULLET_CONFIG.splashRadius;
+      artillery.splashDamage = ARTILLERY_BULLET_CONFIG.splashDamage;
+      artillery.color = "0,255,0"; // Зеленый для артиллерии
+      artillery.isArtillery = true;
       gameState.bullets.push(artillery);
     }
     unit.lastArtilleryAttack = now;
   }
+  
+  // Лазер
   if (currentDistance <= unit.laserRange && now - unit.lastLaserAttack >= unit.laserCooldown) {
     const laserAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
-    unit.laserBeam = { startX: unit.x, startY: unit.y, endX: unit.x + Math.cos(laserAngle) * unit.laserRange, endY: unit.y + Math.sin(laserAngle) * unit.laserRange, timestamp: now };
+    unit.laserBeam = { 
+      startX: unit.x, 
+      startY: unit.y, 
+      endX: unit.x + Math.cos(laserAngle) * unit.laserRange, 
+      endY: unit.y + Math.sin(laserAngle) * unit.laserRange, 
+      timestamp: now 
+    };
+    
     let hits = 0;
-    const enemyCandidates = gameState.units.concat(gameState.buildings).filter(e => e.owner !== unit.owner && e.health > 0)
-      .sort((a, b) => ((a.x - unit.x) * Math.cos(laserAngle) + (a.y - unit.y) * Math.sin(laserAngle)) - ((b.x - unit.x) * Math.cos(laserAngle) + (b.y - unit.y) * Math.sin(laserAngle)));
+    const enemyCandidates = gameState.units.concat(gameState.buildings)
+      .filter(e => e.owner !== unit.owner && e.health > 0)
+      .sort((a, b) => 
+        ((a.x - unit.x) * Math.cos(laserAngle) + (a.y - unit.y) * Math.sin(laserAngle)) - 
+        ((b.x - unit.x) * Math.cos(laserAngle) + (b.y - unit.y) * Math.sin(laserAngle))
+      );
+    
     for (let enemy of enemyCandidates) {
       const proj = ((enemy.x - unit.x) * Math.cos(laserAngle) + (enemy.y - unit.y) * Math.sin(laserAngle));
       if (proj > 0 && proj < unit.laserRange) {
         const perp = Math.abs(-Math.sin(laserAngle) * (enemy.x - unit.x) + Math.cos(laserAngle) * (enemy.y - unit.y));
         if (perp < 20) {
-          
-          // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: используем onDamage вместо прямого вычитания
           if (typeof onDamage === "function") {
             onDamage(enemy, 50);
           } else {
-            // Fallback
             enemy.health -= 50;
             if (enemy.health <= 0) {
               if (enemy instanceof Building) { 
@@ -298,7 +384,6 @@ function dynamicAttackElite(unit, target, deltaTime) {
               }
             }
           }
-          
           hits++; 
           if (hits >= 3) break;
         }

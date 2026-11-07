@@ -1841,9 +1841,6 @@ function attemptToHireMilitaryUnits() {
 }
 
 
-
-
-
 function attemptToBuild(buildingType, requiredCount) {
   // Если количество зданий ниже требуемого, попытаемся построить новое
   if (countBuildings(buildingType, "ai") < requiredCount) {
