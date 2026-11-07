@@ -10,10 +10,15 @@ let idCollisionCount = 0;
 const PARTICLE_UPDATE_INTERVAL = 0.033;
 
 function addUnit(unit) {
+  // 🔥 АВТОМАТИЧЕСКОЕ ПРИСВАИВАНИЕ ID, если его нет
+  if (!unit.id || unit.id === undefined) {
+    unit.id = generateUniqueUnitId();
+  }
+  
+  // ПРОВЕРКА: нет ли уже юнита с таким ID?
   const existingUnit = gameState.units.find(u => u.id === unit.id);
   if (existingUnit) {
-    idCollisionCount++;
-    console.warn(`[⚠️ ID COLLISION #${idCollisionCount}] Юнит с ID ${unit.id} уже существует! Владелец: ${existingUnit.owner}, новый: ${unit.owner}`);
+    console.warn(`[⚠️ ID COLLISION] Юнит с ID ${unit.id} уже существует! Генерируем новый...`);
     unit.id = generateUniqueUnitId();
   }
   

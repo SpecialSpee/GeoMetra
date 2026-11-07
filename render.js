@@ -1362,7 +1362,10 @@ function renderPersistentFog() {
   ctx.restore();
 }
 
-function renderFogOfWar() { renderPersistentFog(); }
+function renderFogOfWar() { 
+	return;
+	renderPersistentFog(); }
+	  
 function renderDynamicFog() {}
 
 function updateResourceUI() {

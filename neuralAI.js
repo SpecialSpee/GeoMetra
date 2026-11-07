@@ -356,10 +356,26 @@ function updateNeuralAI() {
   const playerBases = gameState.buildings.filter(b => b.owner === "player" && b.type === "base");
 
   if (aiBases.length === 0) {
-    console.warn("[NeuralAI] 💀 Базы ИИ уничтожены. Поражение. Финальный штраф и остановка.");
+    console.warn("[NeuralAI] 💀 Базы ИИ уничтожены. Поражение. ФИНАЛЬНЫЙ ШТРАФ!");
+    
+    // 🔥 УСИЛЕНИЕ: штрафуем ВСЕ последние действия
+    const defeatPenalty = -2.0;
+    const recentActions = pendingRewardCheck.slice(-10);
+    
+    recentActions.forEach(check => {
+      const output = actions.map((_, i) => i === check.actionIndex ? 0.01 : 0.5); // Инвертируем: плохое действие получает низкий таргет
+      safePushTraining({
+        inputs: check.input,
+        targetOverride: output,
+        action: check.action,
+        info: "[defeat_penalty]"
+      });
+    });
+    
     if (lastInputArray && lastNeuralAction && actions.includes(lastNeuralAction)) {
       penalizeBadDecision();
     }
+    
     if (neuralModel) {
       saveModelToServer(neuralModel).then(() => {
         console.log("[NeuralAI] 💾 Модель сохранена после поражения");
@@ -371,20 +387,35 @@ function updateNeuralAI() {
   }
 
   if (playerBases.length === 0) {
-    console.log("[NeuralAI] 🏆 Базы игрока уничтожены. Победа ИИ! ФИНАЛЬНОЕ ПОощРЕНИЕ!");
+    console.log("[NeuralAI] 🏆 Базы игрока уничтожены. Победа ИИ! ФИНАЛЬНОЕ ПОООЩРЕНИЕ!");
+    
+    // 🔥 УСИЛЕНИЕ: поощряем ВСЕ последние действия, а не только последнее
+    const victoryBoost = 3.0; // Увеличили с 2.0 до 3.0
+    const recentActions = pendingRewardCheck.slice(-10); // Последние 10 действий
+    
+    recentActions.forEach(check => {
+      const output = actions.map((_, i) => i === check.actionIndex ? victoryBoost : 0.01);
+      safePushTraining({
+        inputs: check.input,
+        targetOverride: output,
+        action: check.action,
+        info: "[victory_boost]"
+      });
+    });
+    
+    // И последнее действие тоже
     if (lastInputArray && lastNeuralAction && actions.includes(lastNeuralAction)) {
-      const victoryBoost = 2.0;
       const index = actions.indexOf(lastNeuralAction);
       const output = actions.map((_, i) => i === index ? victoryBoost : 0.01);
-      console.log(`[NeuralAI] 🏆 Победа! Усиленное поощрение для '${lastNeuralAction}'`);
       safePushTraining({
         inputs: lastInputArray,
         targetOverride: output,
         action: lastNeuralAction,
         info: "[victory_reward]"
       });
-      processTrainingQueue();
     }
+    
+    processTrainingQueue();
     neuralAIActive = false;
     gameState.gameEnded = true;
     return;
@@ -779,7 +810,18 @@ function updateNeuralAI() {
   const res = gameState.aiResources || {};
 
   pendingRewardCheck = pendingRewardCheck.filter(check => {
-    const evalDelay = (check.action === "build" || check.action === "expand" || check.action.includes("hire")) ? 15000 : 4000;
+    // 🔥 УВЕЛИЧЕННЫЕ ОКНА ОЦЕНКИ для разных типов действий
+    let evalDelay = 5000; // Базовое значение для тактических действий
+    
+    if (check.action === "build" || check.action === "expand") {
+      evalDelay = 25000; // 25 секунд для строительства (было 15000)
+    } else if (check.action.includes("hire")) {
+      evalDelay = 20000; // 20 секунд для найма юнитов
+    } else if (["attack", "defend", "counterAttack", "mobilizeZone", "flank", "ambush"].includes(check.action)) {
+      evalDelay = 6000; // 6 секунд для боевых действий
+    } else if (check.action === "idle" || check.action === "scout") {
+      evalDelay = 4000; // 4 секунды для разведки и простоя
+    }
 
     if (now - check.time < evalDelay) {
       return true;
@@ -887,6 +929,38 @@ function updateNeuralAI() {
     const max = aiPerfStats.maxTime.toFixed(2);
     console.log(`[⚡ Perf AI] Циклов: ${aiPerfStats.count} | Среднее: ${avg}мс | Макс: ${max}мс`);
   }
+	
+  // ============================================================
+  // 🔥 ПЛОТНАЯ НАГРАДА (Dense Reward): микро-поощрения за тренды
+  // ============================================================
+  const currentResourceTotal = (aiRes.gold || 0) + (aiRes.silicon || 0) + (aiRes.plasma || 0);
+  const previousResourceTotal = lastEconomySnapshot.gold + lastEconomySnapshot.silicon + lastEconomySnapshot.plasma;
+  const resourceGrowing = currentResourceTotal > previousResourceTotal;
+
+  // Подсчёт контроля точек (capture points)
+  const aiControlPoints = Array.isArray(gameState.capturePoints) 
+    ? gameState.capturePoints.filter(cp => cp.owner === "ai").length 
+    : 0;
+  const playerControlPoints = Array.isArray(gameState.capturePoints) 
+    ? gameState.capturePoints.filter(cp => cp.owner === "player").length 
+    : 0;
+  const hasControlAdvantage = aiControlPoints > playerControlPoints;
+
+  // Вычисляем плотную награду
+  let denseReward = 0;
+  if (resourceGrowing) denseReward += 0.001;
+  if (hasControlAdvantage) denseReward += 0.001;
+  
+  // Штраф за отрицательные тренды
+  if (!resourceGrowing && currentResourceTotal > 50) denseReward -= 0.0005;
+  if (playerControlPoints > aiControlPoints && playerControlPoints > 0) denseReward -= 0.0005;
+
+  // Записываем опыт с плотной наградой (если есть последнее действие)
+  if (denseReward !== 0 && lastInputArray && lastNeuralAction && actions.includes(lastNeuralAction)) {
+    const actionIndex = actions.indexOf(lastNeuralAction);
+    storeExperience(lastInputArray.slice(), actionIndex, denseReward, null);
+  }	
+	
   trainFromReplayBatch();
 }
 
