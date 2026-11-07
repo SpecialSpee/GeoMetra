@@ -1,0 +1,728 @@
+/* Глобальные стили для html и body */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, Arial, sans-serif;
+}
+
+/* Стили для индикатора продажи */
+.sale-indicator {
+  position: absolute;
+  height: 5px;
+  background-color: green;
+  border-radius: 2px;
+  z-index: 1001;
+}
+
+/* Стили для счетчика GEO */
+#scoreCounter {
+  position: fixed;
+  bottom: 0;
+  right: 10%;
+  width: 20%;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  text-align: center;
+  padding: 5px;
+  font-size: 14px;
+  z-index: 1001;
+}
+
+/* Стили для отображения версии игры */
+#versionInput {
+  position: fixed;
+  bottom: 5px;
+  right: 5px;
+  font-size: 10px;
+  color: #fff;
+  background-color: rgba(0,0,0,0.5);
+  border: none;
+  z-index: 1000;
+  padding: 2px 5px;
+  cursor: default;
+  user-select: none;
+}
+
+/* Медиа-запрос для мобильных устройств: изменение стилей для #versionInput */
+@media (max-width: 768px) {
+  #versionInput {
+    bottom: 40px; /* Поднимаем элемент, чтобы не конфликтовал со счетчиком GEO */
+    font-size: 10px; /* Уменьшаем размер шрифта */
+  }
+}
+
+@media (max-width: 768px) and (orientation: landscape) {
+  #leftControlPanel, #rightControlPanel {
+    gap: 10px;
+    padding: 6px;
+  }
+	
+	
+
+  #leftControlPanel button,
+  #rightControlPanel button {
+    font-size: 22px;
+    padding: 12px;
+    border-radius: 10px;
+  }
+}
+
+#leftControlPanel, #rightControlPanel {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 5px;
+  border-radius: 8px;
+  z-index: 1000;
+}
+
+#leftControlPanel {
+  bottom: 20px;
+  left: 10px;
+}
+
+#rightControlPanel {
+  bottom: 20px;
+  right: 10px;
+}
+
+#leftControlPanel button,
+#rightControlPanel button {
+  font-size: 18px;
+  padding: 10px;
+  border: none;
+  background: rgb(0, 0, 0);
+  color: #0ff;
+  border-radius: 30%;
+  box-shadow: 0 0 5px #0ff;
+  cursor: pointer;
+  transition: transform 0.1s ease;
+  opacity: 70%;
+}
+
+#leftControlPanel button:active,
+#rightControlPanel button:active {
+  transform: scale(0.95);
+}
+
+
+
+/* Стили для индикатора производства */
+.production-indicator {
+  position: absolute;
+  display: flex;
+  gap: 1px;
+  padding: 1px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 0.5px solid #fff;
+  border-radius: 3px;
+  z-index: 19; /* чтобы индикатор был поверх игрового канваса */
+}
+
+/* Стили для секции производства */
+.production-section {
+  width: 5px;  /* ширина секции, можно настроить */
+  height: 2px;  /* высота секции */
+  border: 0.5px solid #fff;
+  background: #333;
+  position: relative;
+}
+
+/* Стили для заполнения секции производства */
+.production-fill {
+  background: green; /* цвет заполнения */
+  height: 100%;
+  width: 0%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  transition: width 0.2s linear; /* для плавного заполнения */
+}
+
+/* Стили для тултипа */
+.tooltip {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  padding: 5px 10px;
+  border-radius: 4px;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5);
+}
+
+#welcomeTitle {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 26px;
+  color: #00f0ff;
+  text-align: center;
+  margin-bottom: 20px;
+  text-shadow: 0 0 5px #00f0ff, 0 0 10px #00f0ff, 0 0 20px #00f0ff;
+  animation: pulseGlow 2.5s infinite ease-in-out;
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    text-shadow: 0 0 5px #00f0ff, 0 0 10px #00f0ff, 0 0 20px #00f0ff;
+  }
+  50% {
+    text-shadow: 0 0 10px #00f0ff, 0 0 20px #00f0ff, 0 0 40px #00f0ff;
+  }
+}
+
+#loadingScreen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 10002;
+      color: #fff;
+      overflow: hidden;
+    }
+
+    #loadingVideo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  min-width: 100%;
+  min-height: 100%;
+  width: auto;
+  height: auto;
+  transform: translate(-50%, -55%) scale(1.1);
+  object-fit: cover;
+  z-index: -1;
+}
+#tutorialButton{
+  font-family: 'Orbitron', sans-serif;
+  font-size: 22px;
+  padding: 15px 35px;
+  border: 2px solid #00f0ff;
+  color: #00f0ff;
+  background: transparent;
+  border-radius: 50px;
+  box-shadow: 0 0 15px #00f0ff80, 0 0 30px #00f0ff40 inset;
+  text-shadow: 0 0 5px #00f0ff;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  z-index: 10;
+}
+#tutorialButton:hover {
+  background: rgba(0, 240, 255, 0.2);
+  box-shadow: 0 0 25px #00f0ff, 0 0 60px #00f0ff80 inset;
+  transform: scale(1.05);
+}
+
+#startButton {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 22px;
+  padding: 15px 35px;
+  border: 2px solid #00f0ff;
+  color: #00f0ff;
+  background: transparent;
+  border-radius: 50px;
+  box-shadow: 0 0 15px #00f0ff80, 0 0 30px #00f0ff40 inset;
+  text-shadow: 0 0 5px #00f0ff;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  z-index: 10;
+}
+
+
+
+#startButton:hover {
+  background: rgba(0, 240, 255, 0.2);
+  box-shadow: 0 0 25px #00f0ff, 0 0 60px #00f0ff80 inset;
+  transform: scale(1.05);
+}
+
+#pvpButton {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 22px;
+  padding: 25px 35px;
+  border: 2px solid #00f0ff;
+  color: #00f0ff;
+  background: transparent;
+  border-radius: 50px;
+  box-shadow: 0 0 15px #00f0ff80, 0 0 30px #00f0ff40 inset;
+  text-shadow: 0 0 5px #00f0ff;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  z-index: 10;
+}
+#pvpButton:hover {
+  background: rgba(0, 240, 255, 0.2);
+  box-shadow: 0 0 25px #00f0ff, 0 0 60px #00f0ff80 inset;
+  transform: scale(1.05);
+}
+
+#neuralButton {
+  background-color: #3a3;
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  font-size: 18px;
+  border-radius: 8px;
+  margin-top: 10px;
+  cursor: pointer;
+}
+#neuralButton:hover {
+  background-color: #2c2;
+}
+
+
+/* Стили для игрового канваса */
+#gameCanvas {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+#loading-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: red;
+}
+
+/* Стили для счетчиков ресурсов */
+#resourceCounters {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  background: #222;
+  color: #fff;
+  padding: 5px 10px;
+  display: flex;
+  justify-content: center; /* блоки располагаются по сторонам */
+  align-items: center;
+  font-size: 16px;
+  z-index: 10;
+}
+
+/* Ограничение переполнения текста */
+#playerResources,
+#zoneControlCounter {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Стили для меню строительства */
+#buildMenu {
+  display: grid;
+  grid-template-rows: repeat(1, auto); /* 🔥 Две строки! */
+  grid-auto-flow: column;               /* 🔥 Идём по горизонтали */
+  position: fixed;
+  background: rgba(50,50,50,0.8);
+  padding: 5px;
+  border-radius: 30px;
+  z-index: 20;
+  max-width: 150vw;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+
+
+#buildMenu div {
+  padding: 2px 2px;
+  margin: 2px;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+#buildMenu div:hover {
+  transform: scale(1.05);
+  background: rgba(0,255,0,0.1);
+}
+
+
+#baseNavButton,
+#base2NavButton,
+#base3NavButton {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 14px;
+  padding: 5px 16px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 2px solid #00f0ff;
+  color: #00f0ff;
+  border-radius: 10px;
+  box-shadow: 0 0 6px #00f0ff88, inset 0 0 6px #00f0ff55;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#baseNavButton:hover,
+#base2NavButton:hover,
+#base3NavButton:hover {
+  background: rgba(0, 240, 255, 0.2);
+  transform: scale(1.05);
+  box-shadow: 0 0 12px #00f0ff, inset 0 0 8px #00f0ff88;
+}
+
+
+/* Стили для зоны строительства */
+#buildZone {
+  position: fixed;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.3);
+  border: 1px dashed #fff;
+  z-index: 15;
+  box-shadow: 0 0 10px rgba(255,255,255,0.5);
+  pointer-events: none;
+}
+
+/* Медиа-запрос для устройств с шириной экрана до 768px */
+@media (max-width: 768px) {
+  #resourceCounters {
+    font-size: 12px;
+    padding: 3px;
+  }
+  #buildMenu div {
+    padding: 3px 3px;
+    margin: 1px;
+  }
+}
+
+/* Медиа-запрос с учетом безопасных областей (safe areas) для iPhone с вырезами (iPhone X и новее) */
+@media (max-width: 768px) and (orientation: portrait) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+/* Добавьте эти стили в style.css */
+
+/* Стили для экрана представления (Presentation Screen) */
+/* Стили для экрана представления */
+#presentationScreen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  /* Добавляем плавный переход для изменения прозрачности */
+  opacity: 1;
+  transition: opacity 1s ease-out;
+}
+
+/* Стили для анимации букв логотипа */
+.logo-letter {
+  opacity: 0;
+  transform: translateY(-50px);
+  transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+}
+
+/* Канвас для матричного эффекта занимает весь экран */
+#matrixCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  background: transparent;
+}
+
+/* Контейнер для логотипа */
+#logoContainer {
+  position: relative;
+  z-index: 2;
+  margin-bottom: 20px;
+}
+
+/* Стили для текста представления */
+#presentationText {
+  position: relative;
+  z-index: 2;
+  text-align: center;
+}
+
+#presentationTitle {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 48px;
+  margin: 0;
+  color: #0f0;
+}
+
+#presentsText {
+  font-family: monospace;
+  font-size: 24px;
+  margin-top: 10px;
+  color: #0f0;
+  opacity: 0;
+}
+
+/* Стили для основного загрузочного экрана (он появится после представления) */
+/* Добавьте эти стили в style.css для анимации логотипа с эффектом "выпадения" букв */
+#logoSvg {
+  overflow: visible;
+}
+
+
+/* Стили для анимации букв логотипа */
+.logo-letter {
+  opacity: 0;
+  /* Начальное transform будет установлен в JS */
+  transition: transform 1s ease-out, opacity 1s ease-out;
+}
+
+
+/* Стили для обёртки элементов управления */
+#controlsWrapper {
+  transition: opacity 0.5s ease;
+}
+
+/* Если нужно, можно явно задать, что по умолчанию элементы управления скрыты */
+#controlsWrapper.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Остальные стили остаются без изменений, включая стили для leftControlPanel и rightControlPanel */
+
+#perkSlots {
+  position: fixed;
+  top: 40px;          /* отступ от верха */
+  right: 70px;        /* отступ от правого края */
+  display: flex;
+  flex-direction: row; /* располагаем слоты вертикально */
+  gap: 10px;          /* расстояние между слотами */
+  z-index: 1000;
+}
+
+
+.perk-slot {
+  width: 40px;
+  height: 40px;
+  background-color: rgba(255,255,255,0.08);
+  border: 1px solid #0ff;
+  border-radius: 4px;
+  background-size: cover;
+  cursor: pointer;
+}
+
+.perk-slot.cooldown {
+  filter: grayscale(100%) brightness(0.5);
+}
+.perk-slot.available {
+  filter: drop-shadow(0 0 5px cyan);
+}
+
+
+#perkMenu {
+  position: fixed;
+  top: 30px;           /* выравниваем по тому же отступу, что и слоты */
+  right: 150px;         /* смещаем влево от правого края на ширину слотов + gap */
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid #0ff;
+  padding: 10px;
+  display: flex;
+  gap: 8px;
+  z-index: 1000;
+  transform: none;     /* убираем translate */
+}
+
+
+.perk-icon {
+  width: 40px;
+  height: 40px;
+  background-color: rgba(255,255,255,0.05);
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background-size: cover;
+  cursor: pointer;
+}
+
+/* ========== Fullscreen Toggle Icon Button ========== */
+#fsToggle {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 1002;
+  width: 12px;
+  height: 14px;
+  padding: 0;
+  background: rgba(0,0,0,0.6);
+/*  border: 1px solid #0ff;*/
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 14px;
+  text-align: center;
+  color: #0ff;
+  cursor: pointer;
+}
+#fsToggle:hover {
+  background: rgba(0,0,0,0.8);
+}
+/* Адаптация под безопасные области на iOS */
+@media (max-width: 768px) {
+  #fsToggle {
+    top: env(safe-area-inset-top, 8px);
+    right: env(safe-area-inset-right, 8px);
+    width: 16px;
+    height: 16px;
+    font-size: 16px;
+    line-height: 16px;
+  }
+}
+
+/* Отключаем возможность выделения текста и системные всплывашки */
+#buildingTooltip,
+.tooltip,
+#buildMenu div {
+  -webkit-user-select: none;      /* Safari, Chrome */
+  -moz-user-select: none;         /* Firefox */
+  -ms-user-select: none;          /* IE10+ */
+  user-select: none;              /* стандарт */
+  
+  -webkit-touch-callout: none;    /* отключает вызов лупы/словари на iOS */
+  touch-callout: none;            /* для прочих WebKit-браузеров */
+}
+
+
+/* Главный контейнер чата */
+#chat-container {
+  position: absolute;
+  top: 50px;
+  left: 10px;
+  width: 400px;
+  z-index: 20;
+  font-family: sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* Верхняя панель: выбор канала, ввод и кнопка */
+#chat-controls {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+#chat-channel {
+  width: 80px;
+  background: transparent;
+  color: white;
+  border: 1px solid white;
+  font-size: 13px;
+  padding: 2px 4px;
+}
+
+#chat-input {
+  flex: 1;
+  padding: 2px 6px;
+  font-size: 13px;
+  background: transparent;
+  border: none;
+  color: white;
+  outline: none;
+  border-bottom: 1px solid white;
+}
+
+#chat-send {
+  width: 32px;
+  background: none;
+  border: none;
+  color: white;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+/* История чата (сворачиваемая) */
+#chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  color: white;
+  max-height: 160px;
+  overflow-y: auto;
+  text-shadow: 1px 1px 2px black;
+}
+
+/* Одна строка в истории */
+.chat-line {
+  animation: fadeInChat 0.2s ease-in;
+}
+
+/* Кнопка сворачивания истории */
+#chat-toggle {
+  margin-top: 6px;
+  font-size: 12px;
+  background: none;
+  color: #ccc;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+/* Всплывающее сообщение (временное) */
+#chat-float {
+  position: absolute;
+  top: 170px; /* ниже поля и истории */
+  left: 10px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.chat-float-entry {
+  background: rgba(0, 0, 0, 0.6);
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: white;
+  font-size: 14px;
+  text-shadow: 1px 1px 2px black;
+  animation: fadeInChat 0.2s ease-in;
+  opacity: 1;
+  transition: opacity 1s ease;
+}
+
+.chat-float-entry.fade-out {
+  opacity: 0;
+}
+
+/* Анимация появления */
+@keyframes fadeInChat {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Отключаем предупреждение об ориентации на экранах шире 768px (ПК и планшеты) */
+@media (min-width: 768px) {
+  #orientationWarning {
+    display: none !important;
+  }
+}
