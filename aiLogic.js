@@ -871,49 +871,21 @@ function attemptToBuildRepairWorkshop() {
   }
 }
 
-// Функция для расчёта резервируемых ресурсов для владельца (например, "ai")
-// Изменённая функция резервирования ресурсов для ИИ,
-// где базовый резерв уменьшен, а коэффициенты влияния прогресса и повреждений снижены.
+// ✅ Резерв отключён. Игрок и ИИ тратят ресурсы свободно.
 function getReservedResources(owner) {
-  // Уменьшенный базовый резерв
-  const baseReserve = { gold: 10, silicon: 10, plasma: 10 };
-
-  // Фактор прогресса игры: от 0 до 1 за первые 10 минут
-  const gameProgressFactor = Math.min(1, performance.now() / (2 * 60 * 1000));
-
-  // Оценка доли повреждённых зданий
-  const totalBuildings = gameState.buildings.filter(b => b.owner === owner).length;
-  const damagedBuildings = gameState.buildings.filter(
-    b => b.owner === owner && (b.health / b.maxHealth) < 0.7
-  ).length;
-  const damageFactor = totalBuildings > 0 ? (damagedBuildings / totalBuildings) : 0;
-  
-  // Дополнительный резерв только если повреждений больше 30%, но с пониженным коэффициентом
-  const additionalReserveFactor = (damageFactor > 0.3) ? damageFactor * 0.5 : 0;
-
-  return {
-    gold: baseReserve.gold * (1 + gameProgressFactor + additionalReserveFactor),
-    silicon: baseReserve.silicon * (1 + gameProgressFactor + additionalReserveFactor),
-    plasma: baseReserve.plasma * (1 + gameProgressFactor + additionalReserveFactor)
-  };
+  return { gold: 0, silicon: 0, plasma: 0 };
 }
 
-
-
-// Функция, проверяющая возможность потратить ресурсы, не опустив баланс ниже резерва
+// Функция, проверяющая возможность потратить ресурсы (ЧИСТАЯ МАТЕМАТИКА, БЕЗ РЕЗЕРВА)
 function canSpendResources(cost, owner) {
-  // Выбираем объект с ресурсами для ИИ или игрока
   const resources = getResourcesByOwner(owner);
-
-  const reserved = getReservedResources(owner);
   
   return (
-    (resources.gold - cost.gold) >= reserved.gold &&
-    (resources.silicon - cost.silicon) >= reserved.silicon &&
-    (resources.plasma - cost.plasma) >= reserved.plasma
+    (resources.gold || 0) >= (cost.gold || 0) &&
+    (resources.silicon || 0) >= (cost.silicon || 0) &&
+    (resources.plasma || 0) >= (cost.plasma || 0)
   );
 }
-
 
 // Функция добавления заказа в очередь производства для здания
 function aiEnqueueMilitaryUnit(unitType, building) {
@@ -1841,9 +1813,16 @@ function attemptToHireMilitaryUnits() {
 }
 
 
+// 🔥 ИСПРАВЛЕНИЕ: Защита от спама очереди построек
 function attemptToBuild(buildingType, requiredCount) {
-  // Если количество зданий ниже требуемого, попытаемся построить новое
-  if (countBuildings(buildingType, "ai") < requiredCount) {
+  // 1. Считаем здания, которые уже есть в gameState (построенные или строящиеся)
+  const builtCount = countBuildings(buildingType, "ai");
+  
+  // 2. Считаем здания, которые УЖЕ добавлены в очередь на постройку, но ещё не построены
+  const queuedCount = buildQueue.filter(q => q.type === buildingType).length;
+  
+  // 3. Запускаем строительство только если (построено + в очереди) меньше, чем нужно
+  if (builtCount + queuedCount < requiredCount) {
     const pos = randomNearbyPosition(aiBase, 130);
     scheduleAIBuilding(buildingType, pos.x, pos.y, 0);
   }

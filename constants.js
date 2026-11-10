@@ -201,27 +201,27 @@ const FIGHTER_VISION_RANGE = 210;
 const ELITE_VISION_RANGE =  530;
 
 const MISSILE_CONFIG = { 
-  speed: 130,          // Скорость полёта ракеты
-  lifetime: 4,         // Время жизни (секунд)
-  damage: 38,          // Основной урон при попадании
-  splashRadius: 50,    // Радиус действия splash-урона
-  splashDamage: 15     // Урон по объектам в области
+  speed: 170,          // Скорость полёта ракеты
+  lifetime: 3,         // Время жизни (секунд)
+  damage: 34,          // Основной урон при попадании
+  splashRadius: 30,    // Радиус действия splash-урона
+  splashDamage: 7     // Урон по объектам в области
 };
 
 const MELEE_BULLET_CONFIG = {
-  speed: 250,     // скорость пули (можно настроить)
+  speed: 270,     // скорость пули (можно настроить)
   lifetime: 0.8,  // время жизни пули (короткое, так как это ближний бой)
-  damage: 5       // урон одной пули
+  damage: 8       // урон одной пули
 };
 
 
 // Дополнительная константа для артиллерии
 const ARTILLERY_BULLET_CONFIG = {
-  speed: 250,          // скорость снаряда
-  lifetime: 4,       // время жизни (секунд)
+  speed: 120,          // скорость снаряда
+  lifetime: 6,       // время жизни (секунд)
   damage: 40,          // базовый урон
-  splashRadius: 80,    // радиус splash-урона
-  splashDamage: 20     // урон по объектам в области
+  splashRadius: 40,    // радиус splash-урона
+  splashDamage: 10     // урон по объектам в области
 };
 
 // Дополнительные константы для динамичного поведения fighter

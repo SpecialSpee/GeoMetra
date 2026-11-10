@@ -645,14 +645,13 @@ window.addEventListener("load", () => {
 // ФУНКЦИИ НАЙМА ЮНИТОВ (ПОЛНЫЙ ОРИГИНАЛЬНЫЙ КОД)
 // ============================================================
 
+// ✅ Показывает реальный дефицит, без искусственного резерва
 function getMissingResources(cost, owner) {
   const resources = getResourcesByOwner(owner);
-  const reserved = typeof getReservedResources === "function" ? getReservedResources(owner) : { gold: 0, silicon: 0, plasma: 0 };
-
   return {
-    gold: Math.ceil(Math.max(0, cost.gold + reserved.gold - resources.gold)),
-    silicon: Math.ceil(Math.max(0, cost.silicon + reserved.silicon - resources.silicon)),
-    plasma: Math.ceil(Math.max(0, cost.plasma + reserved.plasma - resources.plasma))
+    gold: Math.max(0, (cost.gold || 0) - (resources.gold || 0)),
+    silicon: Math.max(0, (cost.silicon || 0) - (resources.silicon || 0)),
+    plasma: Math.max(0, (cost.plasma || 0) - (resources.plasma || 0))
   };
 }
 
