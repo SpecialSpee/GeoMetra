@@ -7,6 +7,14 @@
   if (window.TrainingBot) {
     return;
   }
+	
+	  // 🔥 PBT: Профили противников для эволюционного обучения
+  window.OPPONENT_PROFILES = [
+    { name: "Rush", aggression: 0.9, eco: 0.3, expand: 0.1 },
+    { name: "Turtle", aggression: 0.2, eco: 0.9, expand: 0.4 },
+    { name: "Balanced", aggression: 0.5, eco: 0.6, expand: 0.5 },
+    { name: "Macro", aggression: 0.4, eco: 0.8, expand: 0.8 }
+  ];
 
   const TrainingBot = {
     active: false,
@@ -28,7 +36,9 @@
       this.phase = 0;
       this.startTime = performance.now();
       this.lastActionTime = performance.now();
-      //console.log("[TrainingBot] ⚡ АКТИВИРОВАН! Режим: Сверхбыстрый и агрессивный.");
+      // 🔥 PBT: Случайный выбор профиля при каждом запуске
+      this.profile = window.OPPONENT_PROFILES[Math.floor(Math.random() * window.OPPONENT_PROFILES.length)];
+      console.log(`[TrainingBot] 🎭 Загружен профиль: ${this.profile.name} (Agg: ${this.profile.aggression}, Eco: ${this.profile.eco})`);
     },
 
     stop: function () {
@@ -74,8 +84,9 @@
         if (pos) { placeBuilding(pos.x, pos.y, "repairWorkshop", "player"); }
       } 
       
-      // Жадный найм рабочих
-      if (workers < 15) {
+       // 🔥 PBT: Адаптивный найм рабочих в зависимости от профиля
+      const targetWorkers = Math.floor(15 * this.profile.eco);
+      if (workers < targetWorkers) {
         this.hireWorker();
       }
     },
@@ -98,7 +109,7 @@
         if (typeof canSpendResources !== "function") {
           console.warn("[Bot Debug] ❌ ОШИБКА: Функция canSpendResources не найдена!");
         } else if (!canSpendResources(BARRACKS_COST, "player")) {
-          console.warn(`[Bot Debug] ❌ ОШИБКА: Не хватает ресурсов! Нужно: ${JSON.stringify(BARRACKS_COST)}`);
+          //console.warn(`[Bot Debug] ❌ ОШИБКА: Не хватает ресурсов! Нужно: ${JSON.stringify(BARRACKS_COST)}`);
         } else {
           const pos = this.findBuildPos("barracks");
           if (!pos) {
@@ -219,9 +230,10 @@
         this.hireAssault();
       }
 
-      // 🔥 УСКОРЕНИЕ: Атакуем меньшими, но более частыми волнами (каждые 1-2 секунды)
-      if (army.length >= 8) {
-        this.sendAttackGroup(army.slice(0, 10));
+      // 🔥 PBT: Адаптивный размер атаки
+      const attackThreshold = Math.max(4, Math.floor(12 * (1.2 - this.profile.aggression)));
+      if (army.length >= attackThreshold) {
+        this.sendAttackGroup(army.slice(0, Math.floor(10 * this.profile.aggression) + 2));
       }
     },
 
