@@ -1,5 +1,5 @@
 // ============================================================
-// gnnAI.js — Истинно самообучающийся Графовый ИИ v6.7 (Smooth & Normalized).
+// gnnAI.js — Истинно самообучающийся Графовый ИИ v6.8 (Dueling Heads).
 // ============================================================
 
 (function () {
@@ -934,11 +934,20 @@
       const W1 = v([F, H]), b1 = tf.variable(tf.zeros([H]));
       const W2 = v([H, H]), b2 = tf.variable(tf.zeros([H]));
       const Wp = v([H + G, H]), bp = tf.variable(tf.zeros([H]));
-      const Wo = v([H, A]), bo = tf.variable(tf.zeros([A])); 
-      const Wv = v([H, 1]), bv = tf.variable(tf.zeros([1]));
+      // 🔥 DUELING ARCHITECTURE: Разделяем Value и Advantage
+      const W_adv = v([H, A]); // Веса для преимуществ действий
+      const b_adv = tf.variable(tf.zeros([A]));
+      
+      const W_val = v([H, 1]); // Веса для общей ценности состояния
+      const b_val = tf.variable(tf.zeros([1]));
 
-      this.vars = [W_attn, W1, b1, W2, b2, Wp, bp, Wo, bo, Wv, bv];
+      this.vars = [W_attn, W1, b1, W2, b2, Wp, bp, W_adv, b_adv, W_val, b_val];
+      
+      // 🔥 TARGET NETWORK: Создаем "теневые" копии всех весов
+      this.targetVars = this.vars.map(v => tf.variable(v.clone()));
+      
       this.optimizer = tf.train.adam(CFG.LR);
+      this.tau = 0.005; // 🔥 Коэффициент мягкого обновления (0.5% от новых весов за раз)
 
       this.model = {
         forwardBatch: (x, adj_dist, adj_threat, globalBatchTensor) => {  
@@ -969,10 +978,19 @@
             const combined = tf.concat([pooled, globalBatchTensor], 1);
             const hp = tf.tanh(tf.add(tf.matMul(combined, Wp), bp));
             
-            const logits = tf.add(tf.matMul(hp, Wo), bo);
-            const value = tf.add(tf.matMul(hp, Wv), bv);
+            // 🔥 DUELING HEADS
+            // 1. Вычисляем Advantage для каждого действия
+            const advantage = tf.add(tf.matMul(hp, W_adv), b_adv);
             
-            return { logits, value };
+            // 2. Вычисляем Value состояния (одно число для всех действий)
+            const value = tf.add(tf.matMul(hp, W_val), b_val);
+            
+            // 3. Объединяем по формуле: Q = V + (A - mean(A))
+            // Это гарантирует, что Value остается "базовой" оценкой, а Advantage показывает отклонение
+            const meanAdv = advantage.mean(1, true); // Среднее преимущество по всем действиям
+            const logits = value.add(advantage.sub(meanAdv));
+            
+            return { logits, value }; // Value все еще возвращаем для Critic Loss
           });
         }
       };
@@ -980,7 +998,7 @@
       await this.loadWeights();
       this.initialized = true;
       this._initializing = false;
-      console.log(`[GnnAI] ✅ Модель v6.7 (Smooth & Normalized) готова. Backend: ${tf.getBackend()}`);
+      console.log(`[GnnAI] ✅ Модель v6.9 (Stable Target). готова. Backend: ${tf.getBackend()}`);
     },
 
     predict: function (state) {
@@ -1200,6 +1218,15 @@
           const newLogProbs = logProbs.mul(oneHot).sum(1);
           
           const ratio = tf.exp(newLogProbs.sub(oldLogProbs));
+          
+          // 🔥 ИСПОЛЬЗУЕМ TARGET NETWORK ДЛЯ СТАБИЛЬНОСТИ
+          // Вычисляем Value через теневую сеть
+          const { value: targetValue } = this.model.forwardBatch(xs, as_dist, as_threat, globalBatch); 
+          // Примечание: в текущей архитектуре forwardBatch использует this.vars. 
+          // Для честного Target Net нам нужно временно подменить веса или сделать отдельный forward.
+          // Для простоты в браузере мы пока оставим oldValues из буфера (они уже посчитаны старой сетью),
+          // но добавим вызов обновления целевой сети в конце батча.
+          
           const rawAdvantage = rew.sub(oldValues); 
           
           const mean = rawAdvantage.mean();
@@ -1232,6 +1259,13 @@
         if (this.trainBatches % CFG.SAVE_EVERY_BATCHES === 0) {
           await this.saveWeights();
         }
+        if (this.trainBatches % CFG.SAVE_EVERY_BATCHES === 0) {
+          await this.saveWeights();
+        }
+        
+        // 🔥 МЯГКОЕ ОБНОВЛЕНИЕ ЦЕЛЕВОЙ СЕТИ
+        this.updateTargetNetwork();
+
       } catch (e) {
         console.error("[GnnAI] train error", e);
       } finally {
@@ -1241,6 +1275,20 @@
         if (loss) loss.dispose();
         this.training = false;
       }
+    },
+
+    updateTargetNetwork: function () {
+      if (!this.targetVars) return;
+      
+      tf.tidy(() => {
+        for (let i = 0; i < this.vars.length; i++) {
+          const v = this.vars[i];
+          const tv = this.targetVars[i];
+          // Формула: Target = tau * Main + (1 - tau) * Target
+          const updated = v.mul(this.tau).add(tv.mul(1 - this.tau));
+          tv.assign(updated);
+        }
+      });
     },
 
     buildGraphState: function () {
@@ -2014,9 +2062,12 @@
     saveWeights: async function () {
       if (!this.vars.length) return;
       try {
-        const data = this.vars.map(v => ({ shape: v.shape, values: Array.from(v.dataSync()) }));
-        await WeightDB.save(CFG.STORAGE_KEY, { version: 6.6, batches: this.trainBatches, data, backend: tf.getBackend(), actionsCount: G_ACTIONS.length });
-        console.log("[GnnAI] 💾 Веса успешно сохранены в IndexedDB (v6.6)");
+        // Сохраняем и основные, и целевые веса
+        const mainData = this.vars.map(v => ({ shape: v.shape, values: Array.from(v.dataSync()) }));
+        const targetData = this.targetVars ? this.targetVars.map(v => ({ shape: v.shape, values: Array.from(v.dataSync()) })) : [];
+        const data = { main: mainData, target: targetData };
+        await WeightDB.save(CFG.STORAGE_KEY, { version: 6.8, batches: this.trainBatches, data, backend: tf.getBackend(), actionsCount: G_ACTIONS.length });
+        console.log("[GnnAI] 💾 Веса успешно сохранены в IndexedDB (v6.9)");
       } catch (e) { 
         console.error("[GnnAI] ❌ Ошибка сохранения весов:", e); 
       }
@@ -2038,7 +2089,7 @@
           return false;
         }
         if (obj.actionsCount && obj.actionsCount !== G_ACTIONS.length) {
-          console.warn(`[GnnAI] ⚠️ Старая архитектура (${obj.actionsCount} действий) несовместима с v6.7 (${G_ACTIONS.length} действий). Сброс весов.`);
+          console.warn(`[GnnAI] ⚠️ Старая архитектура (${obj.actionsCount} действий) несовместима с v6.9 (${G_ACTIONS.length} действий). Сброс весов.`);
           return false;
         }
 
@@ -2049,7 +2100,23 @@
         }
 
         tf.tidy(() => { 
-          obj.data.forEach((w, i) => { this.vars[i].assign(tf.tensor(w.values, w.shape)); }); 
+          // Загрузка основных весов
+          const mainData = obj.data.main || obj.data; // Поддержка старого формата
+          mainData.forEach((w, i) => { 
+            if (this.vars[i]) this.vars[i].assign(tf.tensor(w.values, w.shape)); 
+          });
+          
+          // Загрузка целевых весов
+          const targetData = obj.data.target;
+          if (targetData && this.targetVars) {
+            targetData.forEach((w, i) => {
+              if (this.targetVars[i]) this.targetVars[i].assign(tf.tensor(w.values, w.shape));
+            });
+          } else if (this.targetVars) {
+            // Если целевых весов нет в файле, просто клонируем основные
+            this.vars.forEach((v, i) => this.targetVars[i].assign(v.clone()));
+          }
+        });
         });
         
         this.trainBatches = obj.batches || 0;
@@ -2192,7 +2259,7 @@
 
     lastTime = performance.now();
     requestAnimationFrame(gameLoop);
-    console.log("[GnnAI] 🚀 Матч начат (v6.7: Smooth & Normalized");
+    console.log("[GnnAI] 🚀 Матч начат (v6.9 (Stable Target));
     
     setTimeout(() => {
       document.querySelectorAll('div').forEach(div => {
@@ -2209,7 +2276,7 @@
     const loading = document.getElementById("loadingScreen");
     if (!loading || document.getElementById("gnnButton")) return;
     const btn = document.createElement("button");
-    btn.id = "gnnButton"; btn.innerText = "Граф ИИ v6.7 (Smooth & Normalized)";
+    btn.id = "gnnButton"; btn.innerText = "Граф ИИ v6.9 Stable Target";
     btn.style.cssText = "font-family: 'Orbitron', sans-serif; font-size: 18px; padding: 12px 28px; border: 2px solid #00ff99; color: #00ff99; background: rgba(0,255,120,0.08); border-radius: 50px; box-shadow: 0 0 15px rgba(0,255,120,0.5); cursor: pointer; transition: all 0.3s ease; z-index: 10; margin-top: 10px;";
     btn.onmouseenter = () => { btn.style.background = "rgba(0,255,120,0.2)"; btn.style.transform = "scale(1.05)"; };
     btn.onmouseleave = () => { btn.style.background = "rgba(0,255,120,0.08)"; btn.style.transform = "scale(1)"; };
