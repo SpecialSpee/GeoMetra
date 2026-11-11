@@ -71,7 +71,7 @@ let gameState = {
   capturePoints: [],          // ← И ЭТУ (для точек захвата)
   recentBuilds: [],           // ← И ЭТУ (для ИИ)
   recentLosses: [],           // ← И ЭТУ
-  playerResources: { gold: 1000, silicon: 1000, plasma: 500 },
+  playerResources: { gold: 100, silicon: 100, plasma: 50 },
   aiResources: { gold: 100, silicon: 100, plasma: 50 },
   playerScore: 0,
   attackers: [],
