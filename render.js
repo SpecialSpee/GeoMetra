@@ -1,5 +1,5 @@
 // ============================================================
-// render.js — Отрисовка и Canvas
+// render.js — Отрисовка и Canvas (v7.4 Fixed)
 // ============================================================
 
 // Массив с путями к фоновым изображениям
@@ -20,6 +20,7 @@ const selectedImage = backgroundImages[randomIndex];
 // Создание объекта изображения и установка источника
 const backgroundImage = new Image();
 backgroundImage.src = selectedImage;
+
 const OWNER_COLORS = {
   player1: { base: "#00FF00", hull: "#00AA00", glow: "rgba(0, 255, 0, 0.5)", accent: "#00FF00" },
   player2: { base: "#FF0000", hull: "#AA0000", glow: "rgba(255, 0, 0, 0.5)", accent: "#FF0000" },
@@ -421,10 +422,7 @@ function drawCapturePoints() {
 function renderShockZones() {
   const now = performance.now();
   shockZones = shockZones.filter(zone => {
-    // 🔥 ЗАЩИТА: проверяем, что zone и его координаты существуют
-    if (!zone || typeof zone.x !== 'number' || typeof zone.y !== 'number') {
-      return false;
-    }
+    if (!zone || typeof zone.x !== 'number' || typeof zone.y !== 'number') return false;
     
     const elapsed = now - zone.start;
     if (elapsed > 2000) return false;
@@ -434,47 +432,29 @@ function renderShockZones() {
     const alpha = 1 - progress;
 
     ctx.save();
-
-    // Внешнее свечение
     const glowGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.radius);
     glowGrad.addColorStop(0, `rgba(0, 255, 255, ${alpha * 0.3})`);
     glowGrad.addColorStop(0.7, `rgba(0, 200, 255, ${alpha * 0.15})`);
     glowGrad.addColorStop(1, `rgba(0, 150, 255, 0)`);
     ctx.fillStyle = glowGrad;
-    ctx.beginPath();
-    ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.fill();
 
-    // Кольцо волны
     ctx.strokeStyle = `rgba(0, 255, 255, ${alpha})`;
     ctx.lineWidth = 3;
-    ctx.shadowColor = "#00ffff";
-    ctx.shadowBlur = 15;
-    ctx.beginPath();
-    ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.shadowColor = "#00ffff"; ctx.shadowBlur = 15;
+    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.stroke();
 
-    // 🔥 ИСПРАВЛЕНИЕ: Рисуем молнии корректно
     if (zone.lightningBolts && Array.isArray(zone.lightningBolts)) {
       zone.lightningBolts.forEach(boltObj => {
-        // boltObj - это объект { points: [...], life: ... }
-        // Поэтому берем boltObj.points, а не boltObj[0]
         const pts = boltObj.points;
         if (!pts || pts.length === 0) return;
-        
         ctx.strokeStyle = `rgba(200, 255, 255, ${alpha * 0.9})`;
-        ctx.lineWidth = 2;
-        ctx.shadowColor = "#ffffff";
-        ctx.shadowBlur = 10;
-        ctx.beginPath();
-        ctx.moveTo(pts[0].x, pts[0].y); // <-- Здесь была ошибка!
-        for (let i = 1; i < pts.length; i++) {
-          ctx.lineTo(pts[i].x, pts[i].y);
-        }
+        ctx.lineWidth = 2; ctx.shadowColor = "#ffffff"; ctx.shadowBlur = 10;
+        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
         ctx.stroke();
       });
     }
-
     ctx.restore();
     return true;
   });
@@ -484,63 +464,37 @@ function renderBombZones() {
   const now = performance.now();
   bombZones = bombZones.filter(zone => {
     const elapsed = now - zone.start;
-
     if (!zone.exploded) {
-      // Фаза предупреждения — пульсирующая зона
       const warningProgress = elapsed / zone.warningTime;
       const pulse = Math.sin(warningProgress * Math.PI * 4) * 0.5 + 0.5;
       const currentRadius = zone.maxRadius * (0.3 + warningProgress * 0.7);
-
       ctx.save();
-
-      // Красное предупреждающее свечение
       const warnGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, currentRadius);
       warnGrad.addColorStop(0, `rgba(255, 50, 0, ${0.4 + pulse * 0.3})`);
       warnGrad.addColorStop(0.6, `rgba(255, 100, 0, ${0.2 + pulse * 0.2})`);
       warnGrad.addColorStop(1, `rgba(255, 0, 0, 0)`);
       ctx.fillStyle = warnGrad;
-      ctx.beginPath();
-      ctx.arc(zone.x, zone.y, currentRadius, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Пульсирующее кольцо
+      ctx.beginPath(); ctx.arc(zone.x, zone.y, currentRadius, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = `rgba(255, ${100 - pulse * 100}, 0, ${0.8 + pulse * 0.2})`;
-      ctx.lineWidth = 2 + pulse * 2;
-      ctx.shadowColor = "#ff4400";
-      ctx.shadowBlur = 20;
-      ctx.beginPath();
-      ctx.arc(zone.x, zone.y, currentRadius, 0, Math.PI * 2);
-      ctx.stroke();
-
-      // Таймер в центре
+      ctx.lineWidth = 2 + pulse * 2; ctx.shadowColor = "#ff4400"; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.arc(zone.x, zone.y, currentRadius, 0, Math.PI * 2); ctx.stroke();
       const remaining = Math.max(0, (zone.warningTime - elapsed) / 1000);
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 20px Orbitron";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.shadowColor = "#ff0000";
-      ctx.shadowBlur = 10;
+      ctx.fillStyle = "#ffffff"; ctx.font = "bold 20px Orbitron"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.shadowColor = "#ff0000"; ctx.shadowBlur = 10;
       ctx.fillText(remaining.toFixed(1), zone.x, zone.y);
-
       ctx.restore();
       return true;
     } else {
-      // Фаза взрыва — расширяющееся кольцо
       const explosionProgress = Math.min(1, (elapsed - zone.warningTime) / 1000);
       const alpha = 1 - explosionProgress;
-
       ctx.save();
-
       const expGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.maxRadius * explosionProgress);
       expGrad.addColorStop(0, `rgba(255, 255, 200, ${alpha})`);
       expGrad.addColorStop(0.3, `rgba(255, 150, 0, ${alpha * 0.8})`);
       expGrad.addColorStop(0.7, `rgba(255, 50, 0, ${alpha * 0.4})`);
       expGrad.addColorStop(1, `rgba(255, 0, 0, 0)`);
       ctx.fillStyle = expGrad;
-      ctx.beginPath();
-      ctx.arc(zone.x, zone.y, zone.maxRadius * explosionProgress, 0, Math.PI * 2);
-      ctx.fill();
-
+      ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.maxRadius * explosionProgress, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
       return explosionProgress < 1;
     }
@@ -552,59 +506,35 @@ function renderReconZones() {
   reconZones = reconZones.filter(zone => {
     const elapsed = now - zone.start;
     if (elapsed > zone.duration) return false;
-
     const progress = elapsed / zone.duration;
     const alpha = 1 - progress;
-    zone.radius = zone.maxRadius * Math.min(1, progress * 3); // Быстрое расширение
+    zone.radius = zone.maxRadius * Math.min(1, progress * 3);
     zone.scanAngle = (zone.scanAngle || 0) + 0.05;
-
     ctx.save();
-
-    // Сканирующая волна
     const scanGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.radius);
     scanGrad.addColorStop(0, `rgba(0, 255, 150, ${alpha * 0.1})`);
     scanGrad.addColorStop(0.8, `rgba(0, 255, 150, ${alpha * 0.3})`);
     scanGrad.addColorStop(1, `rgba(0, 255, 150, 0)`);
     ctx.fillStyle = scanGrad;
-    ctx.beginPath();
-    ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Вращающийся сканер
-    ctx.strokeStyle = `rgba(0, 255, 150, ${alpha * 0.6})`;
-    ctx.lineWidth = 2;
-    ctx.shadowColor = "#00ff88";
-    ctx.shadowBlur = 10;
-    ctx.beginPath();
-    ctx.moveTo(zone.x, zone.y);
-    ctx.lineTo(
-      zone.x + Math.cos(zone.scanAngle) * zone.radius,
-      zone.y + Math.sin(zone.scanAngle) * zone.radius
-    );
+    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(0, 255, 150, ${alpha * 0.6})`; ctx.lineWidth = 2; ctx.shadowColor = "#00ff88"; ctx.shadowBlur = 10;
+    ctx.beginPath(); ctx.moveTo(zone.x, zone.y);
+    ctx.lineTo(zone.x + Math.cos(zone.scanAngle) * zone.radius, zone.y + Math.sin(zone.scanAngle) * zone.radius);
     ctx.stroke();
-
-    // Кольцо
-    ctx.strokeStyle = `rgba(0, 255, 150, ${alpha * 0.4})`;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
-    ctx.stroke();
-
+    ctx.strokeStyle = `rgba(0, 255, 150, ${alpha * 0.4})`; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
     return true;
   });
 }
 
 function spawnSupernovaEffect(obj) {
-  // Простой визуальный эффект исчезновения ресурса или взрыва бомбы
   for (let i = 0; i < 20; i++) {
     const angle = Math.random() * Math.PI * 2;
     const speed = 50 + Math.random() * 100;
     gameState.particles.push({
-      x: obj.x, y: obj.y,
-      vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
-      life: 1.0, maxLife: 1.0, radius: 3,
-      color: obj.color || "#ffffff", type: "spark"
+      x: obj.x, y: obj.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+      life: 1.0, maxLife: 1.0, radius: 3, color: obj.color || "#ffffff", type: "spark"
     });
   }
 }
@@ -623,14 +553,11 @@ const barracks3Image = new Image(); barracks3Image.src = "/src/models/barracks3.
 // ОТРИСОВКА ТУМАНА ВОЙНЫ
 // ============================================================
 function renderPersistentFog() {
-  // Защита от ошибок, если массивы еще не инициализированы
   if (!fogMap || !fogMap.length || !persistentFogMap || !persistentFogMap.length) return;
   
   ctx.save();
   const cellScreenSize = FOG_CELL_SIZE * camera.scale;
   const invScale = 1 / camera.scale;
-  
-  // Вычисляем видимую область экрана в мировых координатах
   const viewLeft = -camera.offsetX * invScale;
   const viewTop = -camera.offsetY * invScale;
   const viewRight = viewLeft + canvas.width * invScale;
@@ -643,7 +570,6 @@ function renderPersistentFog() {
   
   for (let r = startRow; r <= endRow; r++) {
     for (let c = startCol; c <= endCol; c++) {
-      // Проверка на существование ячейки
       if (!persistentFogMap[r] || persistentFogMap[r][c] === undefined) continue;
       
       const worldX = c * FOG_CELL_SIZE;
@@ -651,12 +577,9 @@ function renderPersistentFog() {
       const screenPos = worldToScreen(worldX, worldY);
       
       if (persistentFogMap[r][c] === 0) {
-        // 🔥 ПОЛНАЯ ТЬМА (территория еще не исследована)
         ctx.fillStyle = "rgba(0, 0, 0, 0.95)";
-        // +1 пиксель, чтобы избежать микро-щелей между квадратами при зуме
         ctx.fillRect(screenPos.x, screenPos.y, cellScreenSize + 1, cellScreenSize + 1); 
       } else if (fogMap[r] && fogMap[r][c] === 0) {
-        // 🔥 ТУМАН ВОЙНЫ (территория исследована, но сейчас не видна)
         ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
         ctx.fillRect(screenPos.x, screenPos.y, cellScreenSize + 1, cellScreenSize + 1);
       }
@@ -704,309 +627,226 @@ function renderGame() {
     ctx.globalAlpha = building.active ? 1 : 0.1;
 
     // === ОТРИСОВКА ЗДАНИЙ ===
-if (building.type === "turret") {
-  ctx.scale(0.8, 0.8);
-  const now = performance.now();
-  const angle = building.angle;
-  const isFiring = (now - building.lastFireTime) < 200;
-  
-  // Основание
-  ctx.save();
-  ctx.beginPath();
-  for (let i = 0; i < 6; i++) {
-    const a = (Math.PI / 3) * i;
-    const x = 12 * Math.cos(a);
-    const y = 12 * Math.sin(a);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-  const hexColor = OWNER_COLORS[building.owner]?.accent || "#ffffff";
-  ctx.fillStyle = hexColor;
-  ctx.fill();
-  ctx.restore();
-  
-  // Башня
-  ctx.rotate(angle);
-  const pyramidSize = 12;
-  const pyramidColors = ["#666", "#444", "#333", "#555"];
-  for (let i = 0; i < 4; i++) {
-    const a1 = (Math.PI / 2) * i;
-    const a2 = (Math.PI / 2) * (i + 1);
-    const x1 = pyramidSize * Math.cos(a1);
-    const y1 = pyramidSize * Math.sin(a1);
-    const x2 = pyramidSize * Math.cos(a2);
-    const y2 = pyramidSize * Math.sin(a2);
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(x1, y1);
-    ctx.lineTo(x2, y2);
-    ctx.closePath();
-    ctx.fillStyle = pyramidColors[i];
-    ctx.fill();
-  }
-  
-  // Ствол
-  ctx.fillStyle = "#778899";
-  ctx.fillRect(8, -2, 10, 3);
-  if (isFiring) {
-    ctx.fillStyle = "rgba(255, 80, 0, 0.8)";
-    ctx.fillRect(18, -2, 4, 3);
-  }
-}
-else if (building.type === "turret2") {
-  ctx.scale(0.8, 0.8);
-  ctx.rotate(building.angle);
-  
-  // Основание
-  ctx.save();
-  ctx.beginPath();
-  for (let i = 0; i < 6; i++) {
-    const a = (Math.PI / 3) * i;
-    const x = 12 * Math.cos(a);
-    const y = 12 * Math.sin(a);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-  ctx.fillStyle = OWNER_COLORS[building.owner]?.accent || "#ffffff";
-  ctx.fill();
-  ctx.restore();
-  
-  // Пусковая установка
-  ctx.fillStyle = "#666";
-  ctx.fillRect(-5, -14, 10, 6);
-  
-  // Ракеты
-  ctx.fillStyle = "#ffaa00";
-  for (let i = -1; i <= 1; i++) {
-    ctx.fillRect(-3, -14 + i * 5, 6, 3);
-  }
-}
-else if (building.type === "turret3") {
-  ctx.scale(0.8, 0.8);
-  ctx.rotate(building.angle);
-  
-  // Основание
-  ctx.beginPath();
-  for (let i = 0; i < 6; i++) {
-    const a = (Math.PI / 3) * i;
-    const x = 12 * Math.cos(a);
-    const y = 8 * Math.sin(a);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-  ctx.fillStyle = OWNER_COLORS[building.owner]?.hull || "#666";
-  ctx.fill();
-  
-  // Реактор
-  ctx.fillStyle = "rgba(255, 40, 40, 0.6)";
-  ctx.beginPath();
-  ctx.ellipse(-12, 0, 4, 3, 0, 0, Math.PI * 2);
-  ctx.fill();
-  
-  // Ствол
-  ctx.fillStyle = building.charge > 400 ? "#ffeeaa" : "#555";
-  ctx.fillRect(6, -1.5, 10, 3);
-}
-else if (building.type === "beacon") {
-  const time = performance.now() / 1000;
-  const angle = Math.sin(time * 0.3) * 0.1;
-  ctx.rotate(angle);
-  const scale = 1 + Math.sin(time * 0.5) * 0.1;
-  ctx.scale(scale, scale);
-  
-  const baseWidth = 32;
-  const aspectRatio = 40 / 64;
-  const baseHeight = baseWidth * aspectRatio;
-  const baseUnit = baseWidth / 32;
-  const half = baseHeight / 2;
-  
-  const image = preloadedIcons["beacon"];
-  if (image && image.complete) {
-    ctx.drawImage(image, -baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
-  } else {
-    ctx.fillStyle = OWNER_COLORS[building.owner]?.accent || "#888";
-    ctx.fillRect(-baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
-  }
-  
-  // Диоды
-  if (Math.floor(performance.now() / 800) % 2 === 0) {
-    ctx.fillStyle = OWNER_COLORS[building.owner]?.accent || "#ffffff";
-    ctx.beginPath();
-    ctx.arc(0 * baseUnit, (-half + 1) * baseUnit, 0.6 * baseUnit, 0, Math.PI * 2);
-    ctx.arc(4 * baseUnit, (-half + 11) * baseUnit, 0.6 * baseUnit, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-else if (building.type === "base" || building.type === "base2" || building.type === "base3") {
-  const time = performance.now() / 1000;
-  const angle = Math.sin(time * 0.3) * 0.1;
-  ctx.rotate(angle);
-  const scale = 1 + Math.sin(time * 0.5) * 0.1;
-  ctx.scale(scale, scale);
-  
-  const baseWidth = 72;
-  const aspectRatio = 60 / 84;
-  const baseHeight = baseWidth * aspectRatio;
-  const baseUnit = baseWidth / 72;
-  const half = baseHeight / 2;
-  
-  const imageName = building.type === "base" ? "base" : building.type === "base2" ? "base2" : "base3";
-  const image = preloadedIcons[imageName];
-  
-  if (image && image.complete) {
-    ctx.drawImage(image, -baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
-  } else {
-    ctx.fillStyle = OWNER_COLORS[building.owner]?.accent || "#888";
-    ctx.fillRect(-baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
-  }
-  
-  // Окна
-  const cockpitBlink = Math.sin(performance.now() / 200) * 0.1 + 0.4;
-  const glowRGB = hexToRgb(OWNER_COLORS[building.owner]?.base || "#00ffff");
-  ctx.fillStyle = "rgba(" + glowRGB + ", " + cockpitBlink + ")";
-  
-  ctx.beginPath();
-  ctx.moveTo(7 * baseUnit, -half + 8 * baseUnit);
-  ctx.lineTo(9 * baseUnit, -half + 8 * baseUnit);
-  ctx.lineTo(8.5 * baseUnit, -half + 6.5 * baseUnit);
-  ctx.lineTo(7.5 * baseUnit, -half + 6.5 * baseUnit);
-  ctx.closePath();
-  ctx.fill();
-  
-  // Реактор
-  const coreAlpha = Math.sin(performance.now() / 600) * 0.1 + 0.3;
-  ctx.fillStyle = "rgba(255, 0, 0, " + coreAlpha + ")";
-  ctx.beginPath();
-  ctx.ellipse(13, 3, 2.3 * baseUnit, 1.2 * baseUnit, 0, 0, Math.PI * 2);
-  ctx.fill();
-}
-else if (building.type === "barracks" || building.type === "barracks2" || building.type === "barracks3") {
-  const time = performance.now() / 1000;
-  const angle = Math.sin(time * 0.3) * 0.1;
-  ctx.rotate(angle);
-  const scale = 1 + Math.sin(time * 0.5) * 0.1;
-  ctx.scale(scale, scale);
-  
-  const size = 52;
-  const half = size / 2;
-  const baseUnit = size / 52;
-  
-  const imageName = building.type === "barracks" ? "barracks" : building.type === "barracks2" ? "barracks2" : "barracks3";
-  const image = preloadedIcons[imageName];
-  
-  if (image && image.complete) {
-    ctx.drawImage(image, -half, -half, size, size);
-  } else {
-    ctx.fillStyle = OWNER_COLORS[building.owner]?.hull || "#666";
-    ctx.fillRect(-half, -half, size, size);
-  }
-  
-  // Окна
-  const cockpitBlink = Math.sin(performance.now() / 200) * 0.1 + 0.7;
-  const glowRGB = hexToRgb(OWNER_COLORS[building.owner]?.base || "#00ffff");
-  ctx.fillStyle = "rgba(" + glowRGB + ", " + cockpitBlink + ")";
-  
-  ctx.beginPath();
-  ctx.moveTo(7 * baseUnit, -half + 8 * baseUnit);
-  ctx.lineTo(9 * baseUnit, -half + 8 * baseUnit);
-  ctx.lineTo(8.5 * baseUnit, -half + 6.5 * baseUnit);
-  ctx.lineTo(7.5 * baseUnit, -half + 6.5 * baseUnit);
-  ctx.closePath();
-  ctx.fill();
-}
-else if (building.type === "warehouse") {
-  const time = performance.now() / 1000;
-  const angle = Math.sin(time * 0.3) * 0.1;
-  ctx.rotate(angle);
-  const scale = 1 + Math.sin(time * 0.5) * 0.1;
-  ctx.scale(scale, scale);
-  
-  const size = 42;
-  const half = size / 2;
-  const baseUnit = size / 42;
-  
-  const image = preloadedIcons["warehouse"];
-  if (image && image.complete) {
-    ctx.drawImage(image, -half, -half, size, size);
-  } else {
-    ctx.fillStyle = "#333";
-    ctx.fillRect(-half, -half, size, size);
-  }
-  
-  // Индикатор рабочих
-  const indicatorWidth = size / 2;
-  const indicatorHeight = 3;
-  const indicatorY = half + 2;
-  ctx.fillStyle = "rgba(0,0,0,0.3)";
-  ctx.fillRect(-indicatorWidth / 2, indicatorY, indicatorWidth, indicatorHeight);
-  
-  const segments = 5;
-  const segWidth = indicatorWidth / segments;
-  const filled = Math.min(segments, building.workers || 0);
-  ctx.fillStyle = building.owner === playerId ? "lightgreen" : "red";
-  
-  for (let i = 0; i < filled; i++) {
-    ctx.fillRect(-indicatorWidth / 2 + i * segWidth, indicatorY, segWidth - 1, indicatorHeight);
-  }
-  
-  // Крышка
-  if (building.lidOpenUntil && performance.now() < building.lidOpenUntil) {
-    const progress = 1 - (building.lidOpenUntil - performance.now()) / 400;
-    const lidSize = (2 + progress * 2) * baseUnit;
-    const w = lidSize, h = lidSize * 0.5, lift = lidSize * 0.2;
-    
-    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-    ctx.beginPath();
-    ctx.moveTo(-w / 2, -h / 2);
-    ctx.lineTo(w / 2, -h / 2 - lift);
-    ctx.lineTo(w / 2, h / 2);
-    ctx.lineTo(-w / 2, h / 2);
-    ctx.closePath();
-    ctx.fill();
-  }
-}
-else if (building.type === "repairWorkshop") {
-  const time = performance.now() / 1000;
-  const angle = Math.sin(time * 0.3) * 0.1;
-  ctx.rotate(angle);
-  const scale = 1 + Math.sin(time * 0.5) * 0.1;
-  ctx.scale(scale, scale);
-  
-  const size = 42;
-  const half = size / 2;
-  const baseUnit = size / 42;
-  
-  const image = preloadedIcons["repairWorkshop"];
-  if (image && image.complete) {
-    ctx.drawImage(image, -half, -half, size, size);
-  } else {
-    ctx.fillStyle = OWNER_COLORS[building.owner]?.hull || "#666";
-    ctx.fillRect(-half, -half, size, size);
-  }
-  
-  // Индикатор ремонтников
-  const indicatorWidth = size / 2;
-  const indicatorHeight = 3;
-  const indicatorY = half + 2;
-  ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
-  ctx.fillRect(-indicatorWidth / 2, indicatorY, indicatorWidth, indicatorHeight);
-  
-  const segments = 5;
-  const segWidth = indicatorWidth / segments;
-  const filled = Math.min(segments, building.repairman || 0);
-  ctx.fillStyle = OWNER_COLORS[building.owner]?.base === "#00ccff" ? "lightgreen" : "red";
-  
-  for (let i = 0; i < filled; i++) {
-    ctx.fillRect(-indicatorWidth / 2 + i * segWidth, indicatorY, segWidth - 1, indicatorHeight);
-  }
-}
-else {
-  ctx.fillStyle = building.owner === playerId ? "rgba(0,128,255,0.7)" : "rgba(255,128,0,0.7)";
-  ctx.fillRect(-building.width / 2, -building.height / 2, building.width, building.height);
-}
+    if (building.type === "turret") {
+      ctx.scale(0.8, 0.8);
+      const now = performance.now();
+      const angle = building.angle;
+      const isFiring = (now - building.lastFireTime) < 200;
+      ctx.save();
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (Math.PI / 3) * i;
+        const x = 12 * Math.cos(a); const y = 12 * Math.sin(a);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = OWNER_COLORS[building.owner]?.accent || "#ffffff";
+      ctx.fill();
+      ctx.restore();
+      ctx.rotate(angle);
+      const pyramidSize = 12;
+      const pyramidColors = ["#666", "#444", "#333", "#555"];
+      for (let i = 0; i < 4; i++) {
+        const a1 = (Math.PI / 2) * i; const a2 = (Math.PI / 2) * (i + 1);
+        const x1 = pyramidSize * Math.cos(a1); const y1 = pyramidSize * Math.sin(a1);
+        const x2 = pyramidSize * Math.cos(a2); const y2 = pyramidSize * Math.sin(a2);
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(x1, y1); ctx.lineTo(x2, y2); ctx.closePath();
+        ctx.fillStyle = pyramidColors[i]; ctx.fill();
+      }
+      ctx.fillStyle = "#778899"; ctx.fillRect(8, -2, 10, 3);
+      if (isFiring) { ctx.fillStyle = "rgba(255, 80, 0, 0.8)"; ctx.fillRect(18, -2, 4, 3); }
+    }
+    else if (building.type === "turret2") {
+      ctx.scale(0.8, 0.8); ctx.rotate(building.angle);
+      ctx.save();
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (Math.PI / 3) * i;
+        const x = 12 * Math.cos(a); const y = 12 * Math.sin(a);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = OWNER_COLORS[building.owner]?.accent || "#ffffff";
+      ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = "#666"; ctx.fillRect(-5, -14, 10, 6);
+      ctx.fillStyle = "#ffaa00";
+      for (let i = -1; i <= 1; i++) ctx.fillRect(-3, -14 + i * 5, 6, 3);
+    }
+    else if (building.type === "turret3") {
+      ctx.scale(0.8, 0.8); ctx.rotate(building.angle);
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (Math.PI / 3) * i;
+        const x = 12 * Math.cos(a); const y = 8 * Math.sin(a);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = OWNER_COLORS[building.owner]?.hull || "#666"; ctx.fill();
+      ctx.fillStyle = "rgba(255, 40, 40, 0.6)";
+      ctx.beginPath(); ctx.ellipse(-12, 0, 4, 3, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = building.charge > 400 ? "#ffeeaa" : "#555";
+      ctx.fillRect(6, -1.5, 10, 3);
+    }
+    else if (building.type === "beacon") {
+      const time = performance.now() / 1000;
+      const angle = Math.sin(time * 0.3) * 0.1;
+      ctx.rotate(angle);
+      const scale = 1 + Math.sin(time * 0.5) * 0.1;
+      ctx.scale(scale, scale);
+      const baseWidth = 32;
+      const aspectRatio = 40 / 64;
+      const baseHeight = baseWidth * aspectRatio;
+      const baseUnit = baseWidth / 32;
+      const half = baseHeight / 2;
+      const image = preloadedIcons["beacon"];
+      if (image && image.complete) {
+        ctx.drawImage(image, -baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
+      } else {
+        ctx.fillStyle = OWNER_COLORS[building.owner]?.accent || "#888";
+        ctx.fillRect(-baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
+      }
+      if (Math.floor(performance.now() / 800) % 2 === 0) {
+        ctx.fillStyle = OWNER_COLORS[building.owner]?.accent || "#ffffff";
+        ctx.beginPath();
+        ctx.arc(0 * baseUnit, (-half + 1) * baseUnit, 0.6 * baseUnit, 0, Math.PI * 2);
+        ctx.arc(4 * baseUnit, (-half + 11) * baseUnit, 0.6 * baseUnit, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    else if (building.type === "base" || building.type === "base2" || building.type === "base3") {
+      const time = performance.now() / 1000;
+      const angle = Math.sin(time * 0.3) * 0.1;
+      ctx.rotate(angle);
+      const scale = 1 + Math.sin(time * 0.5) * 0.1;
+      ctx.scale(scale, scale);
+      const baseWidth = 72;
+      const aspectRatio = 60 / 84;
+      const baseHeight = baseWidth * aspectRatio;
+      const baseUnit = baseWidth / 72;
+      const half = baseHeight / 2;
+      const imageName = building.type === "base" ? "base" : building.type === "base2" ? "base2" : "base3";
+      const image = preloadedIcons[imageName];
+      if (image && image.complete) {
+        ctx.drawImage(image, -baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
+      } else {
+        ctx.fillStyle = OWNER_COLORS[building.owner]?.accent || "#888";
+        ctx.fillRect(-baseWidth / 2, -baseHeight / 2, baseWidth, baseHeight);
+      }
+      const cockpitBlink = Math.sin(performance.now() / 200) * 0.1 + 0.4;
+      const glowRGB = hexToRgb(OWNER_COLORS[building.owner]?.base || "#00ffff");
+      ctx.fillStyle = "rgba(" + glowRGB + ", " + cockpitBlink + ")";
+      ctx.beginPath();
+      ctx.moveTo(7 * baseUnit, -half + 8 * baseUnit);
+      ctx.lineTo(9 * baseUnit, -half + 8 * baseUnit);
+      ctx.lineTo(8.5 * baseUnit, -half + 6.5 * baseUnit);
+      ctx.lineTo(7.5 * baseUnit, -half + 6.5 * baseUnit);
+      ctx.closePath(); ctx.fill();
+      const coreAlpha = Math.sin(performance.now() / 600) * 0.1 + 0.3;
+      ctx.fillStyle = "rgba(255, 0, 0, " + coreAlpha + ")";
+      ctx.beginPath(); ctx.ellipse(13, 3, 2.3 * baseUnit, 1.2 * baseUnit, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    else if (building.type === "barracks" || building.type === "barracks2" || building.type === "barracks3") {
+      const time = performance.now() / 1000;
+      const angle = Math.sin(time * 0.3) * 0.1;
+      ctx.rotate(angle);
+      const scale = 1 + Math.sin(time * 0.5) * 0.1;
+      ctx.scale(scale, scale);
+      const size = 52;
+      const half = size / 2;
+      const baseUnit = size / 52;
+      const imageName = building.type === "barracks" ? "barracks" : building.type === "barracks2" ? "barracks2" : "barracks3";
+      const image = preloadedIcons[imageName];
+      if (image && image.complete) {
+        ctx.drawImage(image, -half, -half, size, size);
+      } else {
+        ctx.fillStyle = OWNER_COLORS[building.owner]?.hull || "#666";
+        ctx.fillRect(-half, -half, size, size);
+      }
+      const cockpitBlink = Math.sin(performance.now() / 200) * 0.1 + 0.7;
+      const glowRGB = hexToRgb(OWNER_COLORS[building.owner]?.base || "#00ffff");
+      ctx.fillStyle = "rgba(" + glowRGB + ", " + cockpitBlink + ")";
+      ctx.beginPath();
+      ctx.moveTo(7 * baseUnit, -half + 8 * baseUnit);
+      ctx.lineTo(9 * baseUnit, -half + 8 * baseUnit);
+      ctx.lineTo(8.5 * baseUnit, -half + 6.5 * baseUnit);
+      ctx.lineTo(7.5 * baseUnit, -half + 6.5 * baseUnit);
+      ctx.closePath(); ctx.fill();
+    }
+    else if (building.type === "warehouse") {
+      const time = performance.now() / 1000;
+      const angle = Math.sin(time * 0.3) * 0.1;
+      ctx.rotate(angle);
+      const scale = 1 + Math.sin(time * 0.5) * 0.1;
+      ctx.scale(scale, scale);
+      const size = 42;
+      const half = size / 2;
+      const baseUnit = size / 42;
+      const image = preloadedIcons["warehouse"];
+      if (image && image.complete) {
+        ctx.drawImage(image, -half, -half, size, size);
+      } else {
+        ctx.fillStyle = "#333";
+        ctx.fillRect(-half, -half, size, size);
+      }
+      const indicatorWidth = size / 2;
+      const indicatorHeight = 3;
+      const indicatorY = half + 2;
+      ctx.fillStyle = "rgba(0,0,0,0.3)";
+      ctx.fillRect(-indicatorWidth / 2, indicatorY, indicatorWidth, indicatorHeight);
+      const segments = 5;
+      const segWidth = indicatorWidth / segments;
+      const filled = Math.min(segments, building.workers || 0);
+      ctx.fillStyle = building.owner === playerId ? "lightgreen" : "red";
+      for (let i = 0; i < filled; i++) {
+        ctx.fillRect(-indicatorWidth / 2 + i * segWidth, indicatorY, segWidth - 1, indicatorHeight);
+      }
+      if (building.lidOpenUntil && performance.now() < building.lidOpenUntil) {
+        const progress = 1 - (building.lidOpenUntil - performance.now()) / 400;
+        const lidSize = (2 + progress * 2) * baseUnit;
+        const w = lidSize, h = lidSize * 0.5, lift = lidSize * 0.2;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+        ctx.beginPath();
+        ctx.moveTo(-w / 2, -h / 2);
+        ctx.lineTo(w / 2, -h / 2 - lift);
+        ctx.lineTo(w / 2, h / 2);
+        ctx.lineTo(-w / 2, h / 2);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+    else if (building.type === "repairWorkshop") {
+      const time = performance.now() / 1000;
+      const angle = Math.sin(time * 0.3) * 0.1;
+      ctx.rotate(angle);
+      const scale = 1 + Math.sin(time * 0.5) * 0.1;
+      ctx.scale(scale, scale);
+      const size = 42;
+      const half = size / 2;
+      const baseUnit = size / 42;
+      const image = preloadedIcons["repairWorkshop"];
+      if (image && image.complete) {
+        ctx.drawImage(image, -half, -half, size, size);
+      } else {
+        ctx.fillStyle = OWNER_COLORS[building.owner]?.hull || "#666";
+        ctx.fillRect(-half, -half, size, size);
+      }
+      const indicatorWidth = size / 2;
+      const indicatorHeight = 3;
+      const indicatorY = half + 2;
+      ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
+      ctx.fillRect(-indicatorWidth / 2, indicatorY, indicatorWidth, indicatorHeight);
+      const segments = 5;
+      const segWidth = indicatorWidth / segments;
+      const filled = Math.min(segments, building.repairman || 0);
+      ctx.fillStyle = OWNER_COLORS[building.owner]?.base === "#00ccff" ? "lightgreen" : "red";
+      for (let i = 0; i < filled; i++) {
+        ctx.fillRect(-indicatorWidth / 2 + i * segWidth, indicatorY, segWidth - 1, indicatorHeight);
+      }
+    }
+    else {
+      ctx.fillStyle = building.owner === playerId ? "rgba(0,128,255,0.7)" : "rgba(255,128,0,0.7)";
+      ctx.fillRect(-building.width / 2, -building.height / 2, building.width, building.height);
+    }
     
     if (building.health < building.maxHealth) {
       const barHeight = 4, barWidth = building.width;
@@ -1049,161 +889,103 @@ else {
         gameState.particles.push({ x: unit.x + (Math.random() - 0.5) * 8, y: unit.y - 6 + (Math.random() - 0.5) * 4, vx: 0, vy: -0.2 - Math.random() * 0.2, life: 0.5, maxLife: 0.5, color: "rgba(80, 80, 80, 0.3)" });
       }
     }
-// === ОТРИСОВКА ЮНИТОВ ===
-const image = preloadedIcons["src/models/" + unit.type + ".png"];
+    
+    // === ОТРИСОВКА ЮНИТОВ С ЗАЩИТОЙ ===
+    const image = preloadedIcons["src/models/" + unit.type + ".png"];
 
-if (unit.type === "worker") {
-  ctx.rotate(-Math.PI / 2);
-  const scaleFactor = 0.8;
-  ctx.scale(scaleFactor, scaleFactor);
-  const idleOffset = unit.commandQueue.length === 0 ? Math.sin(unit.idleTimer) * 2 : 0;
-  ctx.translate(0, idleOffset);
-  
-  const width = 10, height = 10;
-  if (image && image.complete) {
-    ctx.drawImage(image, -width / 2, -height / 2, width, height);
-  } else {
-    ctx.fillStyle = "#00FF00";
-    ctx.beginPath();
-    ctx.arc(0, 0, 5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  
-  ctx.rotate(-Math.PI / 2);
-  const accentColor = OWNER_COLORS[unit.owner]?.accent || "#00ffff";
-  ctx.fillStyle = accentColor;
-  ctx.beginPath();
-  ctx.ellipse(3, 0, 1.3, 0.7, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillRect(-1, -0.8, 1, 1.4);
-}
-else if (unit.type === "repairman") {
-  ctx.rotate(-Math.PI / 2);
-  const scaleFactor = 0.8;
-  ctx.scale(scaleFactor, scaleFactor);
-  const idleOffset = unit.commandQueue.length === 0 ? Math.sin(unit.idleTimer) * 2 : 0;
-  ctx.translate(0, idleOffset);
-  
-  const width = 10, height = 10;
-  if (image && image.complete) {
-    ctx.drawImage(image, -width / 2, -height / 2, width, height);
-  } else {
-    ctx.fillStyle = "#0000FF";
-    ctx.beginPath();
-    ctx.arc(0, 0, 5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  
-  ctx.rotate(-Math.PI / 2);
-  const accentColor = OWNER_COLORS[unit.owner]?.accent || "#00ffff";
-  ctx.fillStyle = accentColor;
-  ctx.beginPath();
-  ctx.ellipse(3, 0, 1.3, 0.7, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.rotate(-Math.PI / 1.3);
-  ctx.fillRect(2, 0.5, 0.5, 1);
-}
-else if (unit.type === "fighter") {
-  const accentColor = OWNER_COLORS[unit.owner]?.accent || "#ffffff";
-  ctx.rotate(Math.PI / 2);
-  const scaleFactor = 0.3;
-  ctx.scale(scaleFactor, scaleFactor);
-  const idleOffset = unit.commandQueue.length === 0 ? Math.sin(unit.idleTimer) * 4 : 0;
-  ctx.translate(0, idleOffset);
-  
-  const width = 50, height = 50;
-  if (image && image.complete) {
-    ctx.drawImage(image, -width / 2, -height / 2, width, height);
-  } else {
-    ctx.fillStyle = "#FF0000";
-    ctx.beginPath();
-    ctx.moveTo(0, -15);
-    ctx.lineTo(-10, 10);
-    ctx.lineTo(0, 5);
-    ctx.lineTo(10, 10);
-    ctx.closePath();
-    ctx.fill();
-  }
-  
-  ctx.save();
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillStyle = accentColor;
-  ctx.beginPath();
-  ctx.ellipse(10, 0, 3.5, 2, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillRect(-15, -9, 10, 1.5);
-  ctx.fillRect(-15, 7.5, 10, 1.5);
-  ctx.fillRect(-24, -1, 4, 2);
-  ctx.restore();
-}
-else if (unit.type === "assault") {
-  const accentColor = OWNER_COLORS[unit.owner]?.accent || "#ffffff";
-  ctx.rotate(-Math.PI / 2);
-  const scaleFactor = 0.3;
-  ctx.scale(scaleFactor, scaleFactor);
-  const idleOffset = unit.commandQueue.length === 0 ? Math.sin(unit.idleTimer) * 4 : 0;
-  ctx.translate(0, idleOffset);
-  
-  const width = 50, height = 50;
-  if (image && image.complete) {
-    ctx.drawImage(image, -width / 2, -height / 2, width, height);
-  } else {
-    ctx.fillStyle = "#800080";
-    ctx.beginPath();
-    ctx.moveTo(0, -15);
-    ctx.lineTo(-12, 10);
-    ctx.lineTo(0, 5);
-    ctx.lineTo(12, 10);
-    ctx.closePath();
-    ctx.fill();
-  }
-  
-  ctx.save();
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillStyle = accentColor;
-  ctx.beginPath();
-  ctx.ellipse(7, 0, 3.5, 2, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillRect(-5, -9, 10, 1.5);
-  ctx.fillRect(-5, 7.5, 10, 1.5);
-  ctx.fillRect(-3, -8, 8, 1.5);
-  ctx.fillRect(-3, 6.5, 8, 1.5);
-  ctx.fillRect(0, -1, 4, 2);
-  ctx.restore();
-}
-else if (unit.type === "elite") {
-  const accentColor = OWNER_COLORS[unit.owner]?.accent || "#00ffff";
-  ctx.rotate(Math.PI / 2);
-  const scaleFactor = 0.13;
-  ctx.scale(scaleFactor, scaleFactor);
-  const idleOffset = unit.commandQueue.length === 0 ? Math.sin(unit.idleTimer) * 3 : 0;
-  ctx.translate(0, idleOffset);
-  
-  const width = 180, height = 300;
-  if (image && image.complete) {
-    ctx.drawImage(image, -width / 2, -height / 2, width, height);
-  } else {
-    ctx.fillStyle = "#808080";
-    ctx.beginPath();
-    ctx.moveTo(0, -30);
-    ctx.lineTo(-20, 20);
-    ctx.lineTo(0, 10);
-    ctx.lineTo(20, 20);
-    ctx.closePath();
-    ctx.fill();
-  }
-  
-  ctx.save();
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillStyle = accentColor;
-  ctx.beginPath();
-  ctx.ellipse(20, 0, 8, 5, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillRect(-120, -14, 20, 2);
-  ctx.fillRect(-120, 12, 20, 2);
-  ctx.fillRect(-180, -2, 8, 4);
-  ctx.restore();
-}
+    if (unit.type === "worker") {
+      ctx.rotate(-Math.PI / 2);
+      ctx.scale(0.8, 0.8);
+      const idleOffset = unit.commandQueue.length === 0 ? Math.sin(unit.idleTimer) * 2 : 0;
+      ctx.translate(0, idleOffset);
+      const width = 10, height = 10;
+      if (image && image.complete) {
+        ctx.drawImage(image, -width / 2, -height / 2, width, height);
+      } else {
+        ctx.fillStyle = "#00FF00";
+        ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = OWNER_COLORS[unit.owner]?.accent || "#00ffff";
+      ctx.beginPath(); ctx.ellipse(3, 0, 1.3, 0.7, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(-1, -0.8, 1, 1.4);
+    }
+    else if (unit.type === "repairman") {
+      ctx.rotate(-Math.PI / 2);
+      ctx.scale(0.8, 0.8);
+      const idleOffset = unit.commandQueue.length === 0 ? Math.sin(unit.idleTimer) * 2 : 0;
+      ctx.translate(0, idleOffset);
+      const width = 10, height = 10;
+      if (image && image.complete) {
+        ctx.drawImage(image, -width / 2, -height / 2, width, height);
+      } else {
+        ctx.fillStyle = "#0000FF";
+        ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = OWNER_COLORS[unit.owner]?.accent || "#00ffff";
+      ctx.beginPath(); ctx.ellipse(3, 0, 1.3, 0.7, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.rotate(-Math.PI / 1.3);
+      ctx.fillRect(2, 0.5, 0.5, 1);
+    }
+    else if (unit.type === "fighter") {
+      ctx.rotate(Math.PI / 2);
+      ctx.scale(0.3, 0.3);
+      const idleOffset = unit.commandQueue.length === 0 ? Math.sin(unit.idleTimer) * 4 : 0;
+      ctx.translate(0, idleOffset);
+      const width = 50, height = 50;
+      if (image && image.complete) {
+        ctx.drawImage(image, -width / 2, -height / 2, width, height);
+      } else {
+        ctx.fillStyle = "#FF0000";
+        ctx.beginPath(); ctx.moveTo(0, -15); ctx.lineTo(-10, 10); ctx.lineTo(0, 5); ctx.lineTo(10, 10); ctx.closePath(); ctx.fill();
+      }
+      ctx.save();
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = OWNER_COLORS[unit.owner]?.accent || "#ffffff";
+      ctx.beginPath(); ctx.ellipse(10, 0, 3.5, 2, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(-15, -9, 10, 1.5); ctx.fillRect(-15, 7.5, 10, 1.5); ctx.fillRect(-24, -1, 4, 2);
+      ctx.restore();
+    }
+    else if (unit.type === "assault") {
+      ctx.rotate(-Math.PI / 2);
+      ctx.scale(0.3, 0.3);
+      const idleOffset = unit.commandQueue.length === 0 ? Math.sin(unit.idleTimer) * 4 : 0;
+      ctx.translate(0, idleOffset);
+      const width = 50, height = 50;
+      if (image && image.complete) {
+        ctx.drawImage(image, -width / 2, -height / 2, width, height);
+      } else {
+        ctx.fillStyle = "#800080";
+        ctx.beginPath(); ctx.moveTo(0, -15); ctx.lineTo(-12, 10); ctx.lineTo(0, 5); ctx.lineTo(12, 10); ctx.closePath(); ctx.fill();
+      }
+      ctx.save();
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = OWNER_COLORS[unit.owner]?.accent || "#ffffff";
+      ctx.beginPath(); ctx.ellipse(7, 0, 3.5, 2, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(-5, -9, 10, 1.5); ctx.fillRect(-5, 7.5, 10, 1.5);
+      ctx.fillRect(-3, -8, 8, 1.5); ctx.fillRect(-3, 6.5, 8, 1.5); ctx.fillRect(0, -1, 4, 2);
+      ctx.restore();
+    }
+    else if (unit.type === "elite") {
+      ctx.rotate(Math.PI / 2);
+      ctx.scale(0.13, 0.13);
+      const idleOffset = unit.commandQueue.length === 0 ? Math.sin(unit.idleTimer) * 3 : 0;
+      ctx.translate(0, idleOffset);
+      const width = 180, height = 300;
+      if (image && image.complete) {
+        ctx.drawImage(image, -width / 2, -height / 2, width, height);
+      } else {
+        ctx.fillStyle = "#808080";
+        ctx.beginPath(); ctx.moveTo(0, -30); ctx.lineTo(-20, 20); ctx.lineTo(0, 10); ctx.lineTo(20, 20); ctx.closePath(); ctx.fill();
+      }
+      ctx.save();
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = OWNER_COLORS[unit.owner]?.accent || "#00ffff";
+      ctx.beginPath(); ctx.ellipse(20, 0, 8, 5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(-120, -14, 20, 2); ctx.fillRect(-120, 12, 20, 2); ctx.fillRect(-180, -2, 8, 4);
+      ctx.restore();
+    }
     
     if (unit.owner === playerId && (unit.type === "fighter" || unit.type === "assault" || unit.type === "elite") && unit.group !== undefined && unit.group !== null) {
       let markerColor = "yellow";
@@ -1267,12 +1049,12 @@ else if (unit.type === "elite") {
     ctx.beginPath(); ctx.arc(screen.x, screen.y, radius * camera.scale, 0, 2 * Math.PI);
     ctx.fillStyle = `rgba(255, 0, 255, ${alpha})`; ctx.fill();
   }
+  
   // ============================================================
   // ОТРИСОВКА ЛАЗЕРОВ
   // ============================================================
   const nowLaser = performance.now();
   for (const laser of gameState.lasers || []) {
-    // 🔥 СТРОГАЯ ПРОВЕРКА: рисуем ТОЛЬКО если активен, и стрелок, и цель ЖИВЫ и в игре
     const isShooterAlive = laser.shooter && laser.shooter.health > 0 && 
       (gameState.units.includes(laser.shooter) || gameState.buildings.includes(laser.shooter));
     const isTargetAlive = laser.target && laser.target.health > 0 && 
@@ -1287,29 +1069,22 @@ else if (unit.type === "elite") {
     const to = worldToScreen(laser.target.x, laser.target.y);
 
     ctx.save();
-    
-    // Внешнее фиолетовое свечение
-    ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
+    ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y);
     ctx.strokeStyle = `rgba(255, 0, 255, ${0.5 + 0.5 * fade})`;
     ctx.lineWidth = 4 * camera.scale;
     ctx.shadowColor = "rgba(255, 0, 255, 0.8)";
     ctx.shadowBlur = 15 * camera.scale;
     ctx.stroke();
 
-    // Белый горячий центр луча
-    ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
+    ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y);
     ctx.strokeStyle = `rgba(255, 255, 255, ${0.9 * fade})`;
     ctx.lineWidth = 1.5 * camera.scale;
     ctx.shadowBlur = 0;
     ctx.stroke();
-
     ctx.restore();
   }
-  renderFogOfWar();
+  
+  //renderFogOfWar();
   checkVictoryConditions();
   updateBaseNavButton(); updateBase2NavButton(); updateBase3NavButton();
   updateSaleIndicator();
@@ -1335,38 +1110,6 @@ function resizeCanvas() {
     quadtree = new Quadtree({ x: -margin, y: -margin, width: worldWidth + 2 * margin, height: worldHeight + 2 * margin });
   }
 }
-
-function renderPersistentFog() {
-  ctx.save();
-  const cellScreenSize = FOG_CELL_SIZE * camera.scale;
-  const invScale = 1 / camera.scale;
-  const viewLeft = -camera.offsetX * invScale, viewTop = -camera.offsetY * invScale;
-  const viewRight = viewLeft + canvas.width * invScale, viewBottom = viewTop + canvas.height * invScale;
-  const startCol = Math.max(0, Math.floor(viewLeft / FOG_CELL_SIZE));
-  const endCol = Math.min(persistentFogMap[0].length - 1, Math.floor(viewRight / FOG_CELL_SIZE));
-  const startRow = Math.max(0, Math.floor(viewTop / FOG_CELL_SIZE));
-  const endRow = Math.min(persistentFogMap.length - 1, Math.floor(viewBottom / FOG_CELL_SIZE));
-  for (let r = startRow; r <= endRow; r++) {
-    for (let c = startCol; c <= endCol; c++) {
-      const worldX = c * FOG_CELL_SIZE, worldY = r * FOG_CELL_SIZE;
-      const screenPos = worldToScreen(worldX, worldY);
-      if (persistentFogMap[r][c] === 0) {
-        ctx.fillStyle = "rgba(0,0,0, 0.95)";
-        ctx.fillRect(screenPos.x, screenPos.y, cellScreenSize, cellScreenSize);
-      } else if (fogMap[r][c] < 1) {
-        ctx.fillStyle = "rgba(0,0,0,0.6)";
-        ctx.fillRect(screenPos.x, screenPos.y, cellScreenSize, cellScreenSize);
-      }
-    }
-  }
-  ctx.restore();
-}
-
-function renderFogOfWar() { 
-	return;
-	renderPersistentFog(); }
-	  
-function renderDynamicFog() {}
 
 function updateResourceUI() {
   document.getElementById("playerGold").innerText = Math.round(gameState.playerResources.gold);
@@ -1465,3 +1208,4 @@ function isTargetAlive(target) {
   if (target instanceof Building) return gameState.buildings.includes(target);
   return false;
 }
+

@@ -380,17 +380,17 @@ const chatChannel = document.getElementById("chat-channel");
 const chatToggleBtn = document.getElementById("chat-toggle");
 let chatVisible = true;
 
-chatToggleBtn.addEventListener("click", () => {
-  chatVisible = !chatVisible;
-  chatMessages.style.display = chatVisible ? "flex" : "none";
-  chatToggleBtn.textContent = chatVisible ? "🡇 Скрыть чат" : "🡅 Показать чат";
-});
+//chatToggleBtn.addEventListener("click", () => {
+  //chatVisible = !chatVisible;
+  //chatMessages.style.display = chatVisible ? "flex" : "none";
+  //chatToggleBtn.textContent = chatVisible ? "🡇 Скрыть чат" : "🡅 Показать чат";
+//});
 
 
-chatSend.addEventListener("click", sendChatMessage);
-chatInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") sendChatMessage();
-});
+//chatSend.addEventListener("click", sendChatMessage);
+//chatInput.addEventListener("keydown", (e) => {
+  //if (e.key === "Enter") sendChatMessage();
+//});
 
 function sendChatMessage() {
   const text = chatInput.value.trim();

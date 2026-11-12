@@ -1215,26 +1215,58 @@ function startWorkerCycle(worker, warehouse) {
   }
 
   // ⚖️ Назначение типа ресурса по наименьшей загрузке
-  if (!worker.assignedResourceType) {
-    const types = ["gold", "silicon", "plasma"];
-    const available = types.filter(type =>
-      gameState.resources.some(r => !r.depleted && r.type === type)
-    );
-    if (available.length === 0) {
-      setTimeout(() => startWorkerCycle(worker, warehouse), 3000);
-      return;
-    }
+      // ⚖️ УМНОЕ НАЗНАЧЕНИЕ РЕСУРСА: Баланс "сколько в казне" vs "сколько рабочих"
+      if (!worker.assignedResourceType) {
+        const types = ["gold", "silicon", "plasma"];
+        const available = types.filter(type =>
+          gameState.resources.some(r => !r.depleted && r.type === type)
+        );
+        
+        if (available.length === 0) {
+          setTimeout(() => startWorkerCycle(worker, warehouse), 3000);
+          return;
+        }
 
-    const countByType = {};
-    types.forEach(type => {
-      countByType[type] = gameState.units.filter(u =>
-        u.type === "worker" && u.assignedResourceType === type
-      ).length;
-    });
+        // Определяем, чей это рабочий, чтобы смотреть правильную казну
+        const res = worker.owner === playerId ? gameState.playerResources : gameState.aiResources;
+        const resourceScores = {};
+        
+        available.forEach(type => {
+          // 1. Сколько этого ресурса сейчас в казне
+          const treasuryAmount = res[type] || 0;
+          
+          // 2. Сколько рабочих УЖЕ добывает этот тип
+          const workersCount = gameState.units.filter(u => 
+            u.type === "worker" && u.assignedResourceType === type
+          ).length;
+          
+          // 3. ФОРМУЛА ПРИОРИТЕТА: (Ресурс в казне) / (Рабочие + 1)
+          // +1 предотвращает деление на ноль и дает шанс новому рабочему
+          resourceScores[type] = treasuryAmount / (workersCount + 1);
+        });
 
-    const minCount = Math.min(...available.map(t => countByType[t]));
-    worker.assignedResourceType = available.filter(t => countByType[t] === minCount)[0];
-  }
+        // 4. Сортируем: сначала идет тот ресурс, у которого НАИМЕНЬШИЙ приоритет (его меньше всего)
+        available.sort((a, b) => resourceScores[a] - resourceScores[b]);
+        
+        // 5. ПОРОГ ПЕРЕКЛЮЧЕНИЯ: Если разница между самым отстающим и следующим больше 10 единиц,
+        // мы принудительно направляем рабочего на отстающий ресурс.
+        if (available.length >= 2) {
+          const diff = resourceScores[available[1]] - resourceScores[available[0]];
+          if (diff > 10) { 
+            worker.assignedResourceType = available[0]; // Берем самый отстающий
+          } else {
+            // Иначе распределяем равномерно, чтобы не было простоя
+            const countByType = {};
+            types.forEach(t => {
+              countByType[t] = gameState.units.filter(u => u.type === "worker" && u.assignedResourceType === t).length;
+            });
+            const minCount = Math.min(...available.map(t => countByType[t]));
+            worker.assignedResourceType = available.filter(t => countByType[t] === minCount)[0];
+          }
+        } else {
+          worker.assignedResourceType = available[0];
+        }
+      }
 
   const type = worker.assignedResourceType;
 
@@ -1568,11 +1600,20 @@ function gameLoop(time) {
   updateResourceUI();
   gameState.units.filter(unit => unit.owner === playerId && ["fighter", "assault", "elite"].includes(unit.type)).forEach(unit => checkForEnemiesAndAttack(unit));
   updateGameState(deltaTime);
-    try {
-    renderGame();
-    } catch (err) {
+  try {
+    renderGame(); // Основная отрисовка игры
+  } catch (err) {
     console.error("[Render Error]", err);
-    }
+  }
+  
+  // === ЖЕСТКИЙ ВЫЗОВ ОТРИСОВКИ ГРАФА ===
+  if (typeof window.drawGnnOverlay === "function") {
+      //console.log("🔥 Attempting to draw GNN Overlay...");
+      window.drawGnnOverlay();
+  } else {
+      console.warn("⚠️ window.drawGnnOverlay is NOT a function!");
+  }
+
   gameLoopId = requestAnimationFrame(gameLoop);
 }
 
@@ -2117,3 +2158,4 @@ function getMissingResources(cost, owner) {
     plasma: Math.max(0, cost.plasma + reserved.plasma - resources.plasma)
   };
 }
+

@@ -30,6 +30,29 @@
       { name: "Tech Tier 3", duration: 130, action: "techUp3" },        
       { name: "Late Game Waves", duration: 9999, action: "largeAttacks" } 
     ],
+	  
+	      // 🔥 ФУНКЦИЯ-УЧИТЕЛЬ: Передает действие бота в мозг ИИ
+    teachAction: function(actionName, intent) {
+        if (!window.GnnAI || !window.gameState) return;
+        
+        // Создаем состояние от лица ИИ
+        const fakeState = window.GnnAI.buildGraphState(); 
+        if (!fakeState) return;
+
+        // Находим индекс действия
+        const actionIndex = window.AIDX ? window.AIDX[actionName] : -1;
+        if (actionIndex === -1) return;
+
+        // Регистрируем действие как "правильное"
+        window.GnnAI.registerAction(actionName, fakeState, intent, actionIndex);
+        
+        // 🔥 КЛЮЧЕВОЙ МОМЕНТ: Мы вручную добавляем огромную награду за это действие,
+        // чтобы BC сразу понял, что это "хорошо"
+        const lastEntry = window.GnnAI.replay.buffer[(window.GnnAI.replay.head - 1 + window.GnnAI.replay.capacity) % window.GnnAI.replay.capacity];
+        if (lastEntry) {
+            lastEntry.reward += 10.0; // Огромный бонус за копирование учителя
+        }
+    },
 
     init: function () {
       this.active = true;
@@ -40,6 +63,8 @@
       this.profile = window.OPPONENT_PROFILES[Math.floor(Math.random() * window.OPPONENT_PROFILES.length)];
       console.log(`[TrainingBot] 🎭 Загружен профиль: ${this.profile.name} (Agg: ${this.profile.aggression}, Eco: ${this.profile.eco})`);
     },
+	  
+	  
 
     stop: function () {
       this.active = false;
@@ -76,12 +101,18 @@
       // 🔥 УСКОРЕНИЕ: Независимые IF вместо ELSE IF. Бот делает всё сразу, если есть ресурсы.
       if (warehouses < 4 && typeof canSpendResources === "function" && canSpendResources(WAREHOUSE_COST, "player")) {
         const pos = this.findBuildPos("warehouse");
-        if (pos) { placeBuilding(pos.x, pos.y, "warehouse", "player"); }
+        if (pos) { 
+            placeBuilding(pos.x, pos.y, "warehouse", "player"); 
+            this.teachAction("build_warehouse", { type: "build", buildingType: "warehouse" }); // 🔥 УЧИМ ИИ
+        }
       } 
       
       if (workshops === 0 && typeof canSpendResources === "function" && canSpendResources(REPAIR_WORKSHOP_COST, "player")) {
         const pos = this.findBuildPos("repairWorkshop");
-        if (pos) { placeBuilding(pos.x, pos.y, "repairWorkshop", "player"); }
+        if (pos) { 
+            placeBuilding(pos.x, pos.y, "repairWorkshop", "player"); 
+            this.teachAction("build_repair", { type: "build", buildingType: "repairWorkshop" }); // 🔥 УЧИМ ИИ
+        }
       } 
       
        // 🔥 PBT: Адаптивный найм рабочих в зависимости от профиля
@@ -91,7 +122,7 @@
       }
     },
 
-       buildArmy: function () {
+   buildArmy: function () {
       const barracks = gameState.buildings.filter(b => b.owner === "player" && b.type === "barracks").length;
       // Проверяем также очередь строительства, чтобы не спамить постройкой, если она уже в пути
       const barracksInQueue = (window.buildQueue || []).filter(q => q.type === "barracks").length;
@@ -104,8 +135,6 @@
 
       // 🔥 ДИАГНОСТИКА: Почему не строим казарму?
       if (barracks === 0 && barracksInQueue === 0) {
-        //console.log("[Bot Debug] Пытаюсь построить казарму...");
-        
         if (typeof canSpendResources !== "function") {
           console.warn("[Bot Debug] ❌ ОШИБКА: Функция canSpendResources не найдена!");
         } else if (!canSpendResources(BARRACKS_COST, "player")) {
@@ -115,13 +144,12 @@
           if (!pos) {
             console.warn("[Bot Debug] ❌ ОШИБКА: findBuildPos вернул null (не нашел место)!");
           } else {
-            //console.log(`[Bot Debug] ✅ Место найдено (${pos.x}, ${pos.y}). Пробую placeBuilding...`);
             if (typeof placeBuilding === "function") {
               placeBuilding(pos.x, pos.y, "barracks", "player");
-              //console.log("[Bot Debug] 🏗️ Команда на постройку казармы отправлена!");
+              this.teachAction("build_barracks", { type: "build", buildingType: "barracks" }); // 🔥 УЧИМ ИИ
             } else if (typeof window.scheduleAIBuilding === "function") {
               window.scheduleAIBuilding("barracks", pos.x, pos.y, 0);
-              //console.log("[Bot Debug] 🏗️ Команда на постройку казармы отправлена (через schedule)!");
+              this.teachAction("build_barracks", { type: "build", buildingType: "barracks" }); // 🔥 УЧИМ ИИ
             } else {
               console.warn("[Bot Debug] ❌ ОШИБКА: Функция placeBuilding или scheduleAIBuilding не найдена!");
             }
@@ -149,24 +177,33 @@
       }
     },
 												 
-    techUp2: function () {
+      techUp2: function () {
       const hasBeacon = gameState.buildings.some(b => b.owner === "player" && b.type === "beacon");
       const hasBase2 = gameState.buildings.some(b => b.owner === "player" && b.type === "base2");
       const hasBarracks2 = gameState.buildings.some(b => b.owner === "player" && b.type === "barracks2");
 
       if (!hasBeacon && typeof canSpendResources === "function" && canSpendResources(BEACON_COST, "player")) {
         const pos = this.findBuildPos("beacon");
-        if (pos) { placeBuilding(pos.x, pos.y, "beacon", "player"); }
+        if (pos) { 
+            placeBuilding(pos.x, pos.y, "beacon", "player"); 
+            this.teachAction("build_beacon", { type: "build", buildingType: "beacon" });
+        }
       } 
       
       if (hasBeacon && !hasBase2 && typeof canSpendResources === "function" && canSpendResources(BASE2_COST, "player")) {
         const pos = this.findBuildPos("base2");
-        if (pos) { placeBuilding(pos.x, pos.y, "base2", "player"); }
+        if (pos) { 
+            placeBuilding(pos.x, pos.y, "base2", "player"); 
+            this.teachAction("build_base2", { type: "build", buildingType: "base2" });
+        }
       } 
       
       if (hasBase2 && !hasBarracks2 && typeof canSpendResources === "function" && canSpendResources(BARRACKS2_COST, "player")) {
         const pos = this.findBuildPos("barracks2");
-        if (pos) { placeBuilding(pos.x, pos.y, "barracks2", "player"); }
+        if (pos) { 
+            placeBuilding(pos.x, pos.y, "barracks2", "player"); 
+            this.teachAction("build_barracks2", { type: "build", buildingType: "barracks2" });
+        }
       }
       
       // Сразу начинаем нанимать штурмовиков, как только появилась Казарма 2
@@ -206,12 +243,18 @@
 
       if (hasBase2 && hasBarracks2 && !hasBase3 && typeof canSpendResources === "function" && canSpendResources(BASE3_COST, "player")) {
         const pos = this.findBuildPos("base3");
-        if (pos) { placeBuilding(pos.x, pos.y, "base3", "player"); }
+        if (pos) { 
+            placeBuilding(pos.x, pos.y, "base3", "player"); 
+            this.teachAction("build_base3", { type: "build", buildingType: "base3" });
+        }
       } 
       
       if (hasBase3 && !hasBarracks3 && typeof canSpendResources === "function" && canSpendResources(BARRACKS3_COST, "player")) {
         const pos = this.findBuildPos("barracks3");
-        if (pos) { placeBuilding(pos.x, pos.y, "barracks3", "player"); }
+        if (pos) { 
+            placeBuilding(pos.x, pos.y, "barracks3", "player"); 
+            this.teachAction("build_barracks3", { type: "build", buildingType: "barracks3" });
+        }
       }
       
       if (hasBarracks3) {
@@ -245,6 +288,7 @@
         const warehouse = gameState.buildings.find(b => b.owner === "player" && b.type === "warehouse" && b.active && (b.workers || 0) < (b.maxDeliveryWorkers || 5));
         if (warehouse && typeof canSpendResources === "function" && canSpendResources(WORKER_COST, "player") && typeof hireWorkerForPlayer === "function") {
           hireWorkerForPlayer(warehouse);
+          this.teachAction("hireWorker", { type: "hire", unitType: "worker" }); // 🔥 УЧИМ ИИ
         } else {
           break; // Нет ресурсов или места, прерываем цикл
         }
@@ -256,6 +300,7 @@
         const barracks = gameState.buildings.find(b => b.owner === "player" && b.type === "barracks" && b.active);
         if (barracks && typeof canSpendResources === "function" && canSpendResources(FIGHTER_COST, "player") && typeof hireFighterForPlayer === "function") {
           hireFighterForPlayer(barracks);
+          this.teachAction("hireFighter", { type: "hire", unitType: "fighter" }); // 🔥 УЧИМ ИИ
         } else {
           break;
         }
@@ -267,6 +312,7 @@
         const barracks2 = gameState.buildings.find(b => b.owner === "player" && b.type === "barracks2" && b.active);
         if (barracks2 && typeof canSpendResources === "function" && canSpendResources(ASSAULT_COST, "player") && typeof hireAssaultForPlayer === "function") {
           hireAssaultForPlayer(barracks2);
+          this.teachAction("hireAssault", { type: "hire", unitType: "assault" }); // 🔥 УЧИМ ИИ
         } else {
           break;
         }
@@ -278,6 +324,7 @@
         const barracks3 = gameState.buildings.find(b => b.owner === "player" && b.type === "barracks3" && b.active);
         if (barracks3 && typeof canSpendResources === "function" && canSpendResources(ELITE_COST, "player") && typeof hireEliteForPlayer === "function") {
           hireEliteForPlayer(barracks3);
+          this.teachAction("hireElite", { type: "hire", unitType: "elite" }); // 🔥 УЧИМ ИИ
         } else {
           break;
         }
