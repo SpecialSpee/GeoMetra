@@ -1570,8 +1570,14 @@ function gameLoop(time) {
   }
   if (isPaused) { gameLoopId = requestAnimationFrame(gameLoop); 
     return; }
-  const deltaTime = (time - lastTime) / 1000;
+  let deltaTime = (time - lastTime) / 1000;
   lastTime = time;
+	
+  const MAX_DELTA_TIME = 0.1; 
+  if (deltaTime > MAX_DELTA_TIME) {
+    deltaTime = MAX_DELTA_TIME;
+  }
+
   if (isMobile) {
     frameCounter = (frameCounter + 1) % frameSkipMobile;
     if (frameCounter !== 0) { gameLoopId = requestAnimationFrame(gameLoop); return; }
