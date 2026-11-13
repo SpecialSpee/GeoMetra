@@ -84,7 +84,45 @@ function cleanUpBuildingReferences() {
 }
 
 function releaseUnitToPool(unit) {
-  unit.alive = false; unit.commandQueue = []; unit.target = null; unit.hidden = false; unit.hiding = false; unit.inWorkshop = null;
+  // 🔥 ПОЛНЫЙ СБРОС всех полей перед возвратом
+  unit.alive = false;
+  unit.commandQueue = [];
+  unit.target = null;
+  unit.hidden = false;
+  unit.hiding = false;
+  unit.inWorkshop = null;
+  unit.defending = false;
+  unit.group = undefined;
+  unit.selected = false;
+  unit.maneuvering = false;
+  unit.formationBuff = null;
+  unit.burning = false;
+  unit.shocked = false;
+  unit.frozen = false;
+  unit.carrying = 0;
+  unit.delivering = false;
+  unit.carriedResourceToken = null;
+  unit.assignedResource = null;
+  unit.assignedResourceType = null;
+  unit.homeWarehouse = null;
+  unit.homeWorkshop = null;
+  unit.homeBuilding = null;
+  unit.busyRepair = false;
+  unit.laserBeam = null;
+  unit.damage = undefined;
+  unit.speed = undefined;
+  unit.vx = 0;
+  unit.vy = 0;
+  unit.angle = 0;
+  unit.scale = 1;
+  unit.idleTimer = 0;
+  unit.attackCooldown = 0;
+  
+  if (unit.repairIntervalId) { clearInterval(unit.repairIntervalId); unit.repairIntervalId = null; }
+  if (unit.burningIntervalId) { clearInterval(unit.burningIntervalId); unit.burningIntervalId = null; }
+  if (unit.currentMovementAnimation) { cancelAnimationFrame(unit.currentMovementAnimation); unit.currentMovementAnimation = null; }
+  if (unit.waitingAnimation) { cancelAnimationFrame(unit.waitingAnimation); unit.waitingAnimation = null; }
+  
   if (!unitPools[unit.type]) unitPools[unit.type] = [];
   unitPools[unit.type].push(unit);
 }
@@ -204,6 +242,11 @@ function fireBullet(shooter, enemy) {
   
   const bullet = getBulletFromPool(bulletType, shooter, enemy, bulletConfig);
   
+// 🔥 ЯВНЫЙ СБРОС ЦВЕТА ПЕРЕД УСТАНОВКОЙ НОВОГО
+  bullet.color = null;
+  bullet.isArtillery = false;
+  bullet.isMelee = false;
+
   // Цвета для визуального различия
   if (shooter.type === "assault") {
     bullet.color = "128,0,128"; // Фиолетовый для штурмовика
@@ -1012,7 +1055,7 @@ function updateLasers() {
       
       // ОТЛАДКА: ты увидишь это в консоли, если лазер попал!
       if (hitTargets.length > 0) {
-        console.log(`[⚡ LASER HIT] Целей поражено: ${hitTargets.length}. Базовый урон: ${laser.damage}`);
+        //console.log(`[⚡ LASER HIT] Целей поражено: ${hitTargets.length}. Базовый урон: ${laser.damage}`);
       }
       
       hitTargets.forEach((hit, index) => {
@@ -1794,30 +1837,99 @@ function getUnitFromPool(type, owner, x, y) {
   
   if (pool.length > 0) {
     unit = pool.pop();
-    unit.x = x; 
-    unit.y = y; 
-    unit.owner = owner; 
-    unit.health = unit.maxHealth; 
+    // 🔥 ПОЛНЫЙ СБРОС ВСЕХ ПОЛЕЙ ЮНИТА
+    unit.x = x;
+    unit.y = y;
+    unit.owner = owner;
     unit.alive = true;
-    unit.commandQueue = []; 
-    unit.target = null; 
-    unit.hidden = false; 
-    unit.hiding = false; 
-    unit.scale = 1; 
+    unit.hidden = false;
+    unit.hiding = false;
     unit.inWorkshop = null;
+    unit.target = null;
+    unit.commandQueue = [];
+    unit.defending = false;
+    unit.group = undefined;
+    unit.selected = false;
+    unit.maneuvering = false;
+    unit.formationBuff = null;
+    unit.burning = false;
+    unit.burnTime = 0;
+    unit.burnDuration = 0;
+    unit.shocked = false;
+    unit.shockedUntil = 0;
+    unit.frozen = false;
+    unit.freezeTimer = 0;
+    unit.idleTimer = 0;
+    unit.idlePhase = undefined;
+    unit.vx = 0;
+    unit.vy = 0;
+    unit.angle = 0;
+    unit.scale = 1;
+    unit.carrying = 0;
+    unit.delivering = false;
+    unit.carriedResourceToken = null;
+    unit.assignedResource = null;
+    unit.assignedResourceType = null;
+    unit.homeWarehouse = null;
+    unit.homeWorkshop = null;
+    unit.homeBuilding = null;
+    unit.busyRepair = false;
+    unit.laserBeam = null;
+    unit.lastFireTime = 0;
+    unit.lastMachineGunFireTime = 0;
+    unit.lastRocketFireTime = 0;
+    unit.lastMeleeAttack = 0;
+    unit.lastArtilleryAttack = 0;
+    unit.lastLaserAttack = 0;
+    unit.attackCooldown = 0;
+    unit.damage = undefined; // Сбрасываем бафф урона от формации
+    unit.speed = undefined;  // Сбрасываем бафф скорости
     
-    // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Сбрасываем ID при переиспользовании!
+    // 🔥 ПЕРЕСЧЁТ ХАРАКТЕРИСТИК ПО ТИПУ (критично!)
+    switch (type) {
+      case "worker":
+        unit.health = 100; unit.maxHealth = 100;
+        unit.visionRadius = VISION_RADIUS;
+        break;
+      case "fighter":
+        unit.health = 250; unit.maxHealth = 250;
+        unit.range = 180; unit.fireRate = 350;
+        unit.orbitRadius = undefined; unit.orbitAngle = undefined;
+        unit.engagementRadius = 500;
+        unit.visionRadius = FIGHTER_VISION_RANGE;
+        break;
+      case "repairman":
+        unit.health = 150; unit.maxHealth = 150;
+        unit.engagementRadius = 500;
+        unit.scale = 0.4;
+        unit.visionRadius = VISION_RADIUS;
+        break;
+      case "assault":
+        unit.health = 300; unit.maxHealth = 300;
+        unit.machineGunRange = 200;
+        unit.machineGunFireRate = 250;
+        unit.rocketRange = 280;
+        unit.rocketCooldown = 3000;
+        unit.engagementRadius = 500;
+        unit.range = 280;
+        unit.visionRadius = ASSAULT_VISION_RANGE;
+        break;
+      case "elite":
+        unit.health = 750; unit.maxHealth = 750;
+        unit.range = 500;
+        unit.meleeRange = 200;
+        unit.artilleryRange = 500;
+        unit.laserRange = 300;
+        unit.meleeCooldown = 1000;
+        unit.artilleryCooldown = 10000;
+        unit.laserCooldown = 5000;
+        unit.visionRadius = ELITE_VISION_RANGE;
+        break;
+    }
+    
     unit.id = generateUniqueUnitId();
   } else { 
     unit = new Unit(type, owner, x, y); 
-  }
-  
-  switch (type) {
-    case "worker": unit.visionRadius = VISION_RADIUS; break;
-    case "fighter": unit.visionRadius = FIGHTER_VISION_RANGE; break;
-    case "assault": unit.visionRadius = ASSAULT_VISION_RANGE; break;
-    case "elite": unit.visionRadius = ELITE_VISION_RANGE; break;
-    default: unit.visionRadius = VISION_RADIUS;
   }
   
   return unit;

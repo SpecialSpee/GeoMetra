@@ -121,20 +121,57 @@ function getBulletFromPool(type, shooter, enemy, bulletConfig) {
   let bullet;
   if (pool.length > 0) {
     bullet = pool.pop();
-    bullet.x = shooter.x; bullet.y = shooter.y;
+    // 🔥 ПОЛНЫЙ СБРОС ВСЕХ ПОЛЕЙ ПУЛИ
+    bullet.x = shooter.x;
+    bullet.y = shooter.y;
     bullet.angle = Math.atan2(enemy.y - shooter.y, enemy.x - shooter.x);
-    bullet.speed = bulletConfig.speed; bullet.shooter = shooter; bullet.target = enemy; bullet.alive = true;
+    bullet.speed = bulletConfig.speed;
+    bullet.shooter = shooter;
+    bullet.target = enemy;
+    bullet.alive = true;
+    bullet.lifetime = bulletConfig.lifetime;
+    bullet.damage = bulletConfig.damage;
+    bullet.isMissile = false;
+    bullet.isArtillery = false;
+    bullet.isMelee = false;
+    bullet.splashRadius = 0;
+    bullet.splashDamage = 0;
+    bullet.color = null; // Сбрасываем цвет — он установится в fireBullet
   } else {
-    bullet = new Bullet(shooter.x, shooter.y, Math.atan2(enemy.y - shooter.y, enemy.x - shooter.x), bulletConfig.speed, shooter, enemy);
+    bullet = new Bullet(
+      shooter.x, shooter.y,
+      Math.atan2(enemy.y - shooter.y, enemy.x - shooter.x),
+      bulletConfig.speed, shooter, enemy
+    );
+    bullet.lifetime = bulletConfig.lifetime;
+    bullet.damage = bulletConfig.damage;
+    bullet.isMissile = false;
+    bullet.isArtillery = false;
+    bullet.isMelee = false;
+    bullet.splashRadius = 0;
+    bullet.splashDamage = 0;
+    bullet.color = null;
   }
-  bullet.lifetime = bulletConfig.lifetime;
-  bullet.damage = bulletConfig.damage;
+  // Явно ставим флаг типа пули
   bullet.isMissile = (type === "missile");
   return bullet;
 }
 
 function releaseBulletToPool(bullet) {
-  bullet.alive = false; bullet.target = null; bullet.shooter = null;
+  // 🔥 ПОЛНЫЙ СБРОС перед возвратом в пул
+  bullet.alive = false;
+  bullet.target = null;
+  bullet.shooter = null;
+  bullet.isMissile = false;
+  bullet.isArtillery = false;
+  bullet.isMelee = false;
+  bullet.splashRadius = 0;
+  bullet.splashDamage = 0;
+  bullet.color = null;
+  bullet.damage = 0;
+  bullet.lifetime = 0;
+  bullet.speed = 0;
+  
   if (bullet.isMissile) bulletPools.missile.push(bullet);
   else bulletPools.regular.push(bullet);
 }

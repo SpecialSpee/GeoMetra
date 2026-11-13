@@ -4,20 +4,19 @@
 
 (function () {
   "use strict";
-
   if (window.GnnAI) {
     console.warn("[GnnAI] уже загружен");
     return;
   }
 
   const CFG = {
-    MAX_NODES: 160, 
+    MAX_NODES: 160,
     NODE_FEATURES: 36,
-    GLOBAL_FEATURES: 24, 
+    GLOBAL_FEATURES: 24,
     HIDDEN: 128,
     LR: 0.00005,
     DECISION_MS: 500,
-    MIN_COMMIT_MS: 30000, 
+    MIN_COMMIT_MS: 30000,
     WORLD_WIDTH: 2000,
     WORLD_HEIGHT: 2000,
     BUILD_QUEUE_MS: 500,
@@ -28,10 +27,10 @@
     BASE_THREAT_RADIUS: 450,
     REPLAY_SIZE: 2000,
     BATCH_SIZE: 64,
-    AUTO_ECONOMY: false, 
-    BC_MODE: true,         
-    BC_TRANSITION_BATCHES: 1500, 
-    STORAGE_KEY: "geomestra_gnn_weights_v7_4", 
+    AUTO_ECONOMY: false,
+    BC_MODE: true,
+    BC_TRANSITION_BATCHES: 1500,
+    STORAGE_KEY: "geomestra_gnn_weights_v7_4",
     STATS_KEY: "geomestra_gnn_benchmark_v7_4",
     GAMMA: 0.99,
     CLIP_EPSILON: 0.2,
@@ -62,7 +61,6 @@
   const WeightDB = {
     db: null,
     isClosing: false,
-    
     async init() {
       if (this.isClosing) await new Promise(r => setTimeout(r, 500));
       if (this.db) return;
@@ -78,43 +76,41 @@
         this.db = null;
       }
     },
-
     async save(key, data) {
       if (this.isClosing) return;
       await this.init();
       if (!this.db) return;
       return new Promise((resolve, reject) => {
         try {
-            const tx = this.db.transaction('models', 'readwrite');
-            tx.objectStore('models').put(data, key);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => reject(tx.error);
+          const tx = this.db.transaction('models', 'readwrite');
+          tx.objectStore('models').put(data, key);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
         } catch (e) { reject(e); }
       });
     },
-
     async load(key) {
       if (this.isClosing) return null;
       await this.init();
       if (!this.db) return null;
       return new Promise((resolve, reject) => {
         try {
-            const tx = this.db.transaction('models', 'readonly');
-            const req = tx.objectStore('models').get(key);
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
+          const tx = this.db.transaction('models', 'readonly');
+          const req = tx.objectStore('models').get(key);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
         } catch (e) { reject(e); }
       });
     }
   };
 
   const G_ACTIONS = [
-    "defend", 
-    "build_warehouse", "build_repair", "build_barracks", "build_turret1", 
-    "build_beacon", "build_base2", "build_barracks2", "build_turret2", 
+    "defend",
+    "build_warehouse", "build_repair", "build_barracks", "build_turret1",
+    "build_beacon", "build_base2", "build_barracks2", "build_turret2",
     "build_base3", "build_barracks3", "build_turret3",
-    "hireWorker", "hireRepairman", "hireFighter", "hireAssault", "hireElite", 
-    "tactic_all_in", "tactic_harass", "tactic_push", "tactic_defend",    
+    "hireWorker", "hireRepairman", "hireFighter", "hireAssault", "hireElite",
+    "tactic_all_in", "tactic_harass", "tactic_push", "tactic_defend",
     "idle"
   ];
   const AIDX = Object.fromEntries(G_ACTIONS.map((a, i) => [a, i]));
@@ -141,30 +137,43 @@
     episode: null,
     episodeReport: null,
     lastPhaseCheck: 0,
-	  
     strategicMemory: {
       enemyComposition: {},
-      threatLevel: 0, 
+      threatLevel: 0,
       lastTechLevel: 1,
       techProgressionTime: 0
     },
-    
-    missionCache: [], 
+    missionCache: [],
     lastStagnationCheck: 0,
     lastBuildingBuilt: {},
     lastArmySize: 0,
     lastBuildingCount: 0,
-    lastResourceTotal: 0, 
-    
+    lastResourceTotal: 0,
+    lastEcoEffCheck: 0,
+    lastTechLevel: 1,
     lastStrategicChangeTime: 0,
-    lastStrategicAction: null,  
-    bcActive: true,       
-    bcBatchCount: 0,      
+    lastStrategicAction: null,
+    bcActive: true,
+    bcBatchCount: 0,
+
+    // 🔥 ПРАВИЛЬНОЕ МЕСТО: Таблицы внутри объекта GnnAI
+    PREREQUISITES: {
+      "turret2": "barracks2", "turret3": "barracks3",
+      "barracks2": "base2", "barracks3": "base3",
+      "base2": "barracks", "base3": "barracks2"
+    },
+    BUILD_BONUSES: {
+      "barracks": 25.0, "base2": 150.0, "barracks2": 60.0,
+      "base3": 200.0, "barracks3": 80.0
+    },
+    BUILD_TIER_GOALS: {
+      "barracks": "barracks", "base2": "base2", "base3": "base3"
+    },
 
     // CURRICULUM LEARNING STATE
-    curriculumTier: 0, // 0: Eco, 1: Mil T1, 2: Tech T2, 3: Late Game
+    curriculumTier: 0,
     episodesInCurrentTier: 0,
-    TIER_THRESHOLD: 3, // Уменьшил порог для более быстрого прогресса
+    TIER_THRESHOLD: 3,
     tierGoalsMet: { barracks: false, base2: false, base3: false },
 
     getGlobalFeatures: function () {
@@ -335,7 +344,6 @@
           }
       
 	 }
-		
 
       this.missionCache.push({
         action: action,
@@ -533,13 +541,35 @@
             const prev = mission.snapshot;
             let reasonBuild = "";
 
-            if (bt === "barracks")  { rewardDelta += 25.0;  reasonBuild = "BARRACKS_BUILT_CRITICAL"; this.tierGoalsMet.barracks = true; }
-            else if (bt === "base2")     { rewardDelta += 150.0; reasonBuild = "TIER_2_ACHIEVED"; this.tierGoalsMet.base2 = true; }
-            else if (bt === "barracks2") { rewardDelta += 60.0;  reasonBuild = "TIER_2_BARRACKS"; }
-            else if (bt === "base3")     { rewardDelta += 200.0; reasonBuild = "TIER_3_ACHIEVED"; this.tierGoalsMet.base3 = true; }
-            else if (bt === "barracks3") { rewardDelta += 80.0;  reasonBuild = "TIER_3_BARRACKS"; }
-            else if (bt.startsWith("turret")) { rewardDelta += 15.0; reasonBuild = "TURRET_BUILT"; }
-            else if (!["warehouse", "repairWorkshop"].includes(bt)) { rewardDelta += 5.0; reasonBuild = "building_bonus"; }
+            // 🔥 Используем таблицы для основных зданий
+            if (this.BUILD_BONUSES[bt] !== undefined) {
+              rewardDelta += this.BUILD_BONUSES[bt];
+              if (this.BUILD_TIER_GOALS[bt]) this.tierGoalsMet[this.BUILD_TIER_GOALS[bt]] = true;
+              reasonBuild = bt.toUpperCase() + "_BUILT";
+            }
+            // 🔥 Турели
+            else if (bt.startsWith("turret")) { 
+                rewardDelta += 15.0; 
+                reasonBuild = "TURRET_BUILT"; 
+            }
+            // 🔥 МАЯКИ: специальный блок, чтобы не спамили!
+            else if (bt === "beacon") {
+                const beaconCount = gameState.buildings.filter(b => 
+                    b.owner === "ai" && b.type === "beacon" && b.active
+                ).length;
+                if (beaconCount > 2) {
+                    rewardDelta -= 5.0;
+                    reasonBuild = "BEACON_SPAM_PENALTY";
+                } else {
+                    rewardDelta += 3.0;
+                    reasonBuild = "BEACON_PLACED";
+                }
+            }
+            // 🔥 Остальные здания (склады, мастерские) — без бонуса
+            else if (!["warehouse", "repairWorkshop"].includes(bt)) { 
+                rewardDelta += 5.0; 
+                reasonBuild = "building_bonus"; 
+            }
 
             // 🔥 ПРОВЕРКА ЭКСПАНСИИ: обстроили ли этот объект на дальнем маяке?
             if (["warehouse", "repairWorkshop", "turret", "turret2", "turret3"].includes(bt)) {
@@ -549,7 +579,13 @@
                   b.owner === "ai" && b.type === "beacon" && Math.hypot(b.x - builtObj.x, b.y - builtObj.y) < 220
                 );
                 if (nearBeacon) {
-                  rewardDelta += 20.0; reasonBuild += "_CLUSTER_ON_OUTPOST"; // форт построен!
+                  if (bt.startsWith("turret")) {
+                    rewardDelta += 35.0;
+                    reasonBuild += "_FORT_TURRET_BUILT";
+                  } else {
+                    rewardDelta += 20.0;
+                    reasonBuild += "_CLUSTER_ON_OUTPOST";
+                  }
                 }
               }
             }
@@ -568,6 +604,7 @@
             if (elapsed > 30000) { rewardDelta = -5.0; reason = "build_timeout"; isResolved = true; }
           }
         }
+		  
         else if (mission.intent.type === "idle") {
           const m = this.metrics();
           if (m.resTotal > 0.15) { rewardDelta = -1.5; reason = "idle_hoarding"; }  // >300 из 2000
@@ -626,6 +663,61 @@
       this.lastArmySize = m.aiArmy;
       this.lastBuildingCount = m.aiBuildings;
       this.lastResourceTotal = m.resTotal;
+    },
+	  
+	      evaluateEconomyEfficiency: function (now) {
+      if (!this.lastEcoEffCheck || now - this.lastEcoEffCheck < 6000) return;
+      this.lastEcoEffCheck = now;
+      const m = this.metrics();
+      const gameTimeMin = performance.now() / 60000;
+      let reward = 0;
+      let reasons = [];
+
+      const buildingCount = m.aiBuildings;
+      const armyValue = gameState.units
+        .filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0)
+        .reduce((s, u) => s + this.getUnitValue(u.type), 0);
+      const techScore = m.techLevel * 100;
+
+      // Сила на одно здание
+      const powerPerBuilding = (armyValue + techScore) / Math.max(1, buildingCount);
+
+      // 1. Штраф за раздутую инфраструктуру (много зданий, мало силы на здание)
+      if (gameTimeMin > 3 && buildingCount > 14 && powerPerBuilding < 30) {
+        reward -= 12.0;
+        reasons.push(`BLOATED_INFRASTRUCTURE: ${buildingCount} зданий, сила/здание=${powerPerBuilding.toFixed(0)} < 30. Меньше зданий, больше армии!`);
+      }
+
+      // 2. Бонус за конвертацию зданий в силу (здания не растут, а армия/тех растёт)
+      if (this.lastBuildingCount > 0 && buildingCount <= this.lastBuildingCount) {
+        const armyGrew = m.aiArmy > this.lastArmySize;
+        const techGrew = m.techLevel > (this.lastTechLevel || 1);
+        if (armyGrew || techGrew) {
+          reward += 10.0;
+          reasons.push(`EFFICIENT_CONVERSION: зданий ${buildingCount} (не +), но армия/тех выросли (+10)`);
+        }
+      }
+
+      // 3. Штраф за маяки сверх нужного (дублируем сигнал прямо в эффективность)
+      const beaconCount = gameState.buildings.filter(b =>
+        b.owner === "ai" && b.type === "beacon" && b.active
+      ).length;
+      const usefulBeacons = Math.min(beaconCount, 3); // 3 маяка — разумный потолок
+      if (beaconCount > 4) {
+        reward -= 4.0 * (beaconCount - 4);
+        reasons.push(`BEACON_OVERBUILD: ${beaconCount} маяков, лишние наказываются`);
+      }
+
+      this.lastTechLevel = m.techLevel;
+
+      if (reward !== 0) {
+        const currentState = this.buildGraphState();
+        if (currentState) {
+          this.replay.push({ X: currentState.X, A_distance: currentState.A_distance, A_threat: currentState.A_threat, actionIndex: AIDX.idle, reward });
+          if (reward < 0) console.warn(`[GnnAI] 💸 Неэффективная экономика: ${reward} (${reasons.join(', ')})`);
+          else console.log(`[GnnAI] ✅ Экономия ресурсов: +${reward} (${reasons.join(', ')})`);
+        }
+      }
     },
 	  
     evaluateMilitaryBalance: function (now) {
@@ -1024,6 +1116,7 @@
           this.evaluateStagnation(now);
           this.evaluateMilitaryBalance(now);
           this.evaluateOpponentGap(now);
+          this.evaluateEconomyEfficiency(now);
           this.evaluateMissions();
           this.checkEconomicParalysis(now);
       } catch (e) {
@@ -1063,7 +1156,6 @@
       }
     },
 
-// ЕДИНСТВЕННАЯ ВЕРСИЯ buildGraphState (С СЕМАНТИЧЕСКИМИ СВЯЗЯМИ)
 buildGraphState: function () {
   // Жесткая проверка валидности gameState
   if (!gameState || !aiBase || !aiBase.maxHealth || aiBase.maxHealth <= 0 || aiBase.health < 0) return null;
@@ -1092,8 +1184,6 @@ buildGraphState: function () {
 		}
 	  }
 
-
-    if (["fighter", "assault", "elite"].includes(o.type)) s += 1800;
     if (o.type?.startsWith("turret")) s += 1600;
     if (["base", "base2", "base3", "barracks", "barracks2", "barracks3", "warehouse", "repairWorkshop", "beacon"].includes(o.type)) s += 1200;
     return s;
@@ -1818,28 +1908,19 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
         if (action === "build_barracks") return this.tryBuildSpecific("barracks", BARRACKS_COST, action, actionIndex, state);
         if (action === "build_beacon") return this.tryBuildSpecific("beacon", BEACON_COST, action, actionIndex, state);
 
-        // 🔥 ТУРЕЛИ (наконец-то работают!)
-        if (action === "build_turret1") return this.tryBuildSpecific("turret", TURRET_COST, action, actionIndex, state, true);
-        if (action === "build_turret2") return this.tryBuildSpecific("turret2", TURRET2_COST, action, actionIndex, state, true);
-        if (action === "build_turret3") return this.tryBuildSpecific("turret3", TURRET3_COST, action, actionIndex, state, true);
+        // 🔥 ТУРЕЛИ (все три тира!)
+        if (action === "build_turret1") return this.tryBuildSpecific("turret", TURRET_COST, action, actionIndex, state);
+        if (action === "build_turret2") return this.tryBuildSpecific("turret2", TURRET2_COST, action, actionIndex, state);
+        if (action === "build_turret3") return this.tryBuildSpecific("turret3", TURRET3_COST, action, actionIndex, state);
 
         // 🔥 ТИР-2
-        if (action === "build_base2")     return this.tryBuildSpecific("base2", BASE2_COST, action, actionIndex, state, true);
-        if (action === "build_barracks2") return this.tryBuildSpecific("barracks2", BARRACKS2_COST, action, actionIndex, state, true);
+        if (action === "build_base2")     return this.tryBuildSpecific("base2", BASE2_COST, action, actionIndex, state);
+        if (action === "build_barracks2") return this.tryBuildSpecific("barracks2", BARRACKS2_COST, action, actionIndex, state);
 
         // 🔥 ТИР-3
-        if (action === "build_base3")     return this.tryBuildSpecific("base3", BASE3_COST, action, actionIndex, state, true);
-        if (action === "build_barracks3") return this.tryBuildSpecific("barracks3", BARRACKS3_COST, action, actionIndex, state, true);
-        
-        if (action === "buildTurret") {
-          const pos = this.findBuildPos(this.threatAnchor() || aiBase, "turret");
-          if (pos) {
-            this.registerAction(action, state, { type: "build", buildingType: "turret" }, actionIndex);
-            return !!scheduleAIBuilding("turret", pos.x, pos.y, 0);
-          }
-          this.replay.push({ X: state.X, A_distance: state.A_distance, A_threat: state.A_threat, actionIndex: actionIndex, reward: -0.3 });
-          return false;
-        }
+        if (action === "build_base3")     return this.tryBuildSpecific("base3", BASE3_COST, action, actionIndex, state);
+        if (action === "build_barracks3") return this.tryBuildSpecific("barracks3", BARRACKS3_COST, action, actionIndex, state);
+       
 
         if (action === "hireWorker") {
           const w = gameState.buildings.find(b => b.owner === "ai" && b.type === "warehouse" && b.active && (b.workers || 0) < (b.maxDeliveryWorkers || 5));
@@ -1937,10 +2018,18 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
         return false;
       }
 
-      let anchor = aiBase;
+      // 🔥 ПРОВЕРКА ИЕРАРХИИ: строгие пререквизиты для каждого здания
+      const hasBuilding = (type) => gameState.buildings.some(b => b.owner === "ai" && b.type === type && b.health > 0);
       
+    const prereq = this.PREREQUISITES[buildingType];
+    if (prereq && !gameState.buildings.some(b => b.owner === "ai" && b.type === prereq && b.health > 0)) {
+      this.replay.push({ X: state.X, A_distance: state.A_distance, A_threat: state.A_threat, actionIndex: actionIndex, reward: -5.0 });
+      console.warn(`[GnnAI] ⛔ Хак заблокирован: ${buildingType} без ${prereq}`);
+      return false;
+    }
+
+      let anchor = aiBase;
       if (buildingType === "beacon") {
-        // маяк — от самой дальней постройки (старая логика)
         let maxDist = 0;
         gameState.buildings.forEach(b => {
           if (b.owner === "ai" && b.active) {
@@ -1949,10 +2038,8 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
           }
         });
       } else if (["warehouse", "repairWorkshop", "turret", "turret2", "turret3"].includes(buildingType)) {
-        // 🔥 ЭКСПАНСИЯ: если есть недостроенный дальний маяк — строим ФОРТ там
         const outpost = this.findExpansionAnchor();
         if (outpost) {
-          // Используем существующую findBuildPos, но с маяком как якорем и радиусом 60-150 (плотная застройка)
           const pos = this.findBuildPos(outpost, buildingType, 60, 150);
           if (!pos) {
             this.replay.push({ X: state.X, A_distance: state.A_distance, A_threat: state.A_threat, actionIndex: actionIndex, reward: -0.3 });
@@ -1963,24 +2050,19 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
             this.registerAction(action, state, { type: "build", buildingType: buildingType }, actionIndex);
             return true;
           }
-          return false; // Если не получилось запланировать, выходим, неfallback-им на базу
+          return false;
         }
-        
-        // иначе — как раньше, у склада/базы
         const wh = gameState.buildings.find(b => b.owner === "ai" && b.type === "warehouse" && b.health > 0);
         if (wh) anchor = wh;
-      } else if (buildingType === "barracks" || buildingType === "barracks2" || buildingType === "barracks3" || buildingType === "base2" || buildingType === "base3") {
-        // Для казарм и баз 2/3 тира тоже попробуем найти маяк, но если нет - берем склад
+      } else if (["barracks", "barracks2", "barracks3", "base2", "base3"].includes(buildingType)) {
         const outpost = this.findExpansionAnchor();
-        if (outpost) {
-           anchor = outpost;
-        } else {
-           const wh = gameState.buildings.find(b => b.owner === "ai" && b.type === "warehouse" && b.health > 0);
-           if (wh) anchor = wh;
+        if (outpost) anchor = outpost;
+        else {
+          const wh = gameState.buildings.find(b => b.owner === "ai" && b.type === "warehouse" && b.health > 0);
+          if (wh) anchor = wh;
         }
       }
 
-      // Стандартный поиск позиции для всех остальных случаев
       const pos = this.findBuildPos(anchor, buildingType, 70, 240);
       if (!pos) {
         this.replay.push({ X: state.X, A_distance: state.A_distance, A_threat: state.A_threat, actionIndex: actionIndex, reward: -0.3 });
@@ -2141,19 +2223,6 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
         baseHp, enemyNear, aiArmy, enemyArmy, techLevel, aiBuildings, aiTurrets, aiWarehouses, playerAlive, 
         resTotal, ecoEfficiency,
         res: { gold: Math.round(ar.gold || 0), silicon: Math.round(ar.silicon || 0), plasma: Math.round(ar.plasma || 0) } 
-      };
-    },
- 
-    getUnlocks: function () {
-      const hasBuilding = (type) => gameState.buildings.some(b => b.owner === "ai" && b.type === type && b.health > 0 && b.active);
-      const hasUnit = (type) => gameState.units.some(u => u.owner === "ai" && u.type === type && u.health > 0);
-      return {
-        tier0_start: true,
-        tier1_economy: hasBuilding("warehouse") && hasBuilding("repairWorkshop"),
-        tier2_basicMilitary: hasBuilding("barracks"),
-        tier3_armyControl: hasUnit("fighter") || hasUnit("assault") || hasUnit("elite"),
-        tier4_advanced: hasBuilding("base2") && hasBuilding("barracks2"),
-        tier5_lateGame: hasBuilding("base3") && hasBuilding("barracks3")
       };
     },
 
@@ -2489,13 +2558,11 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
     }
     
     if (typeof window.startTrainingBot === "function") window.startTrainingBot();
-
     lastTime = performance.now();
     
     // ЗАПУСК ГЛАВНОГО ЦИКЛА
     requestAnimationFrame(gameLoop);
     console.log("[GnnAI] 🚀 Матч начат (v7.4 Perfect Stability + Visuals)");
-    
     setTimeout(() => {
       document.querySelectorAll('div').forEach(div => {
         if (div.style.zIndex >= 100 && div.offsetWidth > window.innerWidth * 0.5) {
@@ -2509,7 +2576,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
     const loading = document.getElementById("loadingScreen");
     if (!loading || document.getElementById("gnnButton")) return;
     const btn = document.createElement("button");
-    btn.id = "gnnButton"; btn.innerText = "Граф ИИ v7.4 Stable";
+    btn.id = "gnnButton"; btn.innerText = "Граф ИИ v7.4 Perfect Stability + Visuals";
     btn.style.cssText = "font-family: 'Orbitron', sans-serif; font-size: 18px; padding: 12px 28px; border: 2px solid #00ff99; color: #00ff99; background: rgba(0,255,120,0.08); border-radius: 50px; box-shadow: 0 0 15px rgba(0,255,120,0.5); cursor: pointer; transition: all 0.3s ease; z-index: 10; margin-top: 10px;";
     btn.onmouseenter = () => { btn.style.background = "rgba(0,255,120,0.2)"; btn.style.transform = "scale(1.05)"; };
     btn.onmouseleave = () => { btn.style.background = "rgba(0,255,120,0.08)"; btn.style.transform = "scale(1)"; };
@@ -2535,7 +2602,6 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       return origTick();
     };
   }
-
   window.GnnAI = GnnAI;
   window.startGnnGame = startGnnGame;
 
@@ -2600,10 +2666,8 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       }, 1500); 
     }
   });
-// ============================================================
-// ВИЗУАЛИЗАЦИЯ GNN ГРАФА (С УПРАВЛЕНИЕМ ПАНЕЛЬЮ И СВЯЗЯМИ)
-// ============================================================
 
+// ВИЗУАЛИЗАЦИЯ GNN ГРАФА (С УПРАВЛЕНИЕМ ПАНЕЛЬЮ И СВЯЗЯМИ)
 // Глобальные переменные для состояния (по умолчанию всё включено)
 if (typeof window.showGnnGraph === 'undefined') window.showGnnGraph = true;
 if (typeof window.showGnnLegend === 'undefined') window.showGnnLegend = true;
