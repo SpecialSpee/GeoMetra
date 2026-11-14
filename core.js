@@ -1824,7 +1824,7 @@ function generateResources(seed = 777) {
   resourceTypes.forEach(type => {
     for (let i = 0; i < 100; i++) {
       const x = rand() * (worldWidth - 20) + 10, y = rand() * (worldHeight - 20) + 10;
-      const max = type === "gold" ? 200 : type === "silicon" ? 150 : 100;
+      const max = type === "gold" ? 100 : type === "silicon" ? 75 : 50;
       gameState.resources.push(new Resource(type, x, y, max, max));
     }
   });

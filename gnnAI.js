@@ -1,7 +1,3 @@
-// ============================================================
-// gnnAI.js — Истинно самообучающийся Графовый ИИ v7.4 (Perfect Stability + Aggressive Curriculum)
-// ============================================================
-
 (function () {
   "use strict";
   if (window.GnnAI) {
@@ -11,8 +7,8 @@
 
   const CFG = {
     MAX_NODES: 160,
-    NODE_FEATURES: 36,
-    GLOBAL_FEATURES: 24,
+    NODE_FEATURES: 47,
+    GLOBAL_FEATURES: 37,
     HIDDEN: 128,
     LR: 0.00005,
     DECISION_MS: 500,
@@ -28,13 +24,13 @@
     REPLAY_SIZE: 2000,
     BATCH_SIZE: 64,
     AUTO_ECONOMY: false,
-    BC_MODE: true,
+    BC_MODE:  false,
     BC_TRANSITION_BATCHES: 1500,
-    STORAGE_KEY: "geomestra_gnn_weights_v7_4",
-    STATS_KEY: "geomestra_gnn_benchmark_v7_4",
+    STORAGE_KEY: "geomestra_gnn_weights_v7_5",
+    STATS_KEY: "geomestra_gnn_benchmark_v7_5",
     GAMMA: 0.99,
     CLIP_EPSILON: 0.2,
-    ENTROPY_COEF: 0.05,
+    ENTROPY_COEF: 0.08,
     GRADIENT_CLIP_NORM: 5.0
   };
 
@@ -76,6 +72,7 @@
         this.db = null;
       }
     },
+	  
     async save(key, data) {
       if (this.isClosing) return;
       await this.init();
@@ -89,6 +86,7 @@
         } catch (e) { reject(e); }
       });
     },
+	  
     async load(key) {
       if (this.isClosing) return null;
       await this.init();
@@ -104,17 +102,24 @@
     }
   };
 
-  const G_ACTIONS = [
-    "defend",
-    "build_warehouse", "build_repair", "build_barracks", "build_turret1",
-    "build_beacon", "build_base2", "build_barracks2", "build_turret2",
-    "build_base3", "build_barracks3", "build_turret3",
-    "hireWorker", "hireRepairman", "hireFighter", "hireAssault", "hireElite",
-    "tactic_all_in", "tactic_harass", "tactic_push", "tactic_defend",
-    "idle"
-  ];
+const G_ACTIONS = [
+  "defend",
+  "build_warehouse", "build_repair", "build_barracks", 
+  "build_turret1", "build_beacon", 
+  "build_base2", "build_barracks2", "build_turret2",
+  "build_base3", "build_barracks3", "build_turret3",
+  "hireWorker", "hireRepairman", "hireFighter", "hireAssault", "hireElite",
+  // НОВЫЕ ТАКТИКИ:
+  "strike_weak",       // ударить по слабому месту (обход скоплений)
+  "focus_fire",        // сконцентрировать огонь на одной цели
+  "retreat_regroup",   // отступить и перегруппироваться
+  "flank_attack",      // атаковать с фланга
+  "harass_economy",    // рейд по экономике (склады/рабочие)
+  "all_in_base",       // всё на базу
+  "idle"
+];
+	
   const AIDX = Object.fromEntries(G_ACTIONS.map((a, i) => [a, i]));
-
   const THREAT_ASSESSMENT = {
     turret: 3, turret2: 5, turret3: 7,
     fighter: 2, assault: 4, elite: 6
@@ -156,100 +161,153 @@
     bcActive: true,
     bcBatchCount: 0,
 
-    // 🔥 ПРАВИЛЬНОЕ МЕСТО: Таблицы внутри объекта GnnAI
     PREREQUISITES: {
-      "turret2": "barracks2", "turret3": "barracks3",
-      "barracks2": "base2", "barracks3": "base3",
-      "base2": "barracks", "base3": "barracks2"
+      "turret2":"barracks2","turret3":"barracks3",
+      "barracks2":"base2","barracks3":"base3",
+      "base2":"barracks","base3":"barracks2"
     },
     BUILD_BONUSES: {
-      "barracks": 25.0, "base2": 150.0, "barracks2": 60.0,
-      "base3": 200.0, "barracks3": 80.0
+      "barracks": 25.0,"base2": 150.0,"barracks2": 60.0,
+      "base3": 200.0,"barracks3": 80.0
     },
     BUILD_TIER_GOALS: {
-      "barracks": "barracks", "base2": "base2", "base3": "base3"
+      "barracks":"barracks","base2":"base2","base3":"base3"
     },
-
     // CURRICULUM LEARNING STATE
     curriculumTier: 0,
     episodesInCurrentTier: 0,
     TIER_THRESHOLD: 3,
     tierGoalsMet: { barracks: false, base2: false, base3: false },
 
-    getGlobalFeatures: function () {
-      if (!window.gameState || !window.aiBase) return new Array(CFG.GLOBAL_FEATURES).fill(0);
-      const m = this.metrics();
-      
-      const threat = Math.min(1, this.strategicMemory.threatLevel / 30);
-      const baseHp = m.baseHp;
-      const enemyNear = Math.min(1, m.enemyNear / 10);
-      const myArmy = Math.min(1, m.aiArmy / 20);
-      const enemyArmy = Math.min(1, m.enemyArmy / 20);
-      const armyBalance = Math.min(1, m.aiArmy / (m.enemyArmy + 1));
-      
-      let tech = 1;
-      if (gameState.buildings.some(b => b.owner === "ai" && ["base2", "barracks2", "turret2"].includes(b.type))) tech = 2;
-      if (gameState.buildings.some(b => b.owner === "ai" && ["base3", "barracks3", "turret3"].includes(b.type))) tech = 3;
-      const techLevel = tech / 3;
-
-      const resTotal = Math.min(1, (m.res.gold + m.res.silicon + m.res.plasma) / 500);
-      const warehouseCount = Math.min(1, m.aiWarehouses / 10);
-      const turretCount = Math.min(1, m.aiTurrets / 10);
-      const timeNorm = Math.min(1, performance.now() / 600000);
-      
-      const enemyTurrets = Math.min(1, gameState.buildings.filter(b => b.owner === "player" && b.type?.startsWith("turret")).length / 10);
-      const enemyElites = Math.min(1, (this.strategicMemory.enemyComposition.elite || 0) / 5);
-      
-      const buildingDiversity = Math.min(1, m.aiBuildings / 15);
-      const resourceEfficiency = m.resTotal > 0 ? Math.min(1, m.aiArmy / (m.resTotal / 100)) : 0;
-      const expansionProgress = Math.min(1, m.aiWarehouses / 5);
-      const defenseStrength = Math.min(1, m.aiTurrets / 5);
-      const gameTimeMinutes = performance.now() / 60000;
-      const techStagnationPenalty = gameTimeMinutes > 3 && tech < 2 ? 1 : 0;
-
-      const hasBarracks = gameState.buildings.some(b => b.owner === "ai" && b.type === "barracks") ? 1 : 0;
-      const hasBeacon = gameState.buildings.some(b => b.owner === "ai" && b.type === "beacon") ? 1 : 0;
-
-      let totalEnemyDps = 0;
-      let totalMyDps = 0;
-      gameState.units.forEach(u => {
+ getGlobalFeatures: function () {
+    if (!window.gameState || !window.aiBase) return new Array(CFG.GLOBAL_FEATURES).fill(0);
+    
+    const m = this.metrics();
+    const threat = Math.min(1, this.strategicMemory.threatLevel / 30);
+    const baseHp = m.baseHp;
+    const enemyNear = Math.min(1, m.enemyNear / 10);
+    const myArmy = Math.min(1, m.aiArmy / 20);
+    const enemyArmy = Math.min(1, m.enemyArmy / 20);
+    const armyBalance = Math.min(1, m.aiArmy / (m.enemyArmy + 1));
+    
+    let tech = 1;
+    if (gameState.buildings.some(b => b.owner === "ai" && ["base2","barracks2","turret2"].includes(b.type))) tech = 2;
+    if (gameState.buildings.some(b => b.owner === "ai" && ["base3","barracks3","turret3"].includes(b.type))) tech = 3;
+    const techLevel = tech / 3;
+    
+    const resTotal = Math.min(1, (m.res.gold + m.res.silicon + m.res.plasma) / 500);
+    const warehouseCount = Math.min(1, m.aiWarehouses / 10);
+    const turretCount = Math.min(1, m.aiTurrets / 10);
+    const timeNorm = Math.min(1, performance.now() / 600000);    
+    const enemyTurrets = Math.min(1, gameState.buildings.filter(b => b.owner === "player" && b.type?.startsWith("turret")).length / 10);
+    const enemyElites = Math.min(1, (this.strategicMemory.enemyComposition.elite || 0) / 5);   
+    const buildingDiversity = Math.min(1, m.aiBuildings / 15);
+    const resourceEfficiency = m.resTotal > 0 ? Math.min(1, m.aiArmy / (m.resTotal / 100)) : 0;
+    const expansionProgress = Math.min(1, m.aiWarehouses / 5);
+    const defenseStrength = Math.min(1, m.aiTurrets / 5);
+    const gameTimeMinutes = performance.now() / 60000;
+    const techStagnationPenalty = gameTimeMinutes > 3 && tech < 2 ? 1 : 0;
+    
+    let totalEnemyDps = 0;
+    let totalMyDps = 0;
+    gameState.units.forEach(u => {
         const dps = this.getUnitDps(u.type) || 0;
         if (u.owner === "player" && u.health > 0) totalEnemyDps += dps;
         if (u.owner === "ai" && u.health > 0) totalMyDps += dps;
-      });
-      
-      const enemyWorkers = gameState.units.filter(u => u.owner === "player" && u.type === "worker" && u.health > 0).length;
-      const myWorkers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
-      
-      const economyGap = Math.max(-1, Math.min(1, (myWorkers - enemyWorkers) / 8)); 
-      
-      const enemyArmyValue = gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((sum, u) => sum + this.getUnitValue(u.type), 0);
-      const myArmyValue = gameState.units.filter(u => u.owner === "ai" && u.health > 0).reduce((sum, u) => sum + this.getUnitValue(u.type), 0);
-      const armyGap = Math.max(-1, Math.min(1, (myArmyValue - enemyArmyValue) / 600));
+    });
+    
+    const enemyWorkers = gameState.units.filter(u => u.owner === "player" && u.type ==="worker" && u.health > 0).length;
+    const myWorkers = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
+    const economyGap = Math.max(-1, Math.min(1, (myWorkers - enemyWorkers) / 8));      
+    
+    const enemyArmyValue = gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((sum, u) => sum + this.getUnitValue(u.type), 0);
+    const myArmyValue = gameState.units.filter(u => u.owner === "ai" && u.health > 0).reduce((sum, u) => sum + this.getUnitValue(u.type), 0);
+    const armyGap = Math.max(-1, Math.min(1, (myArmyValue - enemyArmyValue) / 600));
 
-      let enemyTech = 1;
-      if (gameState.buildings.some(b => b.owner === "player" && ["base2", "barracks2", "turret2"].includes(b.type))) enemyTech = 2;
-      if (gameState.buildings.some(b => b.owner === "player" && ["base3", "barracks3", "turret3"].includes(b.type))) enemyTech = 3;
-      const techGap = (tech - enemyTech) / 2; 
+    let enemyTech = 1;
+    if (gameState.buildings.some(b => b.owner === "player" && ["base2","barracks2","turret2"].includes(b.type))) enemyTech = 2;
+    if (gameState.buildings.some(b => b.owner === "player" && ["base3","barracks3","turret3"].includes(b.type))) enemyTech = 3;
+    const techGap = (tech - enemyTech) / 2; 
+    
+    const myPowerScore = (tech * 10) + myArmyValue + (m.aiTurrets * 5);
+    const enemyPowerScore = (enemyTech * 10) + enemyArmyValue + (enemyTurrets * 5);
+    const momentum = Math.tanh((myPowerScore - enemyPowerScore) / 50); 
+    const progressToWin = Math.min(1, myPowerScore / 200); 
 
-      const myPowerScore = (tech * 10) + myArmyValue + (m.aiTurrets * 5);
-      const enemyPowerScore = (enemyTech * 10) + enemyArmyValue + (enemyTurrets * 5);
-      const momentum = Math.tanh((myPowerScore - enemyPowerScore) / 50); 
-      const progressToWin = Math.min(1, myPowerScore / 200); 
+    // ==========================================
+    // 🔥 ШАГ 1: ЭКОНОМИЧЕСКАЯ МАТЕМАТИКА (ТЕПЕРЬ ЗДЕСЬ, ГДЕ 'm' И 'myWorkers' УЖЕ СУЩЕСТВУЮТ)
+    // ==========================================
+    const totalResources = m.res.gold + m.res.silicon + m.res.plasma;
+    const estimatedIncomePerSec = myWorkers * 0.5; 
+    const timeToAffordWarehouse = totalResources > 0 ? (12 + 5 + 3) / (estimatedIncomePerSec || 1) : 999;
+    
+    const expansionCost = (27 + 38 + 12) + (12 + 5 + 3); // BEACON + WAREHOUSE
+    const isRichEnoughToExpand = totalResources >= expansionCost ? 1 : 0;
 
-      return [
-        threat, baseHp, enemyNear, myArmy, enemyArmy, armyBalance, techLevel, 
+    const totalWarehouses = m.aiWarehouses;
+    const workerDeficit = Math.max(0, (totalWarehouses * 3) - myWorkers);
+    const isEconomyChoked = workerDeficit > 0 ? 1 : 0;	
+    // ==========================================
+
+	 const emptyWh = gameState.buildings.filter(b =>
+    b.owner === "ai" && b.type ==="warehouse" && b.active && (b.workers || 0) === 0).length;
+	const emptyRatio = m.aiWarehouses > 0 ? emptyWh / m.aiWarehouses : 0;
+	const income = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length * 0.5;
+	 
+	 // === ТАКТИЧЕСКАЯ ОБСТАНОВКА ===
+const enemyClusters = [];
+const ourClusters = [];
+
+// Ищем скопления врагов (3+ в радиусе 200px)
+const enemyCombat = gameState.units.filter(u => u.owner === "player" && u.health > 0 && ["fighter","assault","elite"].includes(u.type));
+for (const e of enemyCombat) {
+  const allies = enemyCombat.filter(o => o !== e && Math.hypot(o.x - e.x, o.y - e.y) < 200).length;
+  if (allies >= 2) enemyClusters.push({x: e.x, y: e.y, size: allies + 1});
+}
+
+const aiCombat = gameState.units.filter(u => u.owner === "ai" && u.health > 0 && ["fighter","assault","elite"].includes(u.type));
+for (const a of aiCombat) {
+  const allies = aiCombat.filter(o => o !== a && Math.hypot(o.x - a.x, o.y - a.y) < 200).length;
+  if (allies >= 2) ourClusters.push({x: a.x, y: a.y, size: allies + 1});
+}
+
+const enemyClusterThreat = Math.min(1, enemyClusters.length / 3);
+const ourClusterStrength = Math.min(1, ourClusters.length / 2);
+
+// Ближайшее вражеское скопление к нашей базе
+let nearestEnemyClusterDist = 1.0;
+for (const c of enemyClusters) {
+  const d = Math.hypot(c.x - aiBase.x, c.y - aiBase.y);
+  nearestEnemyClusterDist = Math.min(nearestEnemyClusterDist, d / 800);
+}
+
+// Фланговая возможность: есть ли вражеское скопление, которое можно обойти?
+let flankOpportunity = 0;
+if (enemyClusters.length > 0 && ourClusters.length > 0) {
+  // Если враг сгруппирован с одной стороны, а у нас есть силы с другой
+  const enemyCenterX = enemyClusters.reduce((s,c) => s+c.x, 0) / enemyClusters.length;
+  const ourCenterX = ourClusters.reduce((s,c) => s+c.x, 0) / ourClusters.length;
+  const baseX = aiBase.x;
+  // Если враг и мы по разные стороны от базы — фланг открыт
+  if ((enemyCenterX < baseX) !== (ourCenterX < baseX)) flankOpportunity = 1.0;
+}
+
+// Сила нашего скопления vs вражеского (для решения атаковать/отступить)
+let localPowerBalance = 0;
+if (ourClusters.length > 0 && enemyClusters.length > 0) {
+  const ourPower = ourClusters.reduce((s,c) => s + c.size * 30, 0);
+  const enemyPower = enemyClusters.reduce((s,c) => s + c.size * 30, 0);
+  localPowerBalance = Math.tanh((ourPower - enemyPower) / 100);
+}
+	 
+    return [
+        threat, baseHp, enemyNear, myArmy, enemyArmy, armyBalance, techLevel,
         resTotal, warehouseCount, turretCount, timeNorm, enemyTurrets, enemyElites,
         buildingDiversity, resourceEfficiency, expansionProgress, defenseStrength,
-        gameTimeMinutes / 30.0,
-        techStagnationPenalty,
-        economyGap,   
-        armyGap,      
-        techGap,
-        momentum,     
-        progressToWin 
-      ];
-    },
+        gameTimeMinutes / 30.0, techStagnationPenalty, economyGap, armyGap, techGap, momentum, progressToWin, Math.min(1, estimatedIncomePerSec / 5.0), 
+        Math.min(1, 60 / timeToAffordWarehouse), isRichEnoughToExpand, isEconomyChoked, emptyWh, emptyRatio, income, enemyClusterThreat, ourClusterStrength, nearestEnemyClusterDist, flankOpportunity, localPowerBalance                      
+    ];
+},
 
     registerAction: function (action, graphState, intent, actionIndex, isExpert = false) {
       if (!graphState || !graphState.X || !graphState.A_distance) return;
@@ -283,8 +341,7 @@
         reward: 0,
         isExpert: isExpert
       };
-      this.replay.push(replayEntry);
-      
+      this.replay.push(replayEntry);      
       const m = this.metrics();
       const snapshot = {
         threatLevel: this.strategicMemory.threatLevel,
@@ -304,7 +361,7 @@
         this.episodeReport.timeline.push({
           time: (performance.now() / 1000).toFixed(1) + ' сек',
           action: action,
-          detail: intent && intent.type === "build" ? intent.buildingType : (intent && intent.type === "hire" ? intent.unitType : intent.type),
+          detail: intent && intent.type === "build" ? intent.buildingType : (intent && intent.type ==="hire" ? intent.unitType : intent.type),
           resources: m.resTotal,
           army: m.aiArmy,
           tech: m.techLevel
@@ -315,8 +372,7 @@
         snapshot.unitStartHP = intent.unitIds.reduce((sum, id) => {
           const u = gameState.units.find(x => x.id === id);
           return sum + (u ? u.health : 0);
-        }, 0);
-        
+        }, 0);      
         if (intent.targetId) {
           const target = gameState.units.find(u => u.id === intent.targetId) || gameState.buildings.find(b => b.id === intent.targetId);
           snapshot.targetStartHP = target ? target.health : 0;
@@ -326,25 +382,21 @@
           snapshot.anchorId = intent.anchor;
         }
       }
-
       if (intent && intent.type === "defend") {
           let anchor = null;
           if (intent.anchor === "aiBase") {
               anchor = window.aiBase;
           } else {
               anchor = gameState.buildings.find(b => b.id === intent.anchor);
-          }
-          
+          }     
           if (anchor) {
               snapshot.enemiesNearAnchorAtStart = gameState.units.filter(u => 
                   u.owner === "player" && u.health > 0 && Math.hypot(u.x - anchor.x, u.y - anchor.y) < 300
               ).length;
           } else {
               snapshot.enemiesNearAnchorAtStart = 0;
-          }
-      
+          }     
 	 }
-
       this.missionCache.push({
         action: action,
         intent: intent,
@@ -352,11 +404,14 @@
         resolved: false,
         replayEntry: replayEntry
       });
-
       // Achievement & Immediate Rewards logic preserved...
       if (this.episodeAchievements && intent) {
           let achievementBonus = 0;
-          if (intent.type === "build") {
+		      if (intent.type === "build") {
+				if (intent.buildingType === "beacon" && !this.episodeAchievements.firstBeacon) {
+					this.episodeAchievements.firstBeacon = true;
+					achievementBonus = 40.0; // 🔥 Большой бонус за первый маяк
+				}
               if (intent.buildingType === "barracks" && !this.episodeAchievements.firstBarracks) {
                   this.episodeAchievements.firstBarracks = true; achievementBonus = 50.0;
               } else if (intent.buildingType === "base2" && !this.episodeAchievements.firstBase2) {
@@ -370,7 +425,7 @@
               }
           } else if (intent.type === "hire") {
               if (intent.unitType === "worker") {
-                  const currentWorkers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
+                  const currentWorkers = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
                   if (currentWorkers === 0) replayEntry.reward += 10.0;
               }
               if (intent.unitType === "assault" && !this.episodeAchievements.firstAssault) {
@@ -381,10 +436,9 @@
           }
           if (achievementBonus > 0) replayEntry.reward += achievementBonus;
       }
-
-      if (intent && intent.type === "hire" && ["fighter", "assault", "elite"].includes(intent.unitType)) {
-          const workers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
-          const warehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type === "warehouse" && b.active).length;
+      if (intent && intent.type === "hire" && ["fighter","assault","elite"].includes(intent.unitType)) {
+          const workers = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
+          const warehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type ==="warehouse" && b.active).length;
           const gameTimeMin = performance.now() / 60000;
           if (gameTimeMin > 0.5 && (workers < 2 || warehouses === 0)) {
               replayEntry.reward += -5.0; 
@@ -397,8 +451,8 @@
       this.lastEcoCheck = now;
       const m = this.metrics();
       const gameTimeMin = performance.now() / 60000;
-      const workerCount = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
-      const economyBuildings = gameState.buildings.filter(b => b.owner === "ai" && (b.type === "warehouse" || b.type === "repairWorkshop") && b.active).length;
+      const workerCount = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
+      const economyBuildings = gameState.buildings.filter(b => b.owner === "ai" && (b.type ==="warehouse" || b.type ==="repairWorkshop") && b.active).length;
       
       if (economyBuildings > 0 && workerCount === 0 && gameTimeMin > 0.5) {
           const currentState = this.buildGraphState();
@@ -420,7 +474,6 @@
           this.missionCache.splice(i, 1);
           continue;
         }
-
         let rewardDelta = 0;
         let isResolved = false;
         let reason = "";
@@ -431,33 +484,30 @@
             const u = gameState.units.find(x => x.id === id);
             return sum + (u && u.health > 0 ? 1 : 0);
           }, 0);
-          const lostAttackers = mission.intent.unitIds.length - aliveAttackers;
-          
+          const lostAttackers = mission.intent.unitIds.length - aliveAttackers;        
           const target = gameState.units.find(u => u.id === mission.snapshot.targetId) || gameState.buildings.find(b => b.id === mission.snapshot.targetId);
           const currentTargetHP = target ? target.health : 0;
           const damageDealt = Math.max(0, mission.snapshot.targetStartHP - currentTargetHP);
-
           const tactic = mission.intent.tactic || "tactic_push"; 
           let tacticReward = 0;
-
           // --- AGGRESSIVE REWARD SHAPING ---
           if (damageDealt > 0) {
              tacticReward += damageDealt * 0.1; // Увеличено с 0.05
-          }
-          
-          if (lostAttackers > 0) {
-             // Штраф меньше, если мы нанесли много урона
-             if (damageDealt > lostAttackers * 30) {
-                 tacticReward -= lostAttackers * 0.5;
-             } else {
-                 tacticReward -= lostAttackers * 2.0; 
-             }
-          }
-
+          }       
+			// ✅ СТАЛО: штраф за потери сильнее, но чинить дешевле, чем строить заново
+			if (lostAttackers > 0) {
+				// Базовый штраф за потери (чтобы модель не кидала армию)
+				tacticReward -= lostAttackers * 1.5;
+				// 🔥 НО если у нас есть ремонтники и юниты выжили — компенсируем
+				const repairmen = gameState.units.filter(u => u.owner === "ai" && u.type ==="repairman" && u.health > 0).length;
+				if (repairmen > 0 && aliveAttackers > 0) {
+					tacticReward += aliveAttackers * 0.3; // бонус за то, что юниты выжили благодаря ремонту
+				}
+			}
           if (target && currentTargetHP <= 0) {
-            if (tactic === "tactic_harass" && (target.type === "worker" || target.type === "warehouse" || target.type === "repairWorkshop")) {
+            if (tactic === "tactic_harass" && (target.type ==="worker" || target.type ==="warehouse" || target.type ==="repairWorkshop")) {
               tacticReward += 25.0; reason = "HARASS_SUCCESS";
-            } else if (tactic === "tactic_all_in" && (target.type === "base" || target.type === "base2" || target.type === "base3")) {
+            } else if (tactic === "tactic_all_in" && (target.type ==="base" || target.type ==="base2" || target.type ==="base3")) {
               tacticReward += 100.0; reason = "ALL_IN_SUCCESS";
             } else {
               tacticReward += 10.0; reason = "TARGET_DESTROYED";
@@ -489,10 +539,33 @@
           else if (damageDealt > 0 && (performance.now() - mission.snapshot.time) > 5000) {
              tacticReward += Math.min(5.0, damageDealt / 20); reason = "DAMAGE_PROGRESS";
           }
-
           rewardDelta += tacticReward;
-        }
-		  
+			
+						// Бонус за уничтожение важной цели
+			if (target && currentTargetHP <= 0) {
+			  const importance = {base:100, base2:120, base3:150, warehouse:40, barracks:50, beacon:35}[target.type] || 10;
+			  tacticReward += importance;
+			  reason = `${target.type.toUpperCase()}_DESTROYED`;
+			}
+
+			// Бонус за обход скоплений (мало потерь при атаке укреплённой позиции)
+			if (mission.snapshot.enemyClusterNear && lostAttackers < mission.intent.unitIds.length * 0.2) {
+			  tacticReward += 20.0;
+			  reason += "_CLEVER_FLANK";
+			}
+
+			// Штраф за атаку сильного скопления в лоб
+			if (mission.snapshot.enemyClusterNear && lostAttackers > mission.intent.unitIds.length * 0.5) {
+			  tacticReward -= 25.0;
+			  reason = "FRONTAL_ASSAULT_FAILURE";
+			}
+
+			// Бонус за добивание (focus fire сработал)
+			if (mission.snapshot.targetHP < 0.3 && currentTargetHP <= 0) {
+			  tacticReward += 15.0;
+			  reason = "FINISHING_BLOW";
+			}
+        }		  
         else if (mission.intent.type === "defend") {
           const anchor = (mission.snapshot.anchorId === "aiBase") ? window.aiBase : gameState.buildings.find(b => b.id === mission.snapshot.anchorId);
           let enemiesNearAnchorNow = 0;
@@ -516,14 +589,35 @@
             rewardDelta = 0.5; 
           }
         }
-        else if (mission.intent.type === "hire") {
-          if (this.metrics().aiArmy > mission.snapshot.aiArmy || mission.intent.unitType === "worker" || mission.intent.unitType === "repairman") {
+                else if (mission.intent.type === "hire") {
+          if (this.metrics().aiArmy > mission.snapshot.aiArmy || mission.intent.unitType === "worker" || mission.intent.unitType ==="repairman") {
             const type = mission.intent.unitType;
             let hireReward = 0;
-            if (type === "worker") { hireReward = 0.0; reason = "worker_hired_neutral"; } 
-            else if (type === "repairman") { hireReward = 0.5; reason = "repairman_hired"; } 
-            else if (type === "fighter") { hireReward = (m.aiArmy === 0) ? 15.0 : 2.0; reason = m.aiArmy === 0 ? "FIRST_BLOOD_UNIT_HIRED" : "fighter_hired"; }  
-            else if (type === "assault") { hireReward = 3.0; } 
+            
+            // 🔥 ОБЪЯВЛЯЕМ ВСЕ ПЕРЕМЕННЫЕ СРАЗУ, ЧТОБЫ ИЗБЕЖАТЬ ОШИБОК ОБЛАСТИ ВИДИМОСТИ
+            const totalWorkers = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
+            const totalWarehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type ==="warehouse" && b.active).length;
+            const totalWorkshops = gameState.buildings.filter(b => b.owner === "ai" && b.type ==="repairWorkshop" && b.active).length;
+            const neededWorkers = totalWarehouses * 3 + totalWorkshops * 2;
+
+            if (type === "worker") {
+              if (totalWorkers < neededWorkers) {
+                hireReward = 8.0; 
+                reason = "worker_filled_deficit";
+              } else {
+                hireReward = 1.0;
+                reason = "worker_hired";
+              }
+            }
+            else if (type === "repairman") { 
+              hireReward = 2.0; 
+              reason = "repairman_hired"; 
+            }
+            else if (type === "fighter") { 
+              hireReward = (m.aiArmy === 0) ? 15.0 : 2.0; 
+              reason = m.aiArmy === 0 ? "FIRST_BLOOD_UNIT_HIRED" :"fighter_hired"; 
+            }
+            else if (type === "assault") { hireReward = 3.0; }
             else if (type === "elite") { hireReward = 5.0; }
             
             rewardDelta = hireReward;
@@ -534,83 +628,212 @@
             if (elapsed > 10000) { rewardDelta = -1.0; reason = "hire_failed_or_timeout_penalty"; isResolved = true; }
           }
         }
-        else if (mission.intent.type === "build") {
-          const bt = mission.intent.buildingType;
-          const isBuilt = gameState.buildings.some(b => b.owner === "ai" && b.type === bt && b.active);
-          if (isBuilt) {
-            const prev = mission.snapshot;
-            let reasonBuild = "";
-
-            // 🔥 Используем таблицы для основных зданий
-            if (this.BUILD_BONUSES[bt] !== undefined) {
-              rewardDelta += this.BUILD_BONUSES[bt];
-              if (this.BUILD_TIER_GOALS[bt]) this.tierGoalsMet[this.BUILD_TIER_GOALS[bt]] = true;
-              reasonBuild = bt.toUpperCase() + "_BUILT";
-            }
-            // 🔥 Турели
-            else if (bt.startsWith("turret")) { 
-                rewardDelta += 15.0; 
-                reasonBuild = "TURRET_BUILT"; 
-            }
-            // 🔥 МАЯКИ: специальный блок, чтобы не спамили!
-            else if (bt === "beacon") {
-                const beaconCount = gameState.buildings.filter(b => 
-                    b.owner === "ai" && b.type === "beacon" && b.active
-                ).length;
-                if (beaconCount > 2) {
-                    rewardDelta -= 5.0;
-                    reasonBuild = "BEACON_SPAM_PENALTY";
-                } else {
-                    rewardDelta += 3.0;
-                    reasonBuild = "BEACON_PLACED";
-                }
-            }
-            // 🔥 Остальные здания (склады, мастерские) — без бонуса
-            else if (!["warehouse", "repairWorkshop"].includes(bt)) { 
-                rewardDelta += 5.0; 
-                reasonBuild = "building_bonus"; 
-            }
-
-            // 🔥 ПРОВЕРКА ЭКСПАНСИИ: обстроили ли этот объект на дальнем маяке?
-            if (["warehouse", "repairWorkshop", "turret", "turret2", "turret3"].includes(bt)) {
-              const builtObj = gameState.buildings.find(b => b.owner === "ai" && b.type === bt && b.active);
-              if (builtObj) {
-                const nearBeacon = gameState.buildings.some(b =>
-                  b.owner === "ai" && b.type === "beacon" && Math.hypot(b.x - builtObj.x, b.y - builtObj.y) < 220
-                );
-                if (nearBeacon) {
-                  if (bt.startsWith("turret")) {
-                    rewardDelta += 35.0;
-                    reasonBuild += "_FORT_TURRET_BUILT";
-                  } else {
-                    rewardDelta += 20.0;
-                    reasonBuild += "_CLUSTER_ON_OUTPOST";
-                  }
-                }
-              }
-            }
-
-            if (bt === "warehouse" && m.aiWarehouses > 3) { rewardDelta -= 2.0; reasonBuild += "_DIMINISHING"; }
-            else if (["warehouse", "repairWorkshop"].includes(bt)) {
-              if (m.aiArmy > prev.aiArmy || m.resTotal < prev.resTotal) { rewardDelta += 3.0; reasonBuild = "eco_utilized"; }
-              else { rewardDelta -= 1.0; reasonBuild = "eco_stagnation"; }
-            }
-
-            rewardDelta = Math.round(rewardDelta * 10) / 10;
-            reason = `build_consequence_${reasonBuild}`;
-            isResolved = true;
-          } else {
-            const elapsed = performance.now() - mission.snapshot.time;
-            if (elapsed > 30000) { rewardDelta = -5.0; reason = "build_timeout"; isResolved = true; }
-          }
-        }
 		  
-        else if (mission.intent.type === "idle") {
+     else if (mission.intent.type === "build") {
+       const bt = mission.intent.buildingType;
+       const isBuilt = gameState.buildings.some(b => b.owner === "ai" && b.type === bt && b.active);
+       if (isBuilt) {
+         const prev = mission.snapshot;
+         let reasonBuild = "";
+
+         // 🔥 ПРОВЕРКА СКЛАДОВ/МАСТЕРСКИХ С УЧЁТОМ ПУСТЫХ
+         if (bt === "warehouse" || bt ==="repairWorkshop") {
+             const totalWorkers = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
+             const totalWarehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type ==="warehouse" && b.active).length;
+             const totalWorkshops = gameState.buildings.filter(b => b.owner === "ai" && b.type ==="repairWorkshop" && b.active).length;
+             const neededWorkers = totalWarehouses * 3 + totalWorkshops * 2;
+             const gameTimeMin = performance.now() / 60000;
+             
+             const emptyWarehouses = gameState.buildings.filter(b => 
+                 b.owner === "ai" && b.type ==="warehouse" && b.active && (b.workers || 0) === 0
+             ).length;
+             
+             if (totalWorkers < neededWorkers) {
+                 const deficit = neededWorkers - totalWorkers;
+                 rewardDelta -= 15.0 * deficit;
+                 reasonBuild = `WORKER_DEFICIT_CRITICAL: не хватает ${deficit} рабочих, ${emptyWarehouses} складов пустуют!`;
+             } else if (emptyWarehouses > 0 && gameTimeMin > 1.5) {
+                 rewardDelta -= 12.0 * emptyWarehouses;
+                 reasonBuild = `EMPTY_WAREHOUSES_PENALTY: ${emptyWarehouses} складов без рабочих! Нанимай рабочих, а не строй новые!`;
+             } else {
+                 rewardDelta += 3.0;
+                 reasonBuild = "INFRASTRUCTURE_WITH_WORKERS";
+             }
+         }
+         // 🔥 2. БОНУСЫ ЗА КЛЮЧЕВЫЕ ЗДАНИЯ
+         else if (this.BUILD_BONUSES[bt] !== undefined) {
+             rewardDelta += this.BUILD_BONUSES[bt];
+             if (this.BUILD_TIER_GOALS[bt]) this.tierGoalsMet[this.BUILD_TIER_GOALS[bt]] = true;
+             reasonBuild = bt.toUpperCase() + "_BUILT";
+         }
+         // 🔥 3. ТУРЕЛИ (ОБЪЕДИНЕННАЯ ЛОГИКА)
+         else if (bt.startsWith("turret")) {
+             rewardDelta += 15.0;
+             reasonBuild = "TURRET_BUILT";
+             const builtObj = gameState.buildings.find(b => b.owner === "ai" && b.type === bt && b.active);
+             if (builtObj) {
+                 const nearBeacon = gameState.buildings.some(b =>
+                     b.owner === "ai" && b.type ==="beacon" && Math.hypot(b.x - builtObj.x, b.y - builtObj.y) < 250
+                 );
+                 const nearBase = Math.hypot(builtObj.x - aiBase.x, builtObj.y - aiBase.y) < 400;
+                 if (nearBeacon) {
+                     rewardDelta += 25.0; 
+                     reasonBuild += "_FORT_TURRET_BUILT";
+                 } else if (!nearBase) {
+                     rewardDelta -= 20.0; 
+                     reasonBuild += "_TURRET_IN_VOID_PENALTY";
+                 }
+             }
+         }
+         // 🔥 4. МАЯКИ
+         else if (bt === "beacon") {
+             const beaconCount = gameState.buildings.filter(b => b.owner === "ai" && b.type ==="beacon" && b.active).length;
+             const newBeacon = gameState.buildings.find(b => 
+                 b.owner === "ai" && b.type ==="beacon" && b.active && !b.rewarded
+             );
+             let sectorScore = 0;
+             if (newBeacon) {
+                 const nearbyWarehouse = gameState.buildings.some(b => 
+                     b.owner === "ai" && b.type ==="warehouse" && b.active && Math.hypot(b.x - newBeacon.x, b.y - newBeacon.y) < 250
+                 );
+                 const nearbyTurret = gameState.buildings.some(b => 
+                     b.owner === "ai" && b.type.startsWith("turret") && b.active && Math.hypot(b.x - newBeacon.x, b.y - newBeacon.y) < 250
+                 );
+                 const nearbyResources = gameState.resources.some(r => 
+                     r.amount > 20 && Math.hypot(r.x - newBeacon.x, r.y - newBeacon.y) < 300
+                 );
+                 const workersNearby = gameState.units.some(u => 
+                     u.owner === "ai" && u.type ==="worker" && u.health > 0 && Math.hypot(u.x - newBeacon.x, u.y - newBeacon.y) < 300
+                 );
+                 if (nearbyWarehouse) sectorScore += 1;
+                 if (nearbyTurret) sectorScore += 1;
+                 if (nearbyResources) sectorScore += 1;
+                 if (workersNearby) sectorScore += 1;
+                 newBeacon.rewarded = true;
+             }
+             if (beaconCount > 3) {
+                 rewardDelta -= 40.0;
+                 reasonBuild = "BEACON_SPAM_CRITICAL";
+             } else if (sectorScore === 4) {
+                 rewardDelta += 50.0;
+                 reasonBuild = "PERFECT_SECTOR_COMPLETE";
+             } else if (sectorScore === 3) {
+                 rewardDelta += 30.0;
+                 reasonBuild = "SECTOR_ALMOST_COMPLETE";
+             } else if (sectorScore === 2) {
+                 rewardDelta += 15.0;
+                 reasonBuild = "SECTOR_PARTIAL";
+             } else if (sectorScore === 1) {
+                 rewardDelta += 5.0;
+                 reasonBuild = "SECTOR_STARTED";
+             } else {
+                 rewardDelta -= 25.0;
+                 reasonBuild = "BEACON_IN_VOID_PENALTY";
+             }
+         }
+         // 🔥 5. ОСТАЛЬНЫЕ ЗДАНИЯ
+         else {
+             rewardDelta += 5.0;
+             reasonBuild = "building_bonus";
+         }
+
+         // 🔥 6. ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА ЭКСПАНСИИ (Для всех построек у маяка)
+         if (["warehouse","repairWorkshop","turret","turret2","turret3"].includes(bt)) {
+           const builtObj = gameState.buildings.find(b => b.owner === "ai" && b.type === bt && b.active);
+           if (builtObj) {
+             const nearBeacon = gameState.buildings.some(b =>
+               b.owner === "ai" && b.type ==="beacon" && Math.hypot(b.x - builtObj.x, b.y - builtObj.y) < 220
+             );
+             if (nearBeacon) {
+               if (bt.startsWith("turret")) {
+                 rewardDelta += 40.0;
+                 reasonBuild += "_FORT_TURRET_BUILT";
+               } else {
+                 rewardDelta += 25.0;
+                 reasonBuild += "_CLUSTER_ON_OUTPOST";
+               }
+             }
+           }
+         }
+
+         // 🔥 7. ФИНАЛЬНЫЕ КОРРЕКТИРОВКИ
+         if (bt === "warehouse" && m.aiWarehouses > 5) { rewardDelta -= 2.0; reasonBuild +="_DIMINISHING"; }
+         if (bt === "repairWorkshop") {
+             const workshops = gameState.buildings.filter(b => b.owner === "ai" && b.type ==="repairWorkshop" && b.active).length;
+             if (workshops > 2) { rewardDelta -= 10.0; reasonBuild = "REPAIR_WORKSHOP_SPAM: 3+ мастерских без необходимости!"; }
+         }
+         else if (["warehouse","repairWorkshop"].includes(bt)) {
+           if (m.aiArmy > prev.aiArmy || m.resTotal < prev.resTotal) { rewardDelta += 3.0; reasonBuild = "eco_utilized"; }
+           else { rewardDelta -= 1.0; reasonBuild = "eco_stagnation"; }
+         }
+
+         // 🔥 ДОПОЛНИТЕЛЬНАЯ НАГРАДА ЗА ЭКСПАНСИЮ (ПЕРЕМЕЩЕНО ВНУТРЬ БЛОКА isBuilt, ЧТОБЫ ПЕРЕМЕННЫЕ БЫЛИ ДОСТУПНЫ)
+         if (["warehouse","repairWorkshop","turret","turret2","turret3","barracks","barracks2","barracks3"].includes(bt)) {
+             const builtObj = gameState.buildings.find(b => b.owner === "ai" && b.type === bt && b.active);
+             if (builtObj) {
+                 const distFromBase = Math.hypot(builtObj.x - aiBase.x, builtObj.y - aiBase.y);
+                 if (distFromBase > 400) {
+                     const expansionBonus = Math.min(20.0, (distFromBase - 400) / 50);
+                     rewardDelta += expansionBonus;
+                     reasonBuild += `_EXPANSION_BONUS_${expansionBonus.toFixed(1)}`;
+                 }
+             }
+         }
+
+         rewardDelta = Math.round(rewardDelta * 10) / 10;
+         reason = `build_consequence_${reasonBuild}`;
+         isResolved = true;
+       } else {
+         const elapsed = performance.now() - mission.snapshot.time;
+         if (elapsed > 30000) { rewardDelta = -5.0; reason = "build_timeout"; isResolved = true; }
+       }
+     }
+		  
+       else if (mission.intent.type === "idle") {
           const m = this.metrics();
-          if (m.resTotal > 0.15) { rewardDelta = -1.5; reason = "idle_hoarding"; }  // >300 из 2000
-          else { rewardDelta = -0.2; reason = "waiting"; }
+          const gameTimeMin = performance.now() / 60000;
+          
+          // Считаем реальные сырые ресурсы (золото + кремний + плазма)
+          const totalResRaw = (m.res.gold || 0) + (m.res.silicon || 0) + (m.res.plasma || 0);
+
+          // Определяем стоимость ближайших крупных целей (с фоллбэками, если константы не загружены)
+          const costBase2 = (typeof BASE2_COST !== 'undefined') ? (BASE2_COST.gold + BASE2_COST.silicon + BASE2_COST.plasma) : 200;
+          const costBarracks2 = (typeof BARRACKS2_COST !== 'undefined') ? (BARRACKS2_COST.gold + BARRACKS2_COST.silicon + BARRACKS2_COST.plasma) : 150;
+          const costExpansion = (typeof BEACON_COST !== 'undefined') ? (BEACON_COST.gold + BEACON_COST.silicon + BEACON_COST.plasma + WAREHOUSE_COST.gold + WAREHOUSE_COST.silicon + WAREHOUSE_COST.plasma + WORKER_COST.gold * 2) : 100;
+
+          // Минимальная стоимость следующего логичного крупного шага
+          const nextBigGoalCost = Math.min(costBase2, costBarracks2, costExpansion);
+
+          // 🔥 НОВАЯ ЛОГИКА ОЦЕНКИ IDLE:
+          if (totalResRaw >= nextBigGoalCost) {
+              // 1. ИСТИННЫЙ ХОРДИНГ: Ресурсов УЖЕ ХВАТАЕТ на важную цель, но ИИ выбрал idle
+              rewardDelta = -5.0;
+              reason = "TRUE_HOARDING: Ресурсов хватает на крупную покупку, но ИИ бездействует!";
+          }
+          else if (totalResRaw >= nextBigGoalCost * 0.6) {
+              // 2. МЯГКОЕ ПОДТАЛКИВАНИЕ: Уже близко к цели (60%+), не тормози
+              rewardDelta = -1.0;
+              reason = "NEAR_GOAL_IDLE: Почти накопили на цель, небольшое подталкивание";
+          }
+          else if (totalResRaw > 30 && totalResRaw < nextBigGoalCost * 0.6) {
+              // 3. 🔥 СТРАТЕГИЧЕСКОЕ ОЖИДАНИЕ: Копим на конкретную цель. Это ХОРОШО!
+              rewardDelta = 2.0; // Награда за терпение!
+              reason = "STRATEGIC_SAVING: Копим ресурсы на крупную цель (терпение вознаграждается)";
+          }
+          else {
+              // 4. НОРМАЛЬНОЕ ОЖИДАНИЕ: Ресурсов мало, рабочие еще в пути. Штрафовать НЕЛЬЗЯ!
+              rewardDelta = 0.0;
+              reason = "WAITING_FOR_RESOURCES: Законный простой, копим с нуля";
+          }
+
+          // Дополнительный штраф только если армия = 0, прошло много времени, и ресурсы уже есть
+          if (gameTimeMin > 3.0 && m.aiArmy === 0 && totalResRaw > 100) {
+              rewardDelta -= 3.0;
+              reason += " + NO_ARMY_PANIC";
+          }
+
           isResolved = true;
-        }
+      }
 
         if (isResolved || rewardDelta !== 0) {
             const clippedDelta = Math.max(-15.0, Math.min(15.0, rewardDelta));
@@ -630,64 +853,126 @@
       const gameTimeMin = performance.now() / 60000;
       let penalty = 0;
       let reasons = [];
-
-      const workers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
+      
+      const workers = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
       if (gameTimeMin > 2.5 && m.aiWarehouses < 2) { penalty -= 30.0; reasons.push("SEVERE_STAGNATION: ONLY_1_WAREHOUSE_LATE_GAME"); }
       if (gameTimeMin > 3.0 && workers < 4) { penalty -= 25.0; reasons.push("SEVERE_STAGNATION: LESS_THAN_4_WORKERS_LATE_GAME"); }
+     
+		// ✅ СТАЛО: бонус только за РЕАЛЬНОЕ покрытие раненых
+		const repairmen = gameState.units.filter(u => 
+			u.owner === "ai" && u.type ==="repairman" && u.health > 0
+		).length;
+		const woundedUnits = gameState.units.filter(u => 
+			u.owner === "ai" && u.health > 0 && u.health < u.maxHealth * 0.5
+		).length;
 
-      const repairmen = gameState.units.filter(u => u.owner === "ai" && u.type === "repairman" && u.health > 0).length;
-      if (repairmen > 0 && m.baseHp > 0.8 && m.enemyNear > 0) { penalty += 3.0; reasons.push("successful_repair_maintenance"); }
+		if (repairmen > 0 && woundedUnits > 0 && repairmen >= Math.ceil(woundedUnits / 3)) { 
+			penalty += 2.0; 
+			reasons.push("repair_covering_wounded"); 
+		}
 
-      if (m.resTotal > 300 && m.aiArmy === this.lastArmySize && m.aiBuildings === this.lastBuildingCount) { penalty -= 2.0; reasons.push("resource_hoarding_without_investment"); }
+		// 🔥 Штраф за перебор мастерских
+		const workshopsCount = gameState.buildings.filter(b => 
+			b.owner === "ai" && b.type ==="repairWorkshop" && b.active
+		).length;
+		if (workshopsCount > 2 && m.aiArmy < 5) { 
+			penalty -= 8.0; 
+			reasons.push("REPAIR_SPAM: много мастерских, мало армии!"); 
+		}
+      
+		if (m.resTotal > 0.15 && m.aiArmy === this.lastArmySize && m.aiBuildings === this.lastBuildingCount) { 
+			penalty -= 2.0; 
+			reasons.push("resource_hoarding_without_investment"); 
+		}
       if (m.aiTurrets >= 4 && m.aiArmy < 3 && gameTimeMin > 4) { penalty -= 3.0; reasons.push("turtle_strategy_without_army"); }
       if (gameTimeMin > 5 && m.techLevel === 1) { penalty -= 5; reasons.push("tech_stagnation_tier1"); }
-      if (m.aiArmy > this.lastArmySize && m.resTotal < 150) { penalty += 2.0; reasons.push("healthy_economy_to_military_conversion"); }
+      if (m.aiArmy > this.lastArmySize && m.resTotal < 150) { penalty += 2.0; reasons.push("healthy_economy_to_military_conversion"); }  
       
       // AGGRESSIVE HOARDING PENALTY
-      if (m.resTotal > 2000 && m.aiArmy < 10) { penalty -= 15.0; reasons.push("CRITICAL_HOARDING: Богат, но беззащитен!"); }
+		if (m.resTotal > 0.5 && m.aiArmy < 10) { 
+			penalty -= 15.0; 
+			reasons.push("CRITICAL_HOARDING: Богат (>1000 рес), но беззащитен!"); 
+		}	
 
+      // 🔥 Штраф за склады без рабочих
+      const emptyWarehouses = gameState.buildings.filter(b =>
+        b.owner === "ai" && b.type ==="warehouse" && b.active && (b.workers || 0) === 0
+      ).length;
+      if (emptyWarehouses > 0 && gameTimeMin > 1.0) {
+        const emptyPenalty = -10.0 * emptyWarehouses;
+        penalty += emptyPenalty;
+        reasons.push(`EMPTY_WAREHOUSES: ${emptyWarehouses} складов простаивают без рабочих! (штраф ${emptyPenalty})`);
+      }
+
+		// 🔥 ШТРАФ ЗА КУЧКОВАНИЕ ЗДАНИЙ
+const aiBuildings = gameState.buildings.filter(b => b.owner === "ai" && b.health > 0);
+if (aiBuildings.length > 5) {
+    // Считаем среднее расстояние между зданиями
+    let totalDist = 0;
+    let pairCount = 0;
+    for (let i = 0; i < Math.min(aiBuildings.length, 10); i++) {
+        for (let j = i + 1; j < Math.min(aiBuildings.length, 10); j++) {
+            totalDist += Math.hypot(aiBuildings[i].x - aiBuildings[j].x, aiBuildings[i].y - aiBuildings[j].y);
+            pairCount++;
+        }
+    }
+    const avgDist = pairCount > 0 ? totalDist / pairCount : 0;
+    
+    // Если среднее расстояние < 150px — здания слишком близко
+    if (avgDist < 150) {
+        const clusteringPenalty = -15.0 * (1 - avgDist / 150);
+        penalty += clusteringPenalty;
+        reasons.push(`CLUSTERING_PENALTY: Здания слишком близко друг к другу (среднее ${avgDist.toFixed(0)}px, штраф ${clusteringPenalty.toFixed(1)})`);
+    }
+}
+		
       if (penalty !== 0) {
         const currentState = this.buildGraphState();
         if (currentState) {
           this.replay.push({ X: currentState.X, A_distance: currentState.A_distance, A_threat: currentState.A_threat, actionIndex: AIDX.idle, reward: penalty });
           if (penalty < 0) console.warn(`[GnnAI] ⚠️ Обнаружен тупик: ${penalty} (${reasons.join(', ')})`);
         }
-      }
-		
-      const beaconsCount = gameState.buildings.filter(b => b.owner === "ai" && b.type === "beacon" && b.health > 0).length;
+      }	
+      
+      const beaconsCount = gameState.buildings.filter(b => b.owner === "ai" && b.type ==="beacon" && b.health > 0).length;
       if (beaconsCount >= 2 && m.aiArmy < 3 && m.enemyNear > 0) {
         penalty -= 15.0;
         reasons.push("FOOLISH_EXPANSION: Построен маяк, но нечем его защитить от врага!");
       }
 
+      // 🔥 Регулярный штраф за долгое бездействие с ресурсами
+      const gameTimeMin2 = performance.now() / 60000;
+      const idleActionCount = (this.episodeReport?.actions?.idle || 0);
+      if (idleActionCount > 10 && m.resTotal > 0.2 && gameTimeMin2 > 3) {
+          const idlePenalty = -3.0 * Math.min(5, Math.floor(idleActionCount / 10));
+          penalty += idlePenalty;
+          reasons.push(`IDLE_SPAM: ${idleActionCount} бездействий при ресурсах ${m.resTotal.toFixed(2)} (штраф ${idlePenalty.toFixed(1)})`);
+      }
+      
       this.lastArmySize = m.aiArmy;
       this.lastBuildingCount = m.aiBuildings;
       this.lastResourceTotal = m.resTotal;
     },
 	  
-	      evaluateEconomyEfficiency: function (now) {
+	 evaluateEconomyEfficiency: function (now) {
       if (!this.lastEcoEffCheck || now - this.lastEcoEffCheck < 6000) return;
       this.lastEcoEffCheck = now;
       const m = this.metrics();
       const gameTimeMin = performance.now() / 60000;
       let reward = 0;
       let reasons = [];
-
       const buildingCount = m.aiBuildings;
       const armyValue = gameState.units
         .filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0)
         .reduce((s, u) => s + this.getUnitValue(u.type), 0);
       const techScore = m.techLevel * 100;
-
       // Сила на одно здание
       const powerPerBuilding = (armyValue + techScore) / Math.max(1, buildingCount);
-
       // 1. Штраф за раздутую инфраструктуру (много зданий, мало силы на здание)
       if (gameTimeMin > 3 && buildingCount > 14 && powerPerBuilding < 30) {
         reward -= 12.0;
         reasons.push(`BLOATED_INFRASTRUCTURE: ${buildingCount} зданий, сила/здание=${powerPerBuilding.toFixed(0)} < 30. Меньше зданий, больше армии!`);
       }
-
       // 2. Бонус за конвертацию зданий в силу (здания не растут, а армия/тех растёт)
       if (this.lastBuildingCount > 0 && buildingCount <= this.lastBuildingCount) {
         const armyGrew = m.aiArmy > this.lastArmySize;
@@ -697,17 +982,15 @@
           reasons.push(`EFFICIENT_CONVERSION: зданий ${buildingCount} (не +), но армия/тех выросли (+10)`);
         }
       }
-
-      // 3. Штраф за маяки сверх нужного (дублируем сигнал прямо в эффективность)
+      // 3. Штраф за маяки сверх нужного (усиленный)
       const beaconCount = gameState.buildings.filter(b =>
-        b.owner === "ai" && b.type === "beacon" && b.active
+        b.owner === "ai" && b.type ==="beacon" && b.active
       ).length;
-      const usefulBeacons = Math.min(beaconCount, 3); // 3 маяка — разумный потолок
-      if (beaconCount > 4) {
-        reward -= 4.0 * (beaconCount - 4);
-        reasons.push(`BEACON_OVERBUILD: ${beaconCount} маяков, лишние наказываются`);
+      if (beaconCount > 2) {
+        const excess = beaconCount - 2;
+        reward -= 8.0 * excess; // 🔥 Было -4.0*(N-4), стало -8.0*(N-2)
+        reasons.push(`BEACON_OVERBUILD: ${beaconCount} маяков, штраф -${(8.0 * excess).toFixed(0)} (лишние после 2-го)`);
       }
-
       this.lastTechLevel = m.techLevel;
 
       if (reward !== 0) {
@@ -726,16 +1009,12 @@
       const m = this.metrics();
       let penalty = 0;
       let reasons = [];
-
       const myUnits = gameState.units.filter(u => u.owner === "ai" && u.health > 0);
       const enemyUnits = gameState.units.filter(u => u.owner === "player" && u.health > 0);
-
       let myPower = 0;
       myUnits.forEach(u => { myPower += u.health + (this.getUnitDps(u.type) * 10); });
-
       let enemyPower = 0;
       enemyUnits.forEach(u => { enemyPower += u.health + (this.getUnitDps(u.type) * 10); });
-
       const turretCount = gameState.buildings.filter(b => b.owner === "ai" && b.type?.startsWith("turret") && b.health > 0).length;
       const myDefensePower = turretCount * 150; 
       const totalMyStrength = myPower + myDefensePower;
@@ -744,9 +1023,7 @@
         if (totalMyStrength < enemyPower * 0.5) { penalty -= 10.0; reasons.push("CRITICAL_WEAK_DEFENSE: Враг в 2 раза сильнее!"); } 
         else if (totalMyStrength > enemyPower * 1.5) { penalty += 5.0; reasons.push("STRONG_DEFENSE: Превосходство в силе!"); }
       }
-
       if (m.enemyNear > 0 && m.baseHp > 0.95 && turretCount > 0) { penalty += 3.0; reasons.push("EFFECTIVE_DEFENSE: База цела под огнем!"); }
-
       if (penalty !== 0) {
         const currentState = this.buildGraphState();
         if (currentState) {
@@ -763,15 +1040,13 @@
       const gameTimeMin = performance.now() / 60000;
       let penalty = 0;
       let reasons = [];
-
-      const enemyWorkers = gameState.units.filter(u => u.owner === "player" && u.type === "worker" && u.health > 0).length;
-      const myWorkers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
+      const enemyWorkers = gameState.units.filter(u => u.owner === "player" && u.type ==="worker" && u.health > 0).length;
+      const myWorkers = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
       
       if (gameTimeMin > 1.5 && myWorkers < enemyWorkers - 2) {
         penalty -= 15.0;
         reasons.push(`ECONOMIC_LAG: У врага ${enemyWorkers} рабочих, у нас ${myWorkers}. Срочно строить склады!`);
       }
-
       const enemyArmyValue = gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((sum, u) => sum + this.getUnitValue(u.type), 0);
       const myArmyValue = m.aiArmy * 30; 
 
@@ -779,15 +1054,13 @@
         penalty -= 20.0;
         reasons.push("MILITARY_LAG: Враг превосходит в силе! Нужна срочная мобилизация или турели!");
       }
-
-      const enemyHasBase2 = gameState.buildings.some(b => b.owner === "player" && b.type === "base2");
-      const myHasBase2 = gameState.buildings.some(b => b.owner === "ai" && b.type === "base2");
+      const enemyHasBase2 = gameState.buildings.some(b => b.owner === "player" && b.type ==="base2");
+      const myHasBase2 = gameState.buildings.some(b => b.owner === "ai" && b.type ==="base2");
       
       if (gameTimeMin > 4.0 && enemyHasBase2 && !myHasBase2) {
         penalty -= 25.0;
         reasons.push("TECH_LAG: Враг перешел на Тир-2, а мы застряли! Нужно расширяться!");
       }
-
       if (penalty < 0) {
         const currentState = this.buildGraphState();
         if (currentState) {
@@ -797,33 +1070,48 @@
       }
     },
  
-    evaluatePhaseRewards: function (now) {
-		
-      const gameTimeMin = performance.now() / 60000;
-      
-      // 🔥 НОВОЕ: Принудительное открытие технологий по времени, чтобы разорвать петлю
-      if (gameTimeMin > 2.5 && this.curriculumTier < 1) {
-          this.curriculumTier = 1;
-          console.log("[Curriculum] ⏱ Принудительный переход на Tier 1 (время > 2.5 мин)");
-      }
-      if (gameTimeMin > 5.0 && this.curriculumTier < 2) {
-          this.curriculumTier = 2;
-          console.log("[Curriculum] ⏱ Принудительный переход на Tier 2 (время > 5.0 мин)");
-      }
-				
-      if (!this.lastPhaseCheck || now - this.lastPhaseCheck < 5000) return;
-      this.lastPhaseCheck = now;
-      const m = this.metrics();
-      let phaseReward = 0;
-      let reasons = [];
+  evaluatePhaseRewards: function (now) {
+    if (!this.lastPhaseCheck || now - this.lastPhaseCheck < 5000) return;
+    this.lastPhaseCheck = now;
+    
+    const m = this.metrics();
+    const gameTimeMin = performance.now() / 60000;
 
-      const workers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
-      const barracks = gameState.buildings.some(b => b.owner === "ai" && b.type === "barracks");
-      const armySize = m.aiArmy;
+    // 🔥 СЧИТАЕМ ПРИЗНАКИ СОСТОЯНИЯ
+    const workers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
+    const warehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type === "warehouse" && b.active).length;
+    const hasBarracks = gameState.buildings.some(b => b.owner === "ai" && b.type === "barracks" && b.active);
+    const hasBase2 = gameState.buildings.some(b => b.owner === "ai" && b.type === "base2" && b.active);
+    const hasBarracks2 = gameState.buildings.some(b => b.owner === "ai" && b.type === "barracks2" && b.active);
+    const armySize = m.aiArmy;
+
+    // 🔥 УМНЫЙ ПЕРЕХОД НА TIER 1: Экономика стабильна (2+ склада, 4+ рабочих)
+    if (this.curriculumTier === 0 && warehouses >= 2 && workers >= 4) {
+        this.curriculumTier = 1;
+        console.log(`[Curriculum] 🎓 Переход на Tier 1: экономика стабильна (${warehouses} складов, ${workers} рабочих)`);
+    }
+
+    // 🔥 УМНЫЙ ПЕРЕХОД НА TIER 2: Есть казарма, армия 3+ и ресурсы > 300 (0.15 * 2000)
+    if (this.curriculumTier === 1 && hasBarracks && armySize >= 3 && m.resTotal > 0.15) {
+        this.curriculumTier = 2;
+        console.log(`[Curriculum] 🎓 Переход на Tier 2: армия ${armySize}, есть казарма, ресурсы > 300`);
+    }
+
+    // 🔥 УМНЫЙ ПЕРЕХОД НА TIER 3: Есть база Т2 или казарма Т2 + армия 5+
+    if (this.curriculumTier === 2 && (hasBase2 || hasBarracks2) && armySize >= 5) {
+        this.curriculumTier = 3;
+        console.log(`[Curriculum] 🎓 Переход на Tier 3: база Т2/казарма Т2 + армия ${armySize}`);
+    }
+
+    let phaseReward = 0;
+    let reasons = [];
+
+
+      const barracks = gameState.buildings.some(b => b.owner === "ai" && b.type ==="barracks");
 
       if (gameTimeMin < 2.0) {
-        const wCount = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
-        const barr = gameState.buildings.some(b => b.owner === "ai" && b.type === "barracks" && b.active);
+        const wCount = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
+        const barr = gameState.buildings.some(b => b.owner === "ai" && b.type ==="barracks" && b.active);
 
         if (wCount >= 4) { phaseReward += 20.0; reasons.push("PHASE1_EXCELLENT_ECONOMY_4+_WORKERS"); } 
         else if (wCount >= 2) { phaseReward += 10.0; reasons.push("PHASE1_GOOD_ECONOMY_2+_WORKERS"); } 
@@ -834,8 +1122,8 @@
         if (barr && wCount < 3) { phaseReward -= 30.0; reasons.push("PHASE1_PREMATURE_MILITARY_SUICIDE"); }
       }
       else if (gameTimeMin < 4.0) {
-        const wCount = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
-        const barr = gameState.buildings.some(b => b.owner === "ai" && b.type === "barracks" && b.active);
+        const wCount = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
+        const barr = gameState.buildings.some(b => b.owner === "ai" && b.type ==="barracks" && b.active);
 
         if (barr && wCount >= 4) { phaseReward += 20.0; reasons.push("PHASE2_PERFECT_MACRO_BALANCE"); }
         if (m.resTotal > 100 && m.aiWarehouses < 2) { phaseReward -= 25.0; reasons.push("PHASE2_HOARDING_WITHOUT_EXPANSION"); }
@@ -843,7 +1131,7 @@
         if (armySize === 0 && gameTimeMin > 3.0) { phaseReward -= 15.0; reasons.push("PHASE2_ZERO_ARMY_PENALTY"); }
       }
       else if (gameTimeMin < 6.0) {
-        const hasBase2 = gameState.buildings.some(b => b.owner === "ai" && b.type === "base2");
+        const hasBase2 = gameState.buildings.some(b => b.owner === "ai" && b.type ==="base2");
         if (hasBase2) { phaseReward += 12.0; reasons.push("PHASE3_TIER2_ACHIEVEMENT_BONUS"); }
         if (!hasBase2) {
           const minutesLate = gameTimeMin - 3.0;
@@ -852,16 +1140,15 @@
         }
       }
       else {
-        const eliteCount = gameState.units.filter(u => u.owner === "ai" && u.type === "elite").length;
-        const assaultCount = gameState.units.filter(u => u.owner === "ai" && u.type === "assault").length;
+        const eliteCount = gameState.units.filter(u => u.owner === "ai" && u.type ==="elite").length;
+        const assaultCount = gameState.units.filter(u => u.owner === "ai" && u.type ==="assault").length;
         
         if (assaultCount > 0 || eliteCount > 0) { phaseReward += 10.0; reasons.push("PHASE4_ADVANCED_UNITS_BONUS"); }
         if (armySize > 10) {
-          const fighterCount = gameState.units.filter(u => u.owner === "ai" && u.type === "fighter").length;
+          const fighterCount = gameState.units.filter(u => u.owner === "ai" && u.type ==="fighter").length;
           if (fighterCount / armySize > 0.9) { phaseReward -= 8.0; reasons.push("PHASE4_INEFFICIENT_ARMY_COMPOSITION_PENALTY"); }
         }
       }
-
       if (phaseReward !== 0) {
         const currentState = this.buildGraphState();
         if (currentState) {
@@ -876,40 +1163,34 @@
       const m = this.metrics();
       const gameTimeMin = performance.now() / 60000;
       let penalty = 0;
-      let reasons = [];
-		
+      let reasons = [];	
       const isUnderThreat = this.strategicMemory.threatLevel > 0;
       const hasNoArmy = m.aiArmy === 0;
 
       if (hasNoArmy && m.resTotal > 0.2 && gameTimeMin > 1.5) {
           penalty -= 30.0;
           reasons.push("CRITICAL_PANIC: Ресурсы есть, а армии НЕТ! Строй казарму!");
-      }	
-		
+      }			
       if (m.aiTurrets >= 3 && m.aiArmy === 0 && gameTimeMin > 3) {
         penalty -= 10.0;
         reasons.push("CRITICAL: turrets_but_no_army_PACIFIST_TRAP");
       }
-
-      const hasEconomyBuildings = gameState.buildings.some(b => b.owner === "ai" && (b.type === "warehouse" || b.type === "repairWorkshop") && b.active);
-      const workerCount = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
+      const hasEconomyBuildings = gameState.buildings.some(b => b.owner === "ai" && (b.type ==="warehouse" || b.type ==="repairWorkshop") && b.active);
+      const workerCount = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
 
       if (hasEconomyBuildings && workerCount === 0 && gameTimeMin > 0.5) {
           penalty -= 20.0;
           reasons.push("CRITICAL: buildings_without_workers_ECONOMIC_SUICIDE");
       }
-
       if (workerCount === 0 && gameTimeMin > 1) {
           const minutesWithoutWorkers = gameTimeMin - 1;
           penalty -= 10.0 * minutesWithoutWorkers;
           reasons.push(`CRITICAL: no_workers_${minutesWithoutWorkers.toFixed(1)}min`);
       }
-
       if (m.resTotal > 0.1 && m.aiBuildings <= 2 && gameTimeMin > 0.5) {
          penalty -= 50.0;
          reasons.push("LAZY_PENALTY: Есть ресурсы, но ИИ ничего не делает!");
       }
-		
       const currentRes = m.resTotal;
       if (this.lastResourceTotal > 0) {
           const resourceGrowth = currentRes - this.lastResourceTotal;
@@ -918,9 +1199,8 @@
               reasons.push("CRITICAL: zero_resource_income_no_workers");
           }
       }
-
       const units = gameState.units.filter(u => u.owner === "ai" && u.health > 0);
-      const combatUnits = units.filter(u => ["fighter", "assault", "elite"].includes(u.type));
+      const combatUnits = units.filter(u => ["fighter","assault","elite"].includes(u.type));
       const fighterCount = combatUnits.filter(u => u.type === "fighter").length;
       const assaultCount = combatUnits.filter(u => u.type === "assault").length;
       const eliteCount = combatUnits.filter(u => u.type === "elite").length;
@@ -931,15 +1211,13 @@
           if (fighterRatio > 0.8) { penalty -= 8.0; reasons.push("inefficient_army_composition_80_percent_fighters"); }
           if (fighterRatio > 0.9) { penalty -= 12.0; reasons.push("terrible_army_composition_90_percent_fighters"); }
       }
-
       const uniqueTypes = (fighterCount > 0 ? 1 : 0) + (assaultCount > 0 ? 1 : 0) + (eliteCount > 0 ? 1 : 0);
       if (uniqueTypes >= 2 && gameTimeMin > 6) { penalty += 5.0; reasons.push("diverse_army_bonus"); }
       if (uniqueTypes === 3 && gameTimeMin > 8) { penalty += 10.0; reasons.push("full_composition_bonus"); }
 
-      const hasBarracks = gameState.buildings.some(b => b.owner === "ai" && b.type === "barracks" && b.active);
-      const hasBase2 = gameState.buildings.some(b => b.owner === "ai" && b.type === "base2" && b.active);
-      const hasBase3 = gameState.buildings.some(b => b.owner === "ai" && b.type === "base3" && b.active);
-
+      const hasBarracks = gameState.buildings.some(b => b.owner === "ai" && b.type ==="barracks" && b.active);
+      const hasBase2 = gameState.buildings.some(b => b.owner === "ai" && b.type ==="base2" && b.active);
+      const hasBase3 = gameState.buildings.some(b => b.owner === "ai" && b.type ==="base3" && b.active);
       const base2Wip = (window.buildQueue || []).some(q => q.type === "base2");
       const barracksWip = (window.buildQueue || []).some(q => q.type === "barracks");
 
@@ -949,10 +1227,9 @@
 
       const turretCount = gameState.buildings.filter(b => b.owner === "ai" && b.type?.startsWith("turret") && b.active).length;
       if (turretCount > 5 && m.aiArmy < 3 && gameTimeMin > 5) { penalty -= 2.0; reasons.push("turrets_without_army"); }
-
       // 🔥 Штраф за маяки-сироты (построены, но рядом нет склада/турели = бесполезны)
       const orphanBeacons = gameState.buildings.filter(b =>
-        b.owner === "ai" && b.type === "beacon" && b.active &&
+        b.owner === "ai" && b.type ==="beacon" && b.active &&
         !gameState.buildings.some(o => o.owner === "ai" && o !== b &&
           ["warehouse","repairWorkshop","turret","turret2","turret3","barracks"].includes(o.type) &&
           Math.hypot(o.x - b.x, o.y - b.y) < 220)
@@ -962,34 +1239,29 @@
         penalty += orphanPenalty;
         reasons.push(`ORPHAN_BEACONS: ${orphanBeacons.length} маяков без фортов! Строй склады/турели рядом.`);
       }
-
       if (hasBarracks && hasBase2 && m.aiArmy > 5 && gameTimeMin > 5) { penalty += 2.0; reasons.push("balanced_development"); }
 
       if (!hasBarracks && !barracksWip && gameTimeMin > 3) {
           const minutesLate = gameTimeMin - 3;
           penalty -= 3.0 * minutesLate;
           reasons.push(`no_barracks_${minutesLate.toFixed(1)}min_late`);
-      }
-      
+      }     
       if (!hasBase2 && !base2Wip && gameTimeMin > 6) {
           const minutesLate = gameTimeMin - 6;
           penalty -= 5.0 * minutesLate;
           reasons.push(`no_base2_${minutesLate.toFixed(1)}min_late`);
       }
-
       const base2Cost = typeof BASE2_COST !== 'undefined' ? (BASE2_COST.gold || 0) + (BASE2_COST.silicon || 0) : 400;
       if (m.resTotal > Math.max(800, base2Cost * 2) && !hasBase2 && !hasBase3 && !base2Wip && gameTimeMin > 3.0) {
           penalty -= 25.0;
           reasons.push("RICH_FOOL_PENALTY: Много ресурсов (>800), но застревание на Тир-1! Срочно строй Base2!");
-      }
-													 
+      }													 
       if (penalty !== 0) {
         const currentState = this.buildGraphState();
         if (currentState) {
           this.replay.push({ X: currentState.X, A_distance: currentState.A_distance, A_threat: currentState.A_threat, actionIndex: AIDX.idle, reward: penalty });
         }
-      }
-      
+      }  
       this.lastResourceTotal = currentRes;
     },
 
@@ -1001,8 +1273,7 @@
       }
       this._initializing = true;
       
-      if (!window.tf) { console.error("[GnnAI] TF.js не найден"); this._initializing = false; return; }
-      
+      if (!window.tf) { console.error("[GnnAI] TF.js не найден"); this._initializing = false; return; }  
       try {
         await tf.setBackend('webgpu').catch(() => tf.setBackend('webgl'));
         await tf.ready();
@@ -1013,28 +1284,22 @@
           this._initializing = false;
           return;
         }
-      }
-
+	}
       const H = CFG.HIDDEN;
       const F = CFG.NODE_FEATURES;
       const G = CFG.GLOBAL_FEATURES;
       const A = G_ACTIONS.length; 
       const v = (shape, scale = 0.08) => tf.variable(tf.randomNormal(shape, 0, scale));
-
       const W_attn = v([F * 2, 1]);
       const W1 = v([F, H]), b1 = tf.variable(tf.zeros([H]));
       const W2 = v([H, H]), b2 = tf.variable(tf.zeros([H]));
-      const Wp = v([H + G, H]), bp = tf.variable(tf.zeros([H]));
-      
+      const Wp = v([H + G, H]), bp = tf.variable(tf.zeros([H]));   
       const W_adv = v([H, A]);
-      const b_adv = tf.variable(tf.zeros([A]));
-      
+      const b_adv = tf.variable(tf.zeros([A]));     
       const W_val = v([H, 1]);
       const b_val = tf.variable(tf.zeros([1]));
-
       this.vars = [W_attn, W1, b1, W2, b2, Wp, bp, W_adv, b_adv, W_val, b_val];
-      this.targetVars = this.vars.map(v => tf.variable(v.clone()));
-      
+      this.targetVars = this.vars.map(v => tf.variable(v.clone()));     
       this.optimizer = tf.train.adam(CFG.LR);
       this.tau = 0.005;
 
@@ -1042,34 +1307,26 @@
         forwardBatch: (x, adj_dist, adj_threat, globalBatchTensor) => {  
           return tf.tidy(() => {
             const B = x.shape[0];
-            const N = CFG.MAX_NODES;
-            
+            const N = CFG.MAX_NODES;          
             const xExpanded = x.tile([1, 1, N]).reshape([B, N, N, F]);
             const xTransposed = x.expandDims(2).tile([1, 1, N, 1]);
             const pairFeat = tf.concat([xExpanded, xTransposed], 3).reshape([B * N * N, F * 2]);
             const attnLogits = tf.matMul(pairFeat, W_attn).reshape([B, N, N]);
-            const attnWeights = tf.softmax(attnLogits, 2);
-            
+            const attnWeights = tf.softmax(attnLogits, 2);           
             const combinedAdj = tf.add(
               tf.mul(adj_dist, attnWeights),
               tf.mul(adj_threat, attnWeights)
-            );
-            
+            );         
             const agg1 = tf.matMul(combinedAdj, x);
-            const h1 = tf.relu(tf.matMul(agg1.reshape([B * N, F]), W1).add(b1).reshape([B, N, H]));
-            
+            const h1 = tf.relu(tf.matMul(agg1.reshape([B * N, F]), W1).add(b1).reshape([B, N, H]));          
             const agg2 = tf.matMul(combinedAdj, h1);
-            const h2 = tf.relu(tf.matMul(agg2.reshape([B * N, H]), W2).add(b2).reshape([B, N, H]));
-            
+            const h2 = tf.relu(tf.matMul(agg2.reshape([B * N, H]), W2).add(b2).reshape([B, N, H]));           
             const mask = x.slice([0, 0, 0], [B, N, 1]);
-            const pooled = h2.mul(mask).sum(1).div(tf.maximum(mask.sum(1), 1));
-            
+            const pooled = h2.mul(mask).sum(1).div(tf.maximum(mask.sum(1), 1));            
             const combined = tf.concat([pooled, globalBatchTensor], 1);
-            const hp = tf.tanh(tf.add(tf.matMul(combined, Wp), bp));
-            
+            const hp = tf.tanh(tf.add(tf.matMul(combined, Wp), bp));         
             const advantage = tf.add(tf.matMul(hp, W_adv), b_adv);
-            const value = tf.add(tf.matMul(hp, W_val), b_val);
-            
+            const value = tf.add(tf.matMul(hp, W_val), b_val);          
             const meanAdv = advantage.mean(1, true);
             const logits = value.add(advantage.sub(meanAdv));
             
@@ -1077,11 +1334,10 @@
           });
         }
       };
-
       await this.loadWeights();
       this.initialized = true;
       this._initializing = false;
-      console.log(`[GnnAI] ✅ Модель (v7.4 Perfect Stability + Visuals) готова. Backend: ${tf.getBackend()}`);
+      console.log(`[GnnAI] ✅ Модель (v7.5 Tactical Awareness) готова. Backend: ${tf.getBackend()}`);
     },
 
   predictData: function (state) {
@@ -1091,8 +1347,7 @@
         const x = tf.tensor2d(state.X).expandDims(0);
         const a_dist = tf.tensor2d(state.A_distance).expandDims(0);  
         const a_threat = tf.tensor2d(state.A_threat).expandDims(0);  
-        const globalBatch = tf.tensor2d([globalFeatures]); 
-        
+        const globalBatch = tf.tensor2d([globalFeatures]);     
         const result = this.model.forwardBatch(x, a_dist, a_threat, globalBatch);
         const logitsData = Array.from(result.logits.dataSync());
         const valueData = Array.from(result.value.dataSync());
@@ -1105,8 +1360,7 @@
       if (!this.initialized) await this.init();
       if (!this.initialized) return; 
 
-      const now = performance.now();
-      
+      const now = performance.now();     
       // 1. Оценка мира (без тензоров)
       try {
           await this.checkEnd();
@@ -1122,7 +1376,6 @@
       } catch (e) {
           console.error("[GnnAI] Error in evaluation phase:", e);
       }
-
       // 2. Обработка очередей
       if (!this.lastTick.buildQ || now - this.lastTick.buildQ >= CFG.BUILD_QUEUE_MS) {
         this.lastTick.buildQ = now;
@@ -1138,7 +1391,6 @@
 
       this.evaluatePending(now);
       this.benchmarkTick("gnn", this.lastAction);
-
       // 3. Принятие решения (строго внутри tidy)
       if (!this.lastTick.decision || now - this.lastTick.decision >= CFG.DECISION_MS) {
         this.lastTick.decision = now;
@@ -1146,7 +1398,6 @@
             try { this.decide(); } catch(e) { console.error("[GnnAI] Decide error", e); }
         });
       }
-
       // 4. Обучение (строго внутри tidy)
       if (!this.lastTick.train || now - this.lastTick.train >= CFG.TRAIN_MS) {
         this.lastTick.train = now;
@@ -1160,48 +1411,71 @@ buildGraphState: function () {
   // Жесткая проверка валидности gameState
   if (!gameState || !aiBase || !aiBase.maxHealth || aiBase.maxHealth <= 0 || aiBase.health < 0) return null;
   
-  const raw = [{ obj: aiBase, type: "base", owner: "ai", x: aiBase.x, y: aiBase.y, hp: Math.min(1, aiBase.health / aiBase.maxHealth), valid: 1 }];
+  const raw = [{ obj: aiBase, type: "base", owner:"ai", x: aiBase.x, y: aiBase.y, hp: Math.min(1, aiBase.health / aiBase.maxHealth), valid: 1 }];
   const candidates = [];
 
   // Безопасный сбор кандидатов
   try {
-      for (const u of gameState.units) if (u && u.health > 0 && isFinite(u.x) && isFinite(u.y)) candidates.push(u);
+      // 🔥 ИСКЛЮЧАЕМ рабочих и ремонтников — у них скриптовые циклы
+      for (const u of gameState.units) {
+          if (u && u.health > 0 && isFinite(u.x) && isFinite(u.y)) {
+              // Оставляем только боевых юнитов
+              if (["fighter","assault","elite"].includes(u.type)) {
+                  candidates.push(u);
+              }
+              // Рабочих и ремонтников НЕ добавляем
+          }
+      }
       for (const b of gameState.buildings) if (b && b.health > 0 && b !== aiBase && isFinite(b.x) && isFinite(b.y)) candidates.push(b);
-      for (const r of gameState.resources) if (r && r.amount > 0 && Math.hypot(r.x - aiBase.x, r.y - aiBase.y) < 650) candidates.push(r);
+  // 🔥 ВСЕ ресурсы на карте, без фильтра по расстоянию
+	for (const r of gameState.resources) if (r && r.amount > 0) candidates.push(r);
   } catch (e) { return null; }
 
-  const scoreObj = (o) => {
-    const d = Math.hypot(o.x - aiBase.x, o.y - aiBase.y);
-    let s = 10000 - d;
-    if (o.owner === "player") s += 5000;
-    if (o.owner === "ai") s += 2500;
+	const scoreObj = (o) => {
+	  const d = Math.hypot(o.x - aiBase.x, o.y - aiBase.y);
+	  let s = 10000; // Базовый скор без штрафа за расстояние
 
-	  // 🔥 НОВОЕ: Боевые юниты ВСЕГДА важны, даже если далеко!
-	  if (["fighter", "assault", "elite"].includes(o.type)) {
-		s += 3000; // Бонус за то, что это боевой юнит
+	  // 🔥 Вражеские объекты — высокий приоритет (видеть угрозу)
+	  if (o.owner === "player") s += 5000;
+
+	  // 🔥 Свои объекты — тоже высокий приоритет (защищать и развивать)
+	  if (o.owner === "ai") s += 2500;
+
+	  // 🔥 Боевые юниты ВСЕГДА важны, даже если далеко!
+	  if (["fighter","assault","elite"].includes(o.type)) {
+		s += 3000;
 		if (o.owner === "ai" && o.commandQueue && o.commandQueue.length > 0) {
-		  s += 2000; // Дополнительный бонус, если юнит выполняет приказ
+		  s += 2000;
 		}
 	  }
+	  // 🔥 Турели — важны для обороны
+	  if (o.type?.startsWith("turret")) s += 1600;
 
-    if (o.type?.startsWith("turret")) s += 1600;
-    if (["base", "base2", "base3", "barracks", "barracks2", "barracks3", "warehouse", "repairWorkshop", "beacon"].includes(o.type)) s += 1200;
-    return s;
-  };
+	  // 🔥 Здания — все одинаково важны, независимо от расстояния
+	  if (["base","base2","base3","barracks","barracks2","barracks3", 
+		   "warehouse","repairWorkshop","beacon"].includes(o.type)) {
+		s += 1200;
+	  }
+
+	  // 🔥 Ресурсы — приоритет зависит от количества
+	  if (["gold","silicon","plasma"].includes(o.type)) {
+		s += 800 + (o.amount || 0) * 2; // Чем больше ресурса, тем важнее
+	  }
+	  return s;
+	};
 
   candidates.sort((a, b) => scoreObj(b) - scoreObj(a));
   for (const o of candidates.slice(0, CFG.MAX_NODES - 1)) {
     const maxHp = o.maxHealth || o.max || 1;
     const hpVal = (maxHp > 0) ? Math.max(0, Math.min(1, (o.health ?? o.amount ?? 1) / maxHp)) : 0;
-    raw.push({ obj: o, type: o.type || "unknown", owner: o.owner || "none", x: o.x, y: o.y, hp: hpVal, valid: 1 });
+    raw.push({ obj: o, type: o.type || "unknown", owner: o.owner ||"none", x: o.x, y: o.y, hp: hpVal, valid: 1 });
   }
 
   while (raw.length < CFG.MAX_NODES) {
-    raw.push({ obj: null, type: "pad", owner: "none", x: 0, y: 0, hp: 0, valid: 0 });
+    raw.push({ obj: null, type: "pad", owner:"none", x: 0, y: 0, hp: 0, valid: 0 });
   }
 
   const X = raw.map(n => this.nodeFeatures(n));
-  
   const A_distance = []; 
   const A_threat = [];   
   
@@ -1230,34 +1504,29 @@ buildGraphState: function () {
       let geoConnection = 0;
       if (d <= CFG.INTERACTION_RADIUS) {
         geoConnection = Math.exp(-d / CFG.INTERACTION_RADIUS);
-      }
-
-      
+      }     
 // === СЕМАНТИЧЕСКИЕ СВЯЗИ (логические) — ТЕПЕРЬ ДЛЯ ВСЕХ ИГРОКОВ! ===
 let semanticConnection = 0;
-
 // 1. ЛОГИСТИЧЕСКИЕ СВЯЗИ (склады ↔ ресурсы)
-if (ni.type === "warehouse" && ["gold", "silicon", "plasma"].includes(nj.type)) {
+if (ni.type === "warehouse" && ["gold","silicon","plasma"].includes(nj.type)) {
   const maxResDist = 400;
   if (d < maxResDist) {
     semanticConnection = Math.max(semanticConnection, 0.9 * (1 - d / maxResDist));
   }
 }
-if (nj.type === "warehouse" && ["gold", "silicon", "plasma"].includes(ni.type)) {
+if (nj.type === "warehouse" && ["gold","silicon","plasma"].includes(ni.type)) {
   const maxResDist = 400;
   if (d < maxResDist) {
     semanticConnection = Math.max(semanticConnection, 0.9 * (1 - d / maxResDist));
   }
 }
-
 // 2. РАБОЧИЕ ↔ СКЛАДЫ
-if (ni.type === "warehouse" && nj.type === "worker") {
+if (ni.type === "warehouse" && nj.type ==="worker") {
   semanticConnection = Math.max(semanticConnection, 0.85);
 }
-if (nj.type === "warehouse" && ni.type === "worker") {
+if (nj.type === "warehouse" && ni.type ==="worker") {
   semanticConnection = Math.max(semanticConnection, 0.85);
 }
-
 // 3. РЕМОНТНЫЕ СВЯЗИ (мастерские ↔ поврежденные объекты < 90% HP) — УБРАНО owner === "ai"
 if (ni.type === "repairWorkshop" && nj.obj && nj.hp < 0.9) {
   const maxRepairDist = 350;
@@ -1273,20 +1542,18 @@ if (nj.type === "repairWorkshop" && ni.obj && ni.hp < 0.9) {
     semanticConnection = Math.max(semanticConnection, 0.8 * damageFactor * (1 - d / maxRepairDist));
   }
 }
-
 // 4. РЕМОНТНИКИ ↔ МАСТЕРСКИЕ
-if (ni.type === "repairWorkshop" && nj.type === "repairman") {
+if (ni.type === "repairWorkshop" && nj.type ==="repairman") {
   semanticConnection = Math.max(semanticConnection, 0.9);
 }
-if (nj.type === "repairWorkshop" && ni.type === "repairman") {
+if (nj.type === "repairWorkshop" && ni.type ==="repairman") {
   semanticConnection = Math.max(semanticConnection, 0.9);
 }
-
 // 5. ПРОИЗВОДСТВЕННЫЕ СВЯЗИ (казармы → юниты) — УБРАНО owner === "ai"
 const productionLinks = {
   "barracks": ["fighter"],
-  "barracks2": ["assault", "fighter"],
-  "barracks3": ["elite", "assault", "fighter"],
+  "barracks2": ["assault","fighter"],
+  "barracks3": ["elite","assault","fighter"],
   "warehouse": ["worker"],
   "repairWorkshop": ["repairman"]
 };
@@ -1297,7 +1564,6 @@ if (productionLinks[ni.type] && productionLinks[ni.type].includes(nj.type)) {
 if (productionLinks[nj.type] && productionLinks[nj.type].includes(ni.type)) {
   semanticConnection = Math.max(semanticConnection, 0.95);
 }
-
 // 6. ОБОРОНИТЕЛЬНЫЕ СВЯЗИ (турели ↔ защищаемые объекты) — УБРАНО owner === "ai"
 const turretRanges = {
   "turret": 250,
@@ -1316,7 +1582,6 @@ if (turretRanges[ni.type]) {
     semanticConnection = Math.max(semanticConnection, importance * (1 - d / range));
   }
 }
-
 if (turretRanges[nj.type]) {
   const range = turretRanges[nj.type];
   if (d < range && !ni.type.startsWith("turret")) {
@@ -1328,15 +1593,13 @@ if (turretRanges[nj.type]) {
     semanticConnection = Math.max(semanticConnection, importance * (1 - d / range));
   }
 }
-
 // 7. СТРАТЕГИЧЕСКИЕ СВЯЗИ (маяки ↔ расширение) — УБРАНО owner === "ai"
-if ((ni.type === "beacon" || nj.type === "beacon")) {
+if ((ni.type === "beacon" || nj.type ==="beacon")) {
   const beaconRange = 300;
-  if (d < beaconRange && (ni.type.includes("base") || nj.type.includes("base") || ni.type === "beacon" || nj.type === "beacon")) {
+  if (d < beaconRange && (ni.type.includes("base") || nj.type.includes("base") || ni.type ==="beacon" || nj.type ==="beacon")) {
     semanticConnection = Math.max(semanticConnection, 0.7 * (1 - d / beaconRange));
   }
 }
-
 // 8. ИЕРАРХИЧЕСКИЕ СВЯЗИ (базы ↔ все здания) — УБРАНО owner === "ai"
 if ((ni.type.includes("base") || nj.type.includes("base"))) {
   if ((ni.type.includes("base") && !nj.type.includes("base")) || 
@@ -1347,9 +1610,8 @@ if ((ni.type.includes("base") || nj.type.includes("base"))) {
     }
   }
 }
-
 // 9. БОЕВЫЕ ЮНИТЫ ↔ ИХ ЦЕЛИ (атака)
-if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && nj.owner !== ni.owner) {
+if ((ni.type === "fighter" || ni.type ==="assault" || ni.type ==="elite") && nj.owner !== ni.owner) {
   if (nj.obj && nj.obj.commandQueue && nj.obj.commandQueue.length > 0) {
     const targetCmd = nj.obj.commandQueue.find(cmd => cmd.type === "attack");
     if (targetCmd && targetCmd.target === ni.obj) {
@@ -1362,23 +1624,21 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       // Берем максимум из географической и семантической связи
       const finalConnection = Math.max(geoConnection, semanticConnection);
       
-      row_dist.push(finalConnection);
-      
+      row_dist.push(finalConnection);    
       // === УГРОЗЫ (для A_threat) ===
       let threatValue = 0;
-      if (ni.owner === "player" && nj.owner === "ai") {
+      if (ni.owner === "player" && nj.owner ==="ai") {
         const enemyDps = this.getUnitDps(ni.type) || 0;
         if (d < 300) threatValue = (enemyDps / 100) * Math.exp(-d / 200);
-      } else if (ni.owner === "ai" && nj.owner === "ai") {
+      } else if (ni.owner === "ai" && nj.owner ==="ai") {
         if (d < 200) threatValue = 0.5 * Math.exp(-d / 150); 
-      } else if (ni.owner === "ai" && nj.owner === "player") {
+      } else if (ni.owner === "ai" && nj.owner ==="player") {
         const myDps = this.getUnitDps(ni.type) || 0;
         if (d < 250) threatValue = (myDps / 100) * Math.exp(-d / 200);
       }
       
       row_threat.push(Math.min(1, threatValue));
-    }
-    
+    }   
     const sum_dist = row_dist.reduce((a, b) => a + b, 0) + 1e-9;
     const sum_threat = row_threat.reduce((a, b) => a + b, 0) + 1e-9;
     
@@ -1414,15 +1674,12 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
     
     const logitsData = pred.logits;
     const mask = this.validActionMask();
-    const temperature = this.bcActive ? 1.5 : 1.0; 
-    
+    const temperature = this.bcActive ? 1.5 : 1.0;    
     let chosenIndex = this.sampleMasked(logitsData, mask, temperature);
     const proposedAction = G_ACTIONS[chosenIndex];
-    
     let finalActionIndex = chosenIndex;
     let finalAction = proposedAction;
-
-    const isStrategic = ["tactic_all_in", "tactic_harass", "tactic_push", "tactic_defend", "build_base2", "build_barracks"].includes(proposedAction);
+    const isStrategic = ["tactic_all_in","tactic_harass","tactic_push","tactic_defend","build_base2","build_barracks"].includes(proposedAction);
     
     if (isStrategic && this.lastStrategicChangeTime) {
       const timeSinceChange = now - this.lastStrategicChangeTime;
@@ -1443,6 +1700,13 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
 
     const metrics = this.metrics();
     const executed = this.execute(finalAction, finalActionIndex, state);
+
+      if (!executed) {
+          console.warn(`[DEBUG AI] ⚠️ Действие '${finalAction}' ЗАПРОШЕНО, но НЕ ВЫПОЛНЕНО! Ресурсы:`, JSON.stringify(gameState.aiResources));
+      } else {
+          console.log(`[DEBUG AI] ✅ Действие '${finalAction}' успешно выполнено.`);
+      }
+
 
     this.pending.push({ 
       time: now, 
@@ -1468,7 +1732,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
 
       for (const p of this.pending) {
         let delay = 4000;
-        if (["build_warehouse", "build_repair", "build_barracks", "build_beacon", "buildTurret", "expand"].includes(p.action)) delay = 12000;
+        if (["build_warehouse","build_repair","build_barracks","build_beacon"].includes(p.action)) delay = 12000;
         if (p.action === "hireFighter") delay = 7000;
         if (p.action === "hireAssault") delay = 12000;
         if (p.action === "hireElite") delay = 20000;
@@ -1521,63 +1785,49 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       const xs = tf.tensor3d(batch.map(b => b.X), [B, CFG.MAX_NODES, CFG.NODE_FEATURES]);
       const as_dist = tf.tensor3d(batch.map(b => b.A_distance), [B, CFG.MAX_NODES, CFG.MAX_NODES]);  
       const as_threat = tf.tensor3d(batch.map(b => b.A_threat), [B, CFG.MAX_NODES, CFG.MAX_NODES]);  
-      const act = tf.tensor1d(batch.map(b => b.actionIndex), "int32");
-      
+      const act = tf.tensor1d(batch.map(b => b.actionIndex), "int32");    
       const rewardsRaw = batch.map(b => Math.max(-10, Math.min(10, b.reward))); 
       const meanR = rewardsRaw.reduce((a,b)=>a+b,0) / B;
       const variance = rewardsRaw.map(r => (r-meanR)**2).reduce((a,b)=>a+b,0)/B;
       const stdR = Math.sqrt(variance) + 1e-6;
       const rewardsNorm = rewardsRaw.map(r => (r - meanR) / stdR);
-      const rew = tf.tensor1d(rewardsNorm, "float32");
-      
+      const rew = tf.tensor1d(rewardsNorm, "float32");    
       const oldLogProbs = tf.tensor1d(batch.map(b => isFinite(b.oldLogProb) ? b.oldLogProb : -10.0), "float32");
-      const oldValues = tf.tensor1d(batch.map(b => isFinite(b.value) ? b.value : 0.0), "float32");
-      
+      const oldValues = tf.tensor1d(batch.map(b => isFinite(b.value) ? b.value : 0.0), "float32"); 
       const masks = batch.map(b => {
           let m = b.actionMask;
           if (!m || m.length !== G_ACTIONS.length) m = new Array(G_ACTIONS.length).fill(1);
           return m;
       });
       const maskTensor = tf.tensor2d(masks, [B, G_ACTIONS.length]);
-
       const globalFeatures = this.getGlobalFeatures();
       const safeGlobal = globalFeatures.map(v => isFinite(v) ? v : 0);
       const globalBatchData = Array(B).fill(safeGlobal);
       const globalBatch = tf.tensor2d(globalBatchData, [B, CFG.GLOBAL_FEATURES]);
-
       let loss = null;
       try {
         const { value, grads } = tf.variableGrads(() => {
           const { logits, value } = this.model.forwardBatch(xs, as_dist, as_threat, globalBatch);  
-
           const clippedValue = tf.clipByValue(value, -50, 50);
           const bcRatio = Math.max(0, 1 - (this.trainBatches / CFG.BC_TRANSITION_BATCHES));
-          
           const inverseMask = maskTensor.sub(1).mul(-1e9); 
           const maskedLogits = logits.add(inverseMask);
-          const logProbs = tf.log(tf.softmax(maskedLogits).add(1e-10));
-          
+          const logProbs = tf.log(tf.softmax(maskedLogits).add(1e-10));      
           const oneHot = tf.oneHot(act, G_ACTIONS.length);
-          const newLogProbs = logProbs.mul(oneHot).sum(1);
-          
+          const newLogProbs = logProbs.mul(oneHot).sum(1);       
           const values = clippedValue.squeeze();
-          const advantage = rew.sub(values); 
-          
+          const advantage = rew.sub(values);        
           const ratio = tf.exp(newLogProbs.sub(oldLogProbs));
-          const clippedRatio = tf.clipByValue(ratio, 1 - CFG.CLIP_EPSILON, 1 + CFG.CLIP_EPSILON);
-          
+          const clippedRatio = tf.clipByValue(ratio, 1 - CFG.CLIP_EPSILON, 1 + CFG.CLIP_EPSILON);        
           const surrogate1 = ratio.mul(advantage);
           const surrogate2 = clippedRatio.mul(advantage);
-          const actorLoss = tf.minimum(surrogate1, surrogate2).mul(-1).mean(); 
-          
+          const actorLoss = tf.minimum(surrogate1, surrogate2).mul(-1).mean();           
           const valueClipped = oldValues.add(tf.clipByValue(values.sub(oldValues), -0.5, 0.5));
           const criticLoss1 = values.sub(rew).square();
           const criticLoss2 = valueClipped.sub(rew).square();
-          const criticLoss = tf.maximum(criticLoss1, criticLoss2).mean();
-          
+          const criticLoss = tf.maximum(criticLoss1, criticLoss2).mean();    
           const probs = tf.softmax(maskedLogits);
           const entropy = probs.mul(logProbs).mul(-1).sum(1).mean();
-
           let totalLoss;
           const hasExpertData = batch.some(b => b.isExpert);
           
@@ -1667,8 +1917,8 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       if (!n || !n.valid) return new Array(CFG.NODE_FEATURES).fill(0);
       const t = n.type || "";
       const isBuilding = typeof Building !== "undefined" && n.obj instanceof Building;
-      const isResource = ["gold", "silicon", "plasma"].includes(t);
-      const isCombat = ["fighter", "assault", "elite"].includes(t);
+      const isResource = ["gold","silicon","plasma"].includes(t);
+      const isCombat = ["fighter","assault","elite"].includes(t);
       const isTurret = typeof t === "string" && t.startsWith("turret");
       
       const wW = CFG.WORLD_WIDTH || 2000;
@@ -1681,11 +1931,11 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       
       const isActive = n.obj && n.obj.active ? 1 : 0;
       const isUnderConstruction = n.obj && n.obj.builtAt && !n.obj.active ? 1 : 0;
-      const isKeyBuilding = ["base", "base2", "base3", "barracks", "barracks2", "barracks3", "warehouse", "beacon"].includes(t) ? 1 : 0;
+      const isKeyBuilding = ["base","base2","base3","barracks","barracks2","barracks3","warehouse","beacon"].includes(t) ? 1 : 0;
       const isMilitary = isCombat || isTurret ? 1 : 0;
-      const isEconomic = t === "warehouse" || t === "repairWorkshop" ? 1 : 0;
-      const isExpansion = t === "base2" || t === "base3" || t === "beacon" ? 1 : 0;
-      const techLevel = t === "base3" || t === "barracks3" || t === "turret3" ? 3 : (t === "base2" || t === "barracks2" || t === "turret2" ? 2 : 1);
+      const isEconomic = t === "warehouse" || t ==="repairWorkshop" ? 1 : 0;
+      const isExpansion = t === "base2" || t ==="base3" || t ==="beacon" ? 1 : 0;
+      const techLevel = t === "base3" || t ==="barracks3" || t ==="turret3" ? 3 : (t ==="base2" || t ==="barracks2" || t ==="turret2" ? 2 : 1);
 
       let isUnderAttack = 0;
       if (n.obj && n.obj.owner === "ai" && n.obj.health > 0) {
@@ -1710,18 +1960,111 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
         logisticsScore = Math.max(0, 1.0 - (minResDist / 1000));
       }
 
+    // категория здания для стратегического понимания
+    let buildingCategory = 0; // 0 = не здание
+    if (isBuilding) {
+        if (t === "warehouse") buildingCategory = 1;      // экономическое
+        else if (t === "repairWorkshop") buildingCategory = 2;  // ремонтное
+        else if (t === "beacon" || t ==="base2" || t ==="base3") buildingCategory = 3; // экспансионное
+        else if (t.startsWith("turret")) buildingCategory = 4;  // оборонительное
+        else if (t.startsWith("barracks")) buildingCategory = 5; // производственное
+        else if (t === "base") buildingCategory = 6;      // главная база
+    }
+
+      // 37-й ПРИЗНАК: загрузка здания рабочими/ремонтниками
+      let workersOnBuilding = 0;
+      if (t === "warehouse" && n.obj) {
+        workersOnBuilding = (n.obj.workers || 0) / (n.obj.maxDeliveryWorkers || 5);
+      } else if (t === "repairWorkshop" && n.obj) {
+        workersOnBuilding = (n.obj.repairman || 0) / (n.obj.capacity || 3);
+      }
+
+		// === НОВЫЕ ТАКТИЧЕСКИЕ ПРИЗНАКИ ДЛЯ БОЕВЫХ ЮНИТОВ ===
+		let nearestEnemyDist = 1.0;   // нормализованное расстояние до ближайшего врага
+		let enemyClusterNear = 0;     // есть ли скопление врагов рядом (1 = да)
+		let ourClusterStrength = 0;   // сила нашего скопления рядом
+		let hpRatio = n.hp || 0;      // % HP юнита
+		let cooldownProgress = 1.0;   // 0 = только выстрелил, 1 = готов
+		let hasTarget = 0;            // есть ли цель в commandQueue
+		let targetIsBuilding = 0;     // цель — здание (важнее) или юнит
+		let targetHP = 0;             // HP цели (низкий = добить!)
+		let surrounded = 0;           // окружён ли врагами
+
+		if (isCombat && n.obj) {
+		  const u = n.obj;
+		  hpRatio = u.health / (u.maxHealth || 1);
+		  cooldownProgress = u.attackCooldownMax > 0 
+			? 1.0 - (u.attackCooldown || 0) / u.attackCooldownMax 
+			: 1.0;
+
+		  // Ищем ближайшего врага и считаем скопления
+		  let minED = 9999;
+		  let enemiesNear = 0;
+		  let alliesNear = 0;
+		  let allyPower = 0;
+		  let enemyPower = 0;
+
+		  for (const other of gameState.units) {
+			if (other === u || other.health <= 0) continue;
+			const d = Math.hypot(other.x - u.x, other.y - u.y);
+			if (d < 200) {
+			  if (other.owner === "player") {
+				enemiesNear++;
+				enemyPower += other.health + (this.getUnitDps(other.type) || 0) * 5;
+			  } else if (other.owner === "ai") {
+				alliesNear++;
+				allyPower += other.health + (this.getUnitDps(other.type) || 0) * 5;
+			  }
+			}
+			if (other.owner === "player" && d < minED) minED = d;
+		  }
+
+		  nearestEnemyDist = Math.min(1, minED / 400);
+		  enemyClusterNear = enemiesNear >= 3 ? 1 : 0;  // скопление = 3+ врагов
+		  ourClusterStrength = Math.min(1, allyPower / 300);
+		  surrounded = (enemiesNear > alliesNear && enemiesNear >= 2) ? 1 : 0;
+
+		  // Цель в очереди
+		  if (u.commandQueue && u.commandQueue.length > 0) {
+			hasTarget = 1;
+			const cmd = u.commandQueue.find(c => c.type === "attack");
+			if (cmd && cmd.target) {
+			  targetIsBuilding = ["base","base2","base3","warehouse","barracks","beacon","turret","turret2","turret3"].includes(cmd.target.type) ? 1 : 0;
+			  targetHP = cmd.target.health / (cmd.target.maxHealth || 1);
+			}
+		  }
+		}
+
+		// === ПРИЗНАК ВАЖНОСТИ ЦЕЛИ (для зданий) ===
+		let targetPriority = 0;
+		if (n.owner === "player" && n.type !== "gold" && n.type !== "silicon" && n.type !== "plasma") {
+		  if (n.type === "base" || n.type === "base2" || n.type === "base3") targetPriority = 1.0;
+		  else if (n.type === "warehouse") targetPriority = 0.85;
+		  else if (n.type === "barracks" || n.type === "barracks2" || n.type === "barracks3") targetPriority = 0.8;
+		  else if (n.type === "repairWorkshop") targetPriority = 0.75;
+		  else if (n.type === "beacon") targetPriority = 0.7;
+		  else if (n.type.startsWith("turret")) targetPriority = 0.6;
+		  else if (n.type === "worker") targetPriority = 0.5;
+		  else if (n.type === "fighter") targetPriority = 0.3;
+		  else if (n.type === "assault") targetPriority = 0.4;
+		  else if (n.type === "elite") targetPriority = 0.45;
+		}
+
       return [
-        n.valid ? 1 : 0, n.owner === "ai" ? 1 : 0, n.owner === "player" ? 1 : 0, n.hp || 0,
+        n.valid ? 1 : 0, n.owner === "ai" ? 1 : 0, n.owner ==="player" ? 1 : 0, n.hp || 0,
         relX, relY, dist, isCombat ? 1 : 0, isBuilding ? 1 : 0, t === "worker" ? 1 : 0,
-        t === "fighter" ? 1 : 0, t === "assault" ? 1 : 0, t === "elite" ? 1 : 0, t.startsWith("base") ? 1 : 0,
-        isTurret ? 1 : 0, t === "warehouse" ? 1 : 0, t === "beacon" ? 1 : 0, isResource ? 1 : 0,
-        isBuilding && (t === "warehouse" || t === "repairWorkshop") ? 1 : 0, t === "repairWorkshop" ? 1 : 0,
+        t === "fighter" ? 1 : 0, t ==="assault" ? 1 : 0, t ==="elite" ? 1 : 0, t.startsWith("base") ? 1 : 0,
+        isTurret ? 1 : 0, t === "warehouse" ? 1 : 0, t ==="beacon" ? 1 : 0, isResource ? 1 : 0,
+        isBuilding && (t === "warehouse" || t ==="repairWorkshop") ? 1 : 0, t ==="repairWorkshop" ? 1 : 0,
         threat, n.obj?.range ? Math.min(1, n.obj.range / 500) : 0, n.obj?.fireRate ? Math.min(1, 1000 / (n.obj.fireRate || 1)) : 0,
         this.strategicMemory.threatLevel / 30, isActive, isUnderConstruction, isKeyBuilding, isMilitary,
         isEconomic, isExpansion, techLevel / 3, isUnderAttack, isIdle, logisticsScore,
         (n.obj && n.obj.commandQueue && n.obj.commandQueue.length > 0) ? 1 : 0, 
         (n.obj && n.obj.attackCooldown !== undefined && n.obj.attackCooldownMax && n.obj.attackCooldownMax > 0) 
-            ? 1.0 - (n.obj.attackCooldown / n.obj.attackCooldownMax) : 1.0 
+            ? 1.0 - (n.obj.attackCooldown / n.obj.attackCooldownMax) : 1.0,
+        workersOnBuilding, nearestEnemyDist, enemyClusterNear, ourClusterStrength, hpRatio,
+		  cooldownProgress, hasTarget, targetIsBuilding, targetHP,
+		  surrounded, targetPriority
       ].map(v => isFinite(v) ? v : 0);
     },
 
@@ -1729,6 +2072,9 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       const mask = new Array(G_ACTIONS.length).fill(0);
       const res = gameState.aiResources;
       if (!res) { mask[AIDX.idle] = 1; return mask; }
+
+      // 🔥 ИСПРАВЛЕНИЕ: Получаем метрики для использования в этой функции
+      const m = this.metrics();
 
       const can = (costObj) => {
         if (!costObj) return false;
@@ -1744,7 +2090,12 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       };
 
       const warehouses  = getCount("warehouse");
-      const workshops   = getCount("repairWorkshop");
+      // ✅ СТАЛО: мастерские только если есть раненые и их мало
+		const workshops = getCount("repairWorkshop");
+		const woundedUnits = gameState.units.filter(u => u.owner === "ai" && u.health > 0 && u.health < u.maxHealth * 0.7).length;
+		if (warehouses >= 1 && can(REPAIR_WORKSHOP_COST) && (workshops < 2 || woundedUnits > 3)) {
+			mask[AIDX.build_repair] = 1;
+		}
       const barracks    = getCount("barracks");      
       const beacons     = getCount("beacon");
       const base2       = getCount("base2");         
@@ -1757,23 +2108,50 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       // --- CURRICULUM MASKING ---
       // Tier 0: Only Economy
       if (this.curriculumTier >= 0) {
-          if (can(WAREHOUSE_COST)) mask[AIDX.build_warehouse] = 1;
-          if (warehouses >= 1 && can(REPAIR_WORKSHOP_COST)) mask[AIDX.build_repair] = 1;
-          const hasWarehouseWithSpace = gameState.buildings.some(b => b.owner === "ai" && b.type === "warehouse" && b.active && (b.workers || 0) < (b.maxDeliveryWorkers || 5));
+          const totalWorkers = gameState.units.filter(u => u.owner === "ai" && u.type ==="worker" && u.health > 0).length;
+          const neededWorkers = warehouses * 3;
+          const isEconomyStable = m.aiArmy >= 2 || warehouses < 3;
+
+          if (can(WAREHOUSE_COST) && isEconomyStable && totalWorkers >= neededWorkers) {
+              mask[AIDX.build_warehouse] = 1;
+          }
+          
+          const hasWarehouseWithSpace = gameState.buildings.some(b => b.owner === "ai" && b.type ==="warehouse" && b.active && (b.workers || 0) < (b.maxDeliveryWorkers || 5));
           if (hasWarehouseWithSpace && can(WORKER_COST)) mask[AIDX.hireWorker] = 1;
-          const hasWorkshopWithSpace = gameState.buildings.some(b => b.owner === "ai" && b.type === "repairWorkshop" && b.active && (b.repairman || 0) < (b.capacity || 3));
+          
+          const hasWorkshopWithSpace = gameState.buildings.some(b => b.owner === "ai" && b.type ==="repairWorkshop" && b.active && (b.repairman || 0) < (b.capacity || 3));
           if (hasWorkshopWithSpace && can(REPAIRMAN_COST)) mask[AIDX.hireRepairman] = 1;
       }
 
-      // Tier 1: Basic Military (Открывается после постройки Barracks)
+      // Tier 1: Basic Military
       if (this.curriculumTier >= 1) {
           if (workshops >= 1 && barracks === 0 && can(BARRACKS_COST)) mask[AIDX.build_barracks] = 1;
-          if (barracks >= 1 && can(BEACON_COST)) mask[AIDX.build_beacon] = 1;
-          if (barracks >= 1 && can(TURRET_COST)) mask[AIDX.build_turret1] = 1;
+          
+          if (barracks >= 1 && can(BEACON_COST)) {
+              const orphan = gameState.buildings.some(b =>
+                  b.owner === "ai" && b.type ==="beacon" && b.active &&
+                  !gameState.buildings.some(w =>
+                      w.owner === "ai" && w.type ==="warehouse" && Math.hypot(w.x - b.x, w.y - b.y) < 250));
+              const hasTarget = this.findBestResourceCluster() !== null;
+              if (!orphan && hasTarget && beacons < 4) mask[AIDX.build_beacon] = 1;
+          }
+
+          const activeTurrets = getCount("turret") + getCount("turret2") + getCount("turret3");
+          const activeBeacons = getCount("beacon");
+          const maxAllowedTurrets = (activeBeacons + 1) * 3; 
+
+          if (barracks >= 1 && can(TURRET_COST)) {
+              if (activeTurrets < maxAllowedTurrets) {
+                  mask[AIDX.build_turret1] = 1;
+              } else {
+                  if (can(BEACON_COST)) mask[AIDX.build_beacon] = 1;
+              }
+          }
+          
           if (barracks >= 1 && can(FIGHTER_COST)) mask[AIDX.hireFighter] = 1;
       }
 
-      // Tier 2: Advanced Tech (Открывается после Base 2)
+      // Tier 2: Advanced Tech
       if (this.curriculumTier >= 2) {
           if (beacons >= 1 && base2 === 0 && can(BASE2_COST)) mask[AIDX.build_base2] = 1;
           if (base2 >= 1 && barracks2 === 0 && can(BARRACKS2_COST)) mask[AIDX.build_barracks2] = 1;
@@ -1789,7 +2167,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
           if (barracks3 >= 1 && can(ELITE_COST)) mask[AIDX.hireElite] = 1;
       }
 
-      const armySize = gameState.units.filter(u => u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0).length;
+      const armySize = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0).length;
       if (armySize >= 2) {
         mask[AIDX.defend] = 1; 
         mask[AIDX.tactic_all_in] = 1; 
@@ -1803,6 +2181,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       else mask[AIDX.idle] = 1;
       
       if (mask.every(v => v === 0)) mask[AIDX.idle] = 1;
+
       return mask;
     },
 
@@ -1826,7 +2205,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       
       try {
         if (action === "defend") {
-          const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0));
+          const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0));
           if (freeUnits.length === 0) return false;
           const anchor = this.threatAnchor() || aiBase;
           const defenderIds = freeUnits.map(u => u.id);
@@ -1834,13 +2213,13 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
             u.defending = true;
             u.commandQueue = [{ type: "move", x: anchor.x + (Math.random() - 0.5) * 150, y: anchor.y + (Math.random() - 0.5) * 150 }];
           });
-          this.registerAction(action, state, { type: "defend", anchor: anchor.id || "aiBase", units: defenderIds.length, unitIds: defenderIds }, actionIndex);
+          this.registerAction(action, state, { type: "defend", anchor: anchor.id ||"aiBase", units: defenderIds.length, unitIds: defenderIds }, actionIndex);
           return true;
         }
 
         if (action.startsWith("tactic_")) {
           const freeUnits = gameState.units.filter(u => 
-            u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
+            u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && 
             u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
           );
           if (freeUnits.length === 0) {
@@ -1852,13 +2231,13 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
           let forcePercentage = 0.5; 
 
           if (action === "tactic_all_in") {
-            target = gameState.buildings.find(b => b.owner === "player" && b.type === "base"); 
+            target = gameState.buildings.find(b => b.owner === "player" && b.type ==="base"); 
             forcePercentage = 0.90; 
           } 
           else if (action === "tactic_harass") {
-            const vulnerable = [...gameState.units.filter(u => u.owner === "player" && u.type === "worker"), 
-                                ...gameState.buildings.filter(b => b.owner === "player" && (b.type === "warehouse" || b.type === "repairWorkshop"))];
-            target = vulnerable.length > 0 ? vulnerable[0] : gameState.buildings.find(b => b.owner === "player" && b.type === "base");
+            const vulnerable = [...gameState.units.filter(u => u.owner === "player" && u.type ==="worker"), 
+                                ...gameState.buildings.filter(b => b.owner === "player" && (b.type ==="warehouse" || b.type ==="repairWorkshop"))];
+            target = vulnerable.length > 0 ? vulnerable[0] : gameState.buildings.find(b => b.owner === "player" && b.type ==="base");
             forcePercentage = 0.30; 
           } 
           else if (action === "tactic_push") {
@@ -1876,7 +2255,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
           if (!target) return false;
 
           freeUnits.sort((a, b) => {
-             if (action === "tactic_harass") return (a.type === "fighter" ? -1 : 1); 
+             if (action === "tactic_harass") return (a.type ==="fighter" ? -1 : 1); 
              return 0; 
           });
 
@@ -1888,7 +2267,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
             u.defending = false;
             const tx = target.x + (Math.random() - 0.5) * 100;
             const ty = target.y + (Math.random() - 0.5) * 100;
-            u.commandQueue = [{ type: "move", x: tx, y: ty }, { type: "attack", target: target }];
+            u.commandQueue = [{ type: "move", x: tx, y: ty }, { type:"attack", target: target }];
             if (typeof processCommandQueue === "function") processCommandQueue(u);
           });
 
@@ -1923,7 +2302,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
        
 
         if (action === "hireWorker") {
-          const w = gameState.buildings.find(b => b.owner === "ai" && b.type === "warehouse" && b.active && (b.workers || 0) < (b.maxDeliveryWorkers || 5));
+          const w = gameState.buildings.find(b => b.owner === "ai" && b.type ==="warehouse" && b.active && (b.workers || 0) < (b.maxDeliveryWorkers || 5));
           if (!w) return false;
           const res = gameState.aiResources;
           const cost = WORKER_COST;
@@ -1933,19 +2312,19 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
           else {
             w.workers = (w.workers || 0) + 1;
             res.gold -= cost.gold || 0; res.silicon -= cost.silicon || 0; res.plasma -= cost.plasma || 0;
-            if (typeof getUnitFromPool === "function" && typeof addUnit === "function") {
-              const worker = getUnitFromPool("worker", "ai", w.x, w.y);
+            if (typeof getUnitFromPool === "function" && typeof addUnit ==="function") {
+              const worker = getUnitFromPool("worker","ai", w.x, w.y);
               worker.homeWarehouse = w;
               addUnit(worker);
             }
             if (typeof updateResourceUI === "function") updateResourceUI();
           }
-          this.registerAction(action, state, { type: "hire", unitType: "worker" }, actionIndex);
+          this.registerAction(action, state, { type: "hire", unitType:"worker" }, actionIndex);
           return true;
         }
         
         if (action === "hireRepairman") {
-          const r = gameState.buildings.find(b => b.owner === "ai" && b.type === "repairWorkshop" && b.active && (b.repairman || 0) < (b.capacity || 3));
+          const r = gameState.buildings.find(b => b.owner === "ai" && b.type ==="repairWorkshop" && b.active && (b.repairman || 0) < (b.capacity || 3));
           if (!r) return false;
           const res = gameState.aiResources;
           const cost = REPAIRMAN_COST;
@@ -1955,21 +2334,21 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
           else {
             r.repairman = (r.repairman || 0) + 1;
             res.gold -= cost.gold || 0; res.silicon -= cost.silicon || 0; res.plasma -= cost.plasma || 0;
-            if (typeof getUnitFromPool === "function" && typeof addUnit === "function") {
-              const repairman = getUnitFromPool("repairman", "ai", r.x, r.y);
+            if (typeof getUnitFromPool === "function" && typeof addUnit ==="function") {
+              const repairman = getUnitFromPool("repairman","ai", r.x, r.y);
               repairman.homeWorkshop = r;
               addUnit(repairman);
             }
             if (typeof updateResourceUI === "function") updateResourceUI();
           }
-          this.registerAction(action, state, { type: "hire", unitType: "repairman" }, actionIndex);
+          this.registerAction(action, state, { type: "hire", unitType:"repairman" }, actionIndex);
           return true;
         }
         
-        if (action === "hireFighter" || action === "hireAssault" || action === "hireElite") {
-          const bType = action === "hireFighter" ? "barracks" : (action === "hireAssault" ? "barracks2" : "barracks3");
-          const uType = action === "hireFighter" ? "fighter" : (action === "hireAssault" ? "assault" : "elite");
-          const cost = action === "hireFighter" ? FIGHTER_COST : (action === "hireAssault" ? ASSAULT_COST : ELITE_COST);
+        if (action === "hireFighter" || action ==="hireAssault" || action ==="hireElite") {
+          const bType = action === "hireFighter" ?"barracks" : (action ==="hireAssault" ?"barracks2" :"barracks3");
+          const uType = action === "hireFighter" ?"fighter" : (action ==="hireAssault" ?"assault" :"elite");
+          const cost = action === "hireFighter" ? FIGHTER_COST : (action ==="hireAssault" ? ASSAULT_COST : ELITE_COST);
           const hasRequiredBuilding = gameState.buildings.some(b => b.owner === "ai" && b.type === bType && b.health > 0 && b.active);
           if (hasRequiredBuilding && this.enqueueUnit(uType, bType, cost)) {
             this.registerAction(action, state, { type: "hire", unitType: uType }, actionIndex);
@@ -1979,28 +2358,142 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
           return false;
         }
         
-        if (action === "expand") {
-          let anchor = aiBase;
-          let maxDist = 0;
-          gameState.buildings.forEach(b => {
-            if (b.owner === "ai" && b.active) {
-              const d = Math.hypot(b.x - aiBase.x, b.y - aiBase.y);
-              if (d > maxDist) { maxDist = d; anchor = b; }
-            }
-          });
-          const pos = this.findBuildPos(anchor, "beacon", 250, 350);
-          if (pos) {
-            this.registerAction(action, state, { type: "build", buildingType: "beacon" }, actionIndex);
-            return !!scheduleAIBuilding("beacon", pos.x, pos.y, 0);
-          }
-          this.replay.push({ X: state.X, A_distance: state.A_distance, A_threat: state.A_threat, actionIndex: actionIndex, reward: -0.3 });
-          return false;
-        }
-        
         if (action === "idle") {
           this.registerAction(action, state, { type: "idle" }, actionIndex);
           return true;
         }
+
+if (action === "strike_weak") {
+  // Модель ищет в графе узел с высокой targetPriority, но низкой защитой
+  const targets = state.nodes.filter(n => 
+    n.valid && n.owner === "player" && 
+    ["warehouse","barracks","beacon","base","base2","base3"].includes(n.type)
+  );
+  // Выбираем цель с максимальным приоритетом и минимальным числом врагов рядом
+  targets.sort((a,b) => {
+    const aEnemies = gameState.units.filter(u => u.owner === "player" && Math.hypot(u.x-a.x, u.y-a.y) < 200).length;
+    const bEnemies = gameState.units.filter(u => u.owner === "player" && Math.hypot(u.x-b.x, u.y-b.y) < 200).length;
+    const aPrio = {base:10,base2:10,base3:10,warehouse:8,barracks:7,beacon:6}[a.type] || 5;
+    const bPrio = {base:10,base2:10,base3:10,warehouse:8,barracks:7,beacon:6}[b.type] || 5;
+    return (bPrio - bEnemies*2) - (aPrio - aEnemies*2);
+  });
+  const target = targets[0];
+  if (!target) return false;
+  // Отправляем ВСЕ свободные юниты, но обходя скопления врагов
+  const freeUnits = gameState.units.filter(u => 
+    u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && 
+    u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
+  );
+  if (freeUnits.length === 0) return false;
+  
+  // Проверяем, есть ли вражеское скопление на пути — если да, обходим
+  const enemyClusters = gameState.units.filter(u => u.owner === "player" && u.health > 0);
+  const directPathBlocked = enemyClusters.some(e => {
+    const dToTarget = Math.hypot(e.x - target.x, e.y - target.y);
+    const dToUs = Math.hypot(e.x - aiBase.x, e.y - aiBase.y);
+    return dToTarget < 150 && dToUs < 400; // враг между нами и целью
+  });
+  
+  const waypoints = directPathBlocked 
+    ? [{type:"move", x: target.x + (target.y > aiBase.y ? -200 : 200), y: target.y}]  // обход
+    : [{type:"move", x: target.x, y: target.y}];
+  
+  freeUnits.forEach(u => {
+    u.commandQueue = [...waypoints, {type:"attack", target: target.obj}];
+  });
+  this.registerAction(action, state, {type:"attack", targetId: target.obj.id, tactic:"strike_weak"}, actionIndex);
+  return true;
+}
+
+if (action === "focus_fire") {
+  // Все юниты бьют ОДНУ цель с наименьшим HP (добивание)
+  const enemies = [...gameState.units.filter(u => u.owner === "player" && u.health > 0),
+                   ...gameState.buildings.filter(b => b.owner === "player" && b.health > 0)];
+  // Приоритет: здания > юниты; внутри — наименьший HP
+  enemies.sort((a,b) => {
+    const aIsBuilding = ["base","warehouse","barracks"].includes(a.type) ? 0 : 1;
+    const bIsBuilding = ["base","warehouse","barracks"].includes(b.type) ? 0 : 1;
+    if (aIsBuilding !== bIsBuilding) return aIsBuilding - bIsBuilding;
+    return a.health - b.health;
+  });
+  const target = enemies[0];
+  if (!target) return false;
+  const freeUnits = gameState.units.filter(u => 
+    u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && 
+    u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
+  );
+  if (freeUnits.length === 0) return false;
+  freeUnits.forEach(u => {
+    u.commandQueue = [{type:"attack", target: target}];
+  });
+  this.registerAction(action, state, {type:"attack", targetId: target.id, tactic:"focus_fire"}, actionIndex);
+  return true;
+}
+
+if (action === "retreat_regroup") {
+  // Отступить к ближайшему дружественному скоплению или базе
+  const wounded = gameState.units.filter(u => 
+    u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && 
+    u.health > 0 && u.health < u.maxHealth * 0.5
+  );
+  const rallyPoint = ourClusters.length > 0 
+    ? {x: ourClusters[0].x, y: ourClusters[0].y} 
+    : aiBase;
+  wounded.forEach(u => {
+    u.commandQueue = [{type:"move", x: rallyPoint.x + (Math.random()-0.5)*100, y: rallyPoint.y + (Math.random()-0.5)*100}];
+  });
+  this.registerAction(action, state, {type:"retreat", anchor: rallyPoint}, actionIndex);
+  return true;
+}
+
+if (action === "flank_attack") {
+  // Атаковать с фланга — идти не напрямик, а сбоку от вражеского скопления
+  const enemyCenter = {
+    x: gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((s,u) => s+u.x, 0) / Math.max(1, gameState.units.filter(u => u.owner === "player" && u.health > 0).length),
+    y: gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((s,u) => s+u.y, 0) / Math.max(1, gameState.units.filter(u => u.owner === "player" && u.health > 0).length)
+  };
+  const flankAngle = Math.atan2(enemyCenter.y - aiBase.y, enemyCenter.x - aiBase.x) + Math.PI/2;
+  const flankDist = 300;
+  const flankPoint = {
+    x: enemyCenter.x + Math.cos(flankAngle) * flankDist,
+    y: enemyCenter.y + Math.sin(flankAngle) * flankDist
+  };
+  const freeUnits = gameState.units.filter(u => 
+    u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && 
+    u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
+  );
+  if (freeUnits.length === 0) return false;
+  freeUnits.forEach(u => {
+    u.commandQueue = [
+      {type:"move", x: flankPoint.x, y: flankPoint.y},
+      {type:"attack", target: gameState.units.filter(u => u.owner === "player" && u.health > 0)[0] || aiBase}
+    ];
+  });
+  this.registerAction(action, state, {type:"attack", tactic:"flank"}, actionIndex);
+  return true;
+}
+
+if (action === "harass_economy") {
+  // Рейд по складам и рабочим — самая важная экономическая цель
+  const ecoTargets = [
+    ...gameState.buildings.filter(b => b.owner === "player" && b.type === "warehouse"),
+    ...gameState.buildings.filter(b => b.owner === "player" && b.type === "repairWorkshop"),
+    ...gameState.units.filter(u => u.owner === "player" && u.type === "worker")
+  ];
+  ecoTargets.sort((a,b) => Math.hypot(a.x-aiBase.x, a.y-aiBase.y) - Math.hypot(b.x-aiBase.x, b.y-aiBase.y));
+  const target = ecoTargets[0];
+  if (!target) return false;
+  // Только быстрые юниты (fighter)
+  const fighters = gameState.units.filter(u => 
+    u.owner === "ai" && u.type === "fighter" && u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
+  );
+  if (fighters.length === 0) return false;
+  fighters.forEach(u => {
+    u.commandQueue = [{type:"attack", target: target}];
+  });
+  this.registerAction(action, state, {type:"attack", tactic:"harass_economy", targetId: target.id}, actionIndex);
+  return true;
+}
 
       } catch (e) {
         console.warn("[GnnAI execute error]", action, e);
@@ -2017,27 +2510,44 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
         this.replay.push({ X: state.X, A_distance: state.A_distance, A_threat: state.A_threat, actionIndex: actionIndex, reward: -0.3 });
         return false;
       }
-
-      // 🔥 ПРОВЕРКА ИЕРАРХИИ: строгие пререквизиты для каждого здания
-      const hasBuilding = (type) => gameState.buildings.some(b => b.owner === "ai" && b.type === type && b.health > 0);
       
-    const prereq = this.PREREQUISITES[buildingType];
-    if (prereq && !gameState.buildings.some(b => b.owner === "ai" && b.type === prereq && b.health > 0)) {
-      this.replay.push({ X: state.X, A_distance: state.A_distance, A_threat: state.A_threat, actionIndex: actionIndex, reward: -5.0 });
-      console.warn(`[GnnAI] ⛔ Хак заблокирован: ${buildingType} без ${prereq}`);
-      return false;
-    }
+      const prereq = this.PREREQUISITES[buildingType];
+      if (prereq && !gameState.buildings.some(b => b.owner === "ai" && b.type === prereq && b.health > 0)) {
+        this.replay.push({ X: state.X, A_distance: state.A_distance, A_threat: state.A_threat, actionIndex: actionIndex, reward: -5.0 });
+        console.warn(`[GnnAI] ⛔ Хак заблокирован: ${buildingType} без ${prereq}`);
+        return false;
+      }
 
       let anchor = aiBase;
-      if (buildingType === "beacon") {
-        let maxDist = 0;
-        gameState.buildings.forEach(b => {
-          if (b.owner === "ai" && b.active) {
+      
+if (buildingType === "beacon") {
+    // Якорь = самое дальнее здание ИИ (требование зоны 320px)
+    let far = aiBase, maxD = 0;
+    gameState.buildings.forEach(b => {
+        if (b.owner === "ai" && b.active && b.health > 0) {
             const d = Math.hypot(b.x - aiBase.x, b.y - aiBase.y);
-            if (d > maxDist) { maxDist = d; anchor = b; }
-          }
-        });
-      } else if (["warehouse", "repairWorkshop", "turret", "turret2", "turret3"].includes(buildingType)) {
+            if (d > maxD) { maxD = d; far = b; }
+        }
+    });
+    anchor = far;
+    // 🔥 Но строим маяк В НАПРАВЛЕНИИ к ближайшему НЕобслуженному богатому кластеру
+    const cluster = this.findBestResourceCluster();
+    if (cluster) {
+        const ang = Math.atan2(cluster.y - far.y, cluster.x - far.x);
+        const r = 200; // в пределах зоны 320px от якоря
+        const tx = far.x + Math.cos(ang) * r;
+        const ty = far.y + Math.sin(ang) * r;
+        const pos = this.findBuildPos({x: tx, y: ty}, "beacon", 0, 120);
+        if (pos) {
+            const scheduled = scheduleAIBuilding("beacon", pos.x, pos.y, 0);
+            if (scheduled) {
+                this.registerAction(action, state, { type: "build", buildingType:"beacon" }, actionIndex);
+                return true;
+            }
+        }
+    }
+}
+      else if (["warehouse","repairWorkshop","turret","turret2","turret3"].includes(buildingType)) {
         const outpost = this.findExpansionAnchor();
         if (outpost) {
           const pos = this.findBuildPos(outpost, buildingType, 60, 150);
@@ -2052,13 +2562,14 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
           }
           return false;
         }
-        const wh = gameState.buildings.find(b => b.owner === "ai" && b.type === "warehouse" && b.health > 0);
+        const wh = gameState.buildings.find(b => b.owner === "ai" && b.type ==="warehouse" && b.health > 0);
         if (wh) anchor = wh;
-      } else if (["barracks", "barracks2", "barracks3", "base2", "base3"].includes(buildingType)) {
+      } 
+      else if (["barracks","barracks2","barracks3","base2","base3"].includes(buildingType)) {
         const outpost = this.findExpansionAnchor();
         if (outpost) anchor = outpost;
         else {
-          const wh = gameState.buildings.find(b => b.owner === "ai" && b.type === "warehouse" && b.health > 0);
+          const wh = gameState.buildings.find(b => b.owner === "ai" && b.type ==="warehouse" && b.health > 0);
           if (wh) anchor = wh;
         }
       }
@@ -2079,7 +2590,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
 
     enqueueUnit: function (type, buildingType, cost) {
       const b = gameState.buildings.find(x => x.owner === "ai" && x.type === buildingType && x.active && (!x.productionQueue || x.productionQueue.length < (x.productionLimit || 3)));
-      if (!b || !canSpendResources(cost, "ai") || typeof aiEnqueueMilitaryUnit !== "function") return false;
+      if (!b || !canSpendResources(cost, "ai") || typeof aiEnqueueMilitaryUnit !=="function") return false;
       if (!aiEnqueueMilitaryUnit(type, b)) return false;
       gameState.aiResources.gold -= cost.gold || 0;
       gameState.aiResources.silicon -= cost.silicon || 0;
@@ -2104,7 +2615,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
             }
           }
         }
-        if (b.type === "repairWorkshop" && typeof aiHireRepairMan === "function") {
+        if (b.type === "repairWorkshop" && typeof aiHireRepairMan ==="function") {
           const woundedUnits = gameState.units.filter(u => u.owner === "ai" && u.health > 0 && u.health < u.maxHealth).length;
           const maxRepairmen = b.capacity || 3;
           const currentRepairmen = b.repairman || 0;
@@ -2120,9 +2631,9 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
     }, 
 
     threatAnchor: function () {
-      const anchors = gameState.buildings.filter(b => b.owner === "ai" && ["base", "base2", "base3", "beacon", "warehouse", "repairWorkshop", "barracks", "barracks2", "barracks3"].includes(b.type) && b.health > 0);
+      const anchors = gameState.buildings.filter(b => b.owner === "ai" && ["base","base2","base3","beacon","warehouse","repairWorkshop","barracks","barracks2","barracks3"].includes(b.type) && b.health > 0);
       if (!anchors.length) return aiBase;
-      const enemies = [...gameState.units.filter(u => u.owner === "player" && u.health > 0), ...gameState.buildings.filter(b => b.owner === "player" && b.health > 0)];
+      const enemies = [...gameState.units.filter(u => u.owner === "player" && u.health > 0), ...gameState.buildings.filter(b => b.owner ==="player" && b.health > 0)];
       let best = aiBase, bestScore = -Infinity;
       for (const a of anchors) {
         let score = (1 - a.health / a.maxHealth) * 150 + (a.type.startsWith("base") ? 100 : 50);
@@ -2137,81 +2648,113 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       return best;
     },
 
-    // 🔥 Ищет дальний маяк, который ещё НЕ обстроен (точка для кластера добычи)
-    findExpansionAnchor: function () {
-      const beacons = gameState.buildings.filter(b =>
-        b.owner === "ai" && b.type === "beacon" && b.active && b.health > 0
-      );
-      if (beacons.length === 0) return null;
+findExpansionAnchor: function () {
+    const beacons = gameState.buildings.filter(b =>
+        b.owner === "ai" && b.type ==="beacon" && b.active && b.health > 0
+    );
 
-      // Считаем, сколько полезных зданий уже рядом с каждым маяком
-      const scored = beacons.map(bc => {
+    // 🔥 Если маяков НЕТ, якорем является главная база (чтобы соблюсти правило < 320px)
+    if (beacons.length === 0) {
+        return aiBase;
+    }
+
+    // Если маяки есть, ищем самый недостроенный
+    const scored = beacons.map(bc => {
         const nearbyUseful = gameState.buildings.filter(b =>
-          b.owner === "ai" && b !== bc &&
-          ["warehouse", "repairWorkshop", "barracks", "barracks2", "barracks3", "turret", "turret2", "turret3"].includes(b.type) &&
-          Math.hypot(b.x - bc.x, b.y - bc.y) < 220
+            b.owner === "ai" && b !== bc &&
+            ["warehouse","repairWorkshop","barracks","barracks2","barracks3","turret","turret2","turret3"].includes(b.type) &&
+            Math.hypot(b.x - bc.x, b.y - bc.y) < 220
         ).length;
         return { beacon: bc, useful: nearbyUseful, dist: Math.hypot(bc.x - aiBase.x, bc.y - aiBase.y) };
-      });
+    });
 
-      // Берём самый дальний маяк, у которого меньше всего построек рядом (недостроенный форт)
-      scored.sort((a, b) => (a.useful - b.useful) || (b.dist - a.dist));
-      const target = scored[0];
-      if (target.useful >= 3) return null; // форт уже достроен — не лезем
-      return target.beacon;
-    },
+    scored.sort((a, b) => (a.useful - b.useful) || (b.dist - a.dist));
+    const target = scored[0];
 
-    findBuildPos: function (anchor, type, minR = 80, maxR = 350) { 
-      if (!anchor) anchor = aiBase;
-      for (let i = 0; i < 60; i++) {
+    if (target.useful >= 3) return null; // форт уже достроен
+    return target.beacon;
+},
+
+findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 310, чтобы гарантированно быть < 320
+    if (!anchor) anchor = aiBase;
+    
+    const wW = typeof worldWidth !== 'undefined' ? worldWidth : 2000;
+    const wH = typeof worldHeight !== 'undefined' ? worldHeight : 2000;
+    const safeMargin = 60;
+
+    for (let i = 0; i < 200; i++) {
         const a = Math.random() * Math.PI * 2;
         const r = minR + Math.random() * (maxR - minR);
         const x = anchor.x + Math.cos(a) * r;
         const y = anchor.y + Math.sin(a) * r;
-        if (x < 60 || y < 60 || x > worldWidth - 60 || y > worldHeight - 60) continue;
+        
+        if (x < safeMargin || y < safeMargin || x > wW - safeMargin || y > wH - safeMargin) continue;
+        
+        // 🔥 СТРОГОЕ ПРАВИЛО ИГРЫ: должно быть < 320px от здания ИИ
         if (typeof isValidAiBuildLocation === "function" && !isValidAiBuildLocation(x, y)) continue;
 
-        const dims = { warehouse: [40, 30], repairWorkshop: [40, 30], barracks: [50, 30], barracks2: [50, 30], barracks3: [50, 30], turret: [20, 20], turret2: [20, 22], turret3: [20, 22], beacon: [40, 50], base2: [55, 40], base3: [55, 40] }[type] || [30, 30];
+        // 🔥 ТОЧНЫЕ РАЗМЕРЫ ИЗ placeBuilding (чтобы коллизии совпадали с игрой)
+        const dims = { 
+            warehouse: [10, 10], repairWorkshop: [10, 10], 
+            barracks: [15, 15], barracks2: [15, 15], barracks3: [15, 15], 
+            turret: [12, 12], turret2: [15, 17], turret3: [14, 15], 
+            beacon: [7, 20], base2: [25, 30], base3: [30, 30] 
+        }[type] || [20, 20];
+        
         const rect = { left: x - dims[0] / 2, top: y - dims[1] / 2, right: x + dims[0] / 2, bottom: y + dims[1] / 2 };
         let bad = false;
+        
         for (const b of gameState.buildings) {
-          const br = { left: b.x - b.width / 2 - 10, top: b.y - b.height / 2 - 10, right: b.x + b.width / 2 + 10, bottom: b.y + b.height / 2 + 10 }; 
-          if (typeof rectsOverlap === "function" && rectsOverlap(rect, br)) { bad = true; break; }
+            // 🔥 ОТСТУП 5px, как в placeBuilding
+            const br = { left: b.x - b.width / 2 - 5, top: b.y - b.height / 2 - 5, right: b.x + b.width / 2 + 5, bottom: b.y + b.height / 2 + 5 };
+            if (typeof rectsOverlap === "function" && rectsOverlap(rect, br)) { 
+                bad = true; 
+                break; 
+            }
         }
-        if (!bad) return { x, y };
-      }
-      const offsets = [
-        { x: anchor.x + 150, y: anchor.y }, { x: anchor.x - 150, y: anchor.y },
-        { x: anchor.x, y: anchor.y + 150 }, { x: anchor.x, y: anchor.y - 150 },
-        { x: anchor.x + 150, y: anchor.y + 150 }
-      ];
-      const dims = { warehouse: [40, 30], repairWorkshop: [40, 30], barracks: [50, 30], barracks2: [50, 30], barracks3: [50, 30], turret: [20, 20], turret2: [20, 22], turret3: [20, 22], beacon: [40, 50], base2: [55, 40], base3: [55, 40] }[type] || [30, 30];
-      for (const pos of offsets) {
-        if (pos.x < 60 || pos.y < 60 || pos.x > worldWidth - 60 || pos.y > worldHeight - 60) continue;
+        
+        if (!bad) {
+            console.log(`[GnnAI] ✅ Найдено место: ${type} на (${x.toFixed(0)}, ${y.toFixed(0)})`);
+            return { x, y };
+        }
+    }
+    
+    // Fallback, если случайный поиск не удался
+    const offsets = [
+        { x: anchor.x + 200, y: anchor.y }, { x: anchor.x - 200, y: anchor.y },
+        { x: anchor.x, y: anchor.y + 200 }, { x: anchor.x, y: anchor.y - 200 }
+    ];
+    
+    for (const pos of offsets) {
+        if (pos.x < safeMargin || pos.y < safeMargin || pos.x > wW - safeMargin || pos.y > wH - safeMargin) continue;
+        if (typeof isValidAiBuildLocation === "function" && !isValidAiBuildLocation(pos.x, pos.y)) continue;
+
+        const dims = { warehouse: [10, 10], repairWorkshop: [10, 10], barracks: [15, 15], turret: [12, 12], beacon: [7, 20] }[type] || [20, 20];
         const rect = { left: pos.x - dims[0] / 2, top: pos.y - dims[1] / 2, right: pos.x + dims[0] / 2, bottom: pos.y + dims[1] / 2 };
         let bad = false;
         for (const b of gameState.buildings) {
-          const br = { left: b.x - b.width / 2 - 10, top: b.y - b.height / 2 - 10, right: b.x + b.width / 2 + 10, bottom: b.y + b.height / 2 + 10 };
-          if (typeof rectsOverlap === "function" && rectsOverlap(rect, br)) { bad = true; break; }
+            const br = { left: b.x - b.width / 2 - 5, top: b.y - b.height / 2 - 5, right: b.x + b.width / 2 + 5, bottom: b.y + b.height / 2 + 5 };
+            if (typeof rectsOverlap === "function" && rectsOverlap(rect, br)) { bad = true; break; }
         }
         if (!bad) return pos;
-      }
-      return null;
-    },
+    }
+    
+    return null;
+},
 
     metrics: function () {
       const baseHp = aiBase && aiBase.maxHealth ? Math.max(0, aiBase.health / aiBase.maxHealth) : 0;
       const enemyNear = gameState.units.filter(u => u.owner === "player" && u.health > 0 && aiBase && Math.hypot(u.x - aiBase.x, u.y - aiBase.y) < CFG.BASE_THREAT_RADIUS).length;
-      const aiArmy = gameState.units.filter(u => u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0).length;
-      const enemyArmy = gameState.units.filter(u => u.owner === "player" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0).length;
+      const aiArmy = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0).length;
+      const enemyArmy = gameState.units.filter(u => u.owner === "player" && ["fighter","assault","elite"].includes(u.type) && u.health > 0).length;
       
       let techLevel = 1;
-      if (gameState.buildings.some(b => b.owner === "ai" && ["base2", "barracks2", "turret2"].includes(b.type))) techLevel = 2;
-      if (gameState.buildings.some(b => b.owner === "ai" && ["base3", "barracks3", "turret3"].includes(b.type))) techLevel = 3;
+      if (gameState.buildings.some(b => b.owner === "ai" && ["base2","barracks2","turret2"].includes(b.type))) techLevel = 2;
+      if (gameState.buildings.some(b => b.owner === "ai" && ["base3","barracks3","turret3"].includes(b.type))) techLevel = 3;
 
       const aiBuildings = gameState.buildings.filter(b => b.owner === "ai" && b.health > 0).length;
       const aiTurrets = gameState.buildings.filter(b => b.owner === "ai" && b.type?.startsWith("turret") && b.health > 0).length;
-      const aiWarehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type === "warehouse" && b.health > 0).length;
+      const aiWarehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type ==="warehouse" && b.health > 0).length;
       const playerAlive = gameState.buildings.some(b => b.owner === "player" && b.health > 0);
       
       const ar = gameState.aiResources || {};
@@ -2232,11 +2775,15 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
           this.bcBatchCount = 0;
       }
       this.episode = { mode, start: performance.now(), firstThreatAt: null, firstDefenseAt: null, minBaseHp: 1, actions: {}, ended: false, result: null };
+
       this.episodeReport = { actions: {}, timeline: [] };
-      this.episodeAchievements = {
-          firstBarracks: false, firstBase2: false, firstBarracks2: false,
-          firstBase3: false, firstAssault: false, firstElite: false
-      };
+
+		this.episodeAchievements = {
+		firstBarracks: false, firstBase2: false, firstBarracks2: false,
+		firstBase3: false, firstAssault: false, firstElite: false,
+		firstBeacon: false // 🔥 НОВОЕ
+	};
+
       // Reset tier goals for new episode tracking if needed, but usually we keep them persistent for curriculum
     },
 
@@ -2340,8 +2887,8 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
 
     checkEnd: async function () {
       if (gameState.gameEnded) return;
-      const aiBaseAlive = gameState.buildings.some(b => b.owner === "ai" && b.type === "base" && b.health > 0);
-      const playerBaseAlive = gameState.buildings.some(b => b.owner === "player" && b.type === "base" && b.health > 0);
+      const aiBaseAlive = gameState.buildings.some(b => b.owner === "ai" && b.type ==="base" && b.health > 0);
+      const playerBaseAlive = gameState.buildings.some(b => b.owner === "player" && b.type ==="base" && b.health > 0);
 
       if (!aiBaseAlive || !playerBaseAlive) {
         gameState.gameEnded = true;
@@ -2357,7 +2904,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
             window.location.reload();
           }, 2000);
         } else {
-          if (typeof showVictoryScreen === "function") showVictoryScreen(!aiBaseAlive ? "GNN ИИ проиграл." : "GNN ИИ победил!");
+          if (typeof showVictoryScreen === "function") showVictoryScreen(!aiBaseAlive ?"GNN ИИ проиграл." :"GNN ИИ победил!");
         }
       }
     },
@@ -2368,8 +2915,8 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
         const mainData = this.vars.map(v => ({ shape: v.shape, values: Array.from(v.dataSync()) }));
         const targetData = this.targetVars ? this.targetVars.map(v => ({ shape: v.shape, values: Array.from(v.dataSync()) })) : [];
         const data = { main: mainData, target: targetData };
-        await WeightDB.save(CFG.STORAGE_KEY, { version: 7.4, batches: this.trainBatches, data, backend: tf.getBackend(), actionsCount: G_ACTIONS.length });
-        console.log("[GnnAI] 💾 Веса успешно сохранены в IndexedDB (v7.4)");
+		await WeightDB.save(CFG.STORAGE_KEY, { version: 7.4, batches: this.trainBatches, data, backend: tf.getBackend(), actionsCount: G_ACTIONS.length, nodeFeatures: CFG.NODE_FEATURES });
+        console.log("[GnnAI] 💾 Веса успешно сохранены в IndexedDB (v7.5)");
       } catch (e) { console.error("[GnnAI] ❌ Ошибка сохранения весов:", e); }
     },
 
@@ -2380,7 +2927,23 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
         const mainData = obj.data.main || obj.data;
         if (!Array.isArray(mainData)) { console.warn("[GnnAI] Ошибка формата: данные весов не являются массивом", obj); return false; }
         if (mainData.length !== this.vars.length) { console.warn(`[GnnAI] Несовпадение архитектуры: сохранено ${mainData.length} переменных, ожидается ${this.vars.length}`); return false; }
-        if (obj.actionsCount && obj.actionsCount !== G_ACTIONS.length) { console.warn(`[GnnAI] ⚠️ Старая архитектура (${obj.actionsCount} действий) несовместима с v7.4 (${G_ACTIONS.length} действий). Сброс весов.`); return false; }
+        if (obj.actionsCount && obj.actionsCount !== G_ACTIONS.length) { console.warn(`[GnnAI] ⚠️ Старая архитектура (${obj.actionsCount} действий) несовместима. Сброс весов.`); return false; }
+
+        // 🔥 НОВОЕ: Проверка совместимости NODE_FEATURES (36 → 37)
+        if (obj.nodeFeatures && obj.nodeFeatures !== CFG.NODE_FEATURES) {
+            console.warn(`[GnnAI] ⚠️ Несовпадение NODE_FEATURES: сохранено ${obj.nodeFeatures}, ожидается ${CFG.NODE_FEATURES}. Сброс весов.`);
+            return false;
+        }
+
+        // 🔥 НОВОЕ: Проверка shapes каждой переменной
+        const shapeMismatch = mainData.some((w, i) => {
+            if (!this.vars[i]) return true;
+            return w.shape.join(',') !== this.vars[i].shape.join(',');
+        });
+        if (shapeMismatch) {
+            console.warn("[GnnAI] ⚠️ Shapes весов не совпадают с архитектурой. Сброс весов.");
+            return false;
+        }
 
         const checkInvalid = (arr) => arr && arr.some(w => w.values.some(v => !isFinite(v)));
         if (checkInvalid(mainData) || checkInvalid(obj.data.target)) { console.warn("[GnnAI] ⚠️ Сохраненные веса повреждены (NaN/Infinity). Инициализация с нуля."); return false; }
@@ -2405,15 +2968,15 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       if (!this.episodeReport) { console.groupEnd(); return; }
       console.log("🎯 Общее распределение действий:", this.episodeReport.actions);
       const keyEvents = this.episodeReport.timeline.filter(e => 
-        e.detail === "barracks" || e.detail === "barracks2" || e.detail === "barracks3" || 
-        e.detail === "base2" || e.detail === "base3" || e.detail === "warehouse" || 
-        e.detail === "repairWorkshop" || e.detail === "beacon" ||
-        e.detail === "fighter" || e.detail === "assault" || e.detail === "elite" ||
-        e.action === "attack_front" || e.action === "attack_flank" || e.action === "attack_feint"
+        e.detail === "barracks" || e.detail ==="barracks2" || e.detail ==="barracks3" || 
+        e.detail === "base2" || e.detail ==="base3" || e.detail ==="warehouse" || 
+        e.detail === "repairWorkshop" || e.detail ==="beacon" ||
+        e.detail === "fighter" || e.detail ==="assault" || e.detail ==="elite" ||
+        e.action === "attack_front" || e.action ==="attack_flank" || e.action ==="attack_feint"
       );
       if (keyEvents.length > 0) {
         console.log("🏗️ Ключевые события (постройки, найм, атаки):");
-        console.table(keyEvents, ["time", "action", "detail", "resources", "army", "tech"]);
+        console.table(keyEvents, ["time","action","detail","resources","army","tech"]);
       } else { console.log("⚠️ Ключевых событий не зафиксировано."); }
       const m = this.metrics();
       console.log(`💰 Финальная экономика: Ресурсы: ${m.resTotal}, Армия: ${m.aiArmy}, Технологий: Тир ${m.techLevel}`);
@@ -2432,47 +2995,37 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       req.onblocked = () => { console.warn("[GnnAI] ⚠️ Удаление заблокировано другой вкладкой? Перезагрузка..."); location.reload(); };
     },
 
-    // --- VISUALIZATION METHOD ---
-    drawGraphDebug: function(ctx) {
-        if (!this.lastState || !this.lastState.nodes) return;
-        const nodes = this.lastState.nodes;
-        const scale = window.camera ? window.camera.scale : 1;
-        const offsetX = window.camera ? window.camera.offsetX : 0;
-        const offsetY = window.camera ? window.camera.offsetY : 0;
-
-        ctx.save();
-        ctx.globalAlpha = 0.3;
-        ctx.lineWidth = 1;
-
-        // Draw connections
-        for (let i = 0; i < nodes.length; i++) {
-            const ni = nodes[i];
-            if (!ni.valid) continue;
-            
-            for (let j = i + 1; j < nodes.length; j++) {
-                const nj = nodes[j];
-                if (!nj.valid) continue;
-
-                const d = Math.hypot(ni.x - nj.x, ni.y - nj.y);
-                if (d > CFG.INTERACTION_RADIUS) continue;
-
-                const strength = Math.exp(-d / CFG.INTERACTION_RADIUS);
-                ctx.strokeStyle = (ni.owner === "player" || nj.owner === "player") ? "rgba(255, 50, 50, " + strength + ")" : "rgba(50, 255, 50, " + strength + ")";
-                
-                ctx.beginPath();
-                ctx.moveTo(ni.x * scale + offsetX, ni.y * scale + offsetY);
-                ctx.lineTo(nj.x * scale + offsetX, nj.y * scale + offsetY);
-                ctx.stroke();
-            }
+    // 🔥 ПРАВИЛЬНОЕ МЕСТО: ВНУТРИ ОБЪЕКТА GnnAI
+    findBestResourceCluster: function () {
+        const res = gameState.resources.filter(r => r.amount > 20);
+        let best = null, bestScore = 0;
+        for (const r of res) {
+            const covered = gameState.buildings.some(b =>
+                b.owner === "ai" && b.type ==="warehouse" && Math.hypot(b.x - r.x, b.y - r.y) < 320);
+            if (covered) continue;
+            const density = res.filter(o => Math.hypot(o.x - r.x, o.y - r.y) < 250)
+                               .reduce((s, o) => s + o.amount, 0);
+            if (density > bestScore) { bestScore = density; best = r; }
         }
-        ctx.restore();
+        return best;
     }
   };
 
   window.buildQueue = window.buildQueue || [];
+  
   window.scheduleAIBuilding = function (type, x, y, delay = 0) {
     if (typeof canBuild === "function" && !canBuild(type)) return false;
-    window.buildQueue.push({ type, x, y, plannedAt: performance.now(), delay });
+    
+    // 🔥 ДОБАВЛЯЕМ СЧЕТЧИК НЕУДАЧ failCount
+    window.buildQueue.push({ 
+      type, 
+      x, 
+      y, 
+      plannedAt: performance.now(), 
+      delay, 
+      failCount: 0 
+    });
+    console.log(`[BUILD DEBUG] 📝 Запланировано: ${type} на (${x.toFixed(0)}, ${y.toFixed(0)})`);
     return true;
   };
 
@@ -2481,9 +3034,29 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
     for (let i = 0; i < window.buildQueue.length; i++) {
       const item = window.buildQueue[i];
       if (now - item.plannedAt >= item.delay) {
-        if (typeof aiPlaceBuilding !== "function") { window.buildQueue.splice(i, 1); i--; continue; }
+        
+        if (typeof aiPlaceBuilding !== "function") { 
+          console.error(`[BUILD DEBUG] ❌ КРИТИЧЕСКАЯ ОШИБКА: Функция aiPlaceBuilding НЕ НАЙДЕНА!`);
+          window.buildQueue.splice(i, 1); i--; continue; 
+        }
+        
         const built = aiPlaceBuilding(item.type, item.x, item.y);
-        if (built) { window.buildQueue.splice(i, 1); i--; } else { item.plannedAt = now + 2000; }
+        
+        if (built) {
+          console.log(`[BUILD DEBUG] 🎉 УСПЕХ! ${item.type} построен на (${item.x}, ${item.y})`);
+          window.buildQueue.splice(i, 1); i--;
+        } else {
+          // 🔥 УВЕЛИЧИВАЕМ СЧЕТЧИК НЕУДАЧ
+          item.failCount = (item.failCount || 0) + 1;
+          
+          if (item.failCount >= 3) {
+            console.error(`[BUILD DEBUG] ❌ КРИТИЧЕСКИЙ СБОЙ: Не удалось разместить ${item.type} на (${item.x}, ${item.y}) после 3 попыток. Вероятно, коллизия или недопустимая зона. Задача удалена из очереди, чтобы ИИ мог выбрать новые координаты.`);
+            window.buildQueue.splice(i, 1); i--;
+          } else {
+            console.warn(`[BUILD DEBUG] ⚠️ ПРОВАЛ (${item.failCount}/3): aiPlaceBuilding вернул false для ${item.type}. Повторная попытка через 2 сек.`);
+            item.plannedAt = now + 2000; 
+          }
+        }
       }
     }
   };
@@ -2513,7 +3086,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
     ];
     
     elementsToHide.forEach(el => {
-      if (el) { el.style.display = "none"; el.style.visibility = "hidden"; }
+      if (el) { el.style.display = "none"; el.style.visibility ="hidden"; }
     });
 
     const gnnBtn = document.getElementById("gnnButton");
@@ -2535,10 +3108,15 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
     gameState.playerScore = 0; selectedUnits = [];
 
     const m = 300;
-    playerBase = new Building("base", "player", m, m);
-    aiBase = new Building("base", "ai", worldWidth - m, worldHeight - m);
-    playerBase.active = true; aiBase.active = true;
-    gameState.buildings.push(playerBase, aiBase);
+	playerBase = new Building("base","player", m, m);
+	aiBase = new Building("base","ai", worldWidth - m, worldHeight - m);
+	playerBase.active = true; aiBase.active = true;
+	gameState.buildings.push(playerBase, aiBase);
+
+	// 🔥 ДИНАМИЧЕСКАЯ СИНХРОНИЗАЦИЯ РАЗМЕРА МИРА
+	GnnAI.cfg.WORLD_WIDTH = typeof worldWidth !== 'undefined' ? worldWidth : 2000;
+	GnnAI.cfg.WORLD_HEIGHT = typeof worldHeight !== 'undefined' ? worldHeight : 2000;
+				
 
     if (typeof generateResources === "function") generateResources(100);
     if (typeof initFogOfWar === "function") initFogOfWar();
@@ -2562,7 +3140,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
     
     // ЗАПУСК ГЛАВНОГО ЦИКЛА
     requestAnimationFrame(gameLoop);
-    console.log("[GnnAI] 🚀 Матч начат (v7.4 Perfect Stability + Visuals)");
+    console.log("[GnnAI] 🚀 Матч начат (v7.5 Tactical Awareness)");
     setTimeout(() => {
       document.querySelectorAll('div').forEach(div => {
         if (div.style.zIndex >= 100 && div.offsetWidth > window.innerWidth * 0.5) {
@@ -2572,14 +3150,16 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
     }, 300);
   }
 
+
+
   function addMenuButton() {
     const loading = document.getElementById("loadingScreen");
     if (!loading || document.getElementById("gnnButton")) return;
     const btn = document.createElement("button");
-    btn.id = "gnnButton"; btn.innerText = "Граф ИИ v7.4 Perfect Stability + Visuals";
+    btn.id = "gnnButton"; btn.innerText ="Граф ИИ vv7.5 Tactical Awareness";
     btn.style.cssText = "font-family: 'Orbitron', sans-serif; font-size: 18px; padding: 12px 28px; border: 2px solid #00ff99; color: #00ff99; background: rgba(0,255,120,0.08); border-radius: 50px; box-shadow: 0 0 15px rgba(0,255,120,0.5); cursor: pointer; transition: all 0.3s ease; z-index: 10; margin-top: 10px;";
-    btn.onmouseenter = () => { btn.style.background = "rgba(0,255,120,0.2)"; btn.style.transform = "scale(1.05)"; };
-    btn.onmouseleave = () => { btn.style.background = "rgba(0,255,120,0.08)"; btn.style.transform = "scale(1)"; };
+    btn.onmouseenter = () => { btn.style.background = "rgba(0,255,120,0.2)"; btn.style.transform ="scale(1.05)"; };
+    btn.onmouseleave = () => { btn.style.background = "rgba(0,255,120,0.08)"; btn.style.transform ="scale(1)"; };
     btn.onclick = startGnnGame;
     const neural = document.getElementById("neuralButton");
     if (neural && neural.parentNode === loading) neural.insertAdjacentElement("afterend", btn);
@@ -2666,9 +3246,7 @@ if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && n
       }, 1500); 
     }
   });
-
 // ВИЗУАЛИЗАЦИЯ GNN ГРАФА (С УПРАВЛЕНИЕМ ПАНЕЛЬЮ И СВЯЗЯМИ)
-// Глобальные переменные для состояния (по умолчанию всё включено)
 if (typeof window.showGnnGraph === 'undefined') window.showGnnGraph = true;
 if (typeof window.showGnnLegend === 'undefined') window.showGnnLegend = true;
 
@@ -2677,16 +3255,12 @@ window.drawGnnOverlay = function() {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-
     if (typeof window.worldToScreen !== 'function') return;
-    if (!window.GnnAI || !window.GnnAI.lastState || gameMode !== "gnn") return;
-    
+    if (!window.GnnAI || !window.GnnAI.lastState || gameMode !== "gnn") return; 
     const state = window.GnnAI.lastState;
     if (!state.nodes || state.nodes.length === 0) return;
-
     const nodes = state.nodes;
     const INTERACTION_RADIUS = window.GnnAI.cfg.INTERACTION_RADIUS || 320;
-
     // === 1. ЕСЛИ ПАНЕЛЬ СКРЫТА, РИСУЕМ ТОЛЬКО МАЛЕНЬКУЮ ИКОНКУ ===
     if (!window.showGnnLegend) {
         ctx.save();
@@ -2701,41 +3275,35 @@ window.drawGnnOverlay = function() {
         ctx.restore();
         return; // Выходим, ничего больше не рисуем
     }
-
     // === 2. РИСУЕМ ГРАФ (СВЯЗИ + УЗЛЫ), ЕСЛИ ВКЛЮЧЕНО ===
     if (window.showGnnGraph) {
         ctx.save();
         ctx.lineCap = 'round';
         
         function getConnectionStyle(ni, nj, d) {
-            const isThreat = (ni.owner === "player" && nj.owner === "ai") || (nj.owner === "player" && ni.owner === "ai");
+            const isThreat = (ni.owner === "player" && nj.owner ==="ai") || (nj.owner ==="player" && ni.owner ==="ai");
             if (isThreat) {
                 const urgency = 1 - (d / INTERACTION_RADIUS);
                 return { color: `rgba(255, 0, 0, ${0.6 + urgency * 0.4})`, width: 1.0, dash: false, priority: 10 };
             }
-            const isProd = (ni.type.includes("barracks") && ["fighter", "assault", "elite"].includes(nj.type)) ||
-                           (nj.type.includes("barracks") && ["fighter", "assault", "elite"].includes(ni.type));
+            const isProd = (ni.type.includes("barracks") && ["fighter","assault","elite"].includes(nj.type)) ||
+                           (nj.type.includes("barracks") && ["fighter","assault","elite"].includes(ni.type));
             if (isProd) return { color: "rgba(0, 200, 255, 0.5)", width: 1.0, dash: false, priority: 5 };
-
-            const isLogistics = (ni.type === "warehouse" && ["gold", "silicon", "plasma"].includes(nj.type)) ||
-                                (nj.type === "warehouse" && ["gold", "silicon", "plasma"].includes(ni.type));
+            const isLogistics = (ni.type === "warehouse" && ["gold","silicon","plasma"].includes(nj.type)) ||
+                                (nj.type === "warehouse" && ["gold","silicon","plasma"].includes(ni.type));
             if (isLogistics) return { color: "rgba(255, 215, 0, 0.3)", width: 1.0, dash: false, priority: 5 };
-
             const isDefense = (ni.type.startsWith("turret") && !nj.type.startsWith("turret")) ||
                               (nj.type.startsWith("turret") && !ni.type.startsWith("turret"));
             if (isDefense) return { color: "rgba(255, 100, 50, 0.3)", width: 1.0, dash: false, priority: 5 };
-
-            const isRepair = (ni.type === "repairWorkshop" && nj.hp < 0.9) || (nj.type === "repairWorkshop" && ni.hp < 0.9);
+            const isRepair = (ni.type === "repairWorkshop" && nj.hp < 0.9) || (nj.type ==="repairWorkshop" && ni.hp < 0.9);
             if (isRepair) return { color: "rgba(0, 255, 100, 0.3)", width: 1.0, dash: true, priority: 5 };
 
-            const isStrategy = (ni.type === "beacon" && (nj.type.includes("base") || nj.type === "beacon")) ||
-                               (nj.type === "beacon" && (ni.type.includes("base") || ni.type === "beacon"));
+            const isStrategy = (ni.type === "beacon" && (nj.type.includes("base") || nj.type ==="beacon")) ||
+                               (nj.type === "beacon" && (ni.type.includes("base") || ni.type ==="beacon"));
             if (isStrategy) return { color: "rgba(180, 0, 255, 0.3)", width: 1.0, dash: true, priority: 5 };
-
             const alpha = Math.max(0.1, 0.3 * (1 - d / INTERACTION_RADIUS));
             return { color: `rgba(150, 150, 150, ${alpha})`, width: 1.0, dash: false, priority: 1 };
         }
-
         const connections = [];
         for (let i = 0; i < nodes.length; i++) {
             const ni = nodes[i];
@@ -2748,7 +3316,6 @@ window.drawGnnOverlay = function() {
                 connections.push({ ni, nj, d, style: getConnectionStyle(ni, nj, d) });
             }
         }
-
         connections.sort((a, b) => a.style.priority - b.style.priority);
 
         for (const conn of connections) {
@@ -2764,7 +3331,6 @@ window.drawGnnOverlay = function() {
             ctx.stroke();
         }
         ctx.setLineDash([]);
-
         // Узлы
         for (let i = 0; i < nodes.length; i++) {
             const ni = nodes[i];
@@ -2772,10 +3338,9 @@ window.drawGnnOverlay = function() {
             let r = 2.5;
             if (ni.type.includes("base")) r = 5;
             else if (ni.type.includes("barracks") || ni.type.includes("warehouse") || ni.type.includes("turret")) r = 3.5;
-
             const pos = window.worldToScreen(ni.x, ni.y);
-            ctx.fillStyle = ni.owner === "ai" ? "#00ff99" : "#ff4444";
-            ctx.shadowColor = (ni.type.includes("base") || ni.type.includes("elite")) ? ctx.fillStyle : "transparent";
+            ctx.fillStyle = ni.owner === "ai" ?"#00ff99" :"#ff4444";
+            ctx.shadowColor = (ni.type.includes("base") || ni.type.includes("elite")) ? ctx.fillStyle :"transparent";
             ctx.shadowBlur = (ni.type.includes("base") || ni.type.includes("elite")) ? 8 : 0;
             ctx.beginPath();
             ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
@@ -2783,7 +3348,6 @@ window.drawGnnOverlay = function() {
         }
         ctx.restore();
     }
-
     // === 3. РИСУЕМ ПОЛНУЮ ПАНЕЛЬ ЛЕГЕНДЫ ===
     ctx.save();
     const legendW = 200;
@@ -2797,18 +3361,18 @@ window.drawGnnOverlay = function() {
     
     ctx.font = "bold 12px monospace";
     ctx.fillStyle = "#ffffff";
-    ctx.fillText("🧠 GNN ТАКТИКА:", 20, 30);
-    
+    ctx.fillText("🧠 GNN ТАКТИКА:", 20, 30);  
+	
     const legendItems = [
-        { color: "rgba(255, 0, 0, 0.5)", text: "⚠️ УГРОЗА", dash: false },
-        { color: "rgba(0, 200, 255, 0.5)", text: "🏭 Производство", dash: false },
-        { color: "rgba(255, 215, 0, 0.5)", text: "💰 Логистика", dash: false },
-        { color: "rgba(255, 100, 50, 0.5)", text: "🛡️ Оборона", dash: false },
-        { color: "rgba(0, 255, 100, 0.5)", text: "🔧 Ремонт", dash: true },
-        { color: "rgba(180, 0, 255, 0.5)", text: "📡 Стратегия", dash: true },
-        { color: "rgba(150, 150, 150, 0.5)", text: "📍 География", dash: false }
+        { color: "rgba(255, 0, 0, 0.5)", text:"⚠️ УГРОЗА", dash: false },
+        { color: "rgba(0, 200, 255, 0.5)", text:"🏭 Производство", dash: false },
+        { color: "rgba(255, 215, 0, 0.5)", text:"💰 Логистика", dash: false },
+        { color: "rgba(255, 100, 50, 0.5)", text:"🛡️ Оборона", dash: false },
+        { color: "rgba(0, 255, 100, 0.5)", text:"🔧 Ремонт", dash: true },
+        { color: "rgba(180, 0, 255, 0.5)", text:"📡 Стратегия", dash: true },
+        { color: "rgba(150, 150, 150, 0.5)", text:"📍 География", dash: false }
     ];
-
+	
     legendItems.forEach((item, idx) => {
         const y = 50 + idx * 18;
         ctx.strokeStyle = item.color;
@@ -2824,10 +3388,9 @@ window.drawGnnOverlay = function() {
         ctx.fillText(item.text, 44, y + 4);
     });
     ctx.setLineDash([]);
-
     // --- ФЛАЖОК 1: Показывать граф ---
     const graphBtnX = 20, graphBtnY = 176, btnSize = 14;
-    ctx.strokeStyle = window.showGnnGraph ? "#00ff99" : "#666666";
+    ctx.strokeStyle = window.showGnnGraph ? "#00ff99" :"#666666";
     ctx.lineWidth = 1.5;
     ctx.strokeRect(graphBtnX, graphBtnY, btnSize, btnSize);
     if (window.showGnnGraph) {
@@ -2837,10 +3400,9 @@ window.drawGnnOverlay = function() {
     ctx.fillStyle = "#ffffff";
     ctx.font = "bold 11px monospace";
     ctx.fillText("Показывать граф", graphBtnX + btnSize + 8, graphBtnY + 11);
-
     // --- ФЛАЖОК 2: Отображать панель ---
     const panelBtnX = 20, panelBtnY = 196;
-    ctx.strokeStyle = "#ff6b6b"; // Красноватый оттенок для действия "скрыть"
+    ctx.strokeStyle = "#ff6b6b"; // Красноватый оттенок для действия"скрыть"
     ctx.lineWidth = 1.5;
     ctx.strokeRect(panelBtnX, panelBtnY, btnSize, btnSize);
     // Рисуем галочку, так как панель сейчас открыта
@@ -2852,7 +3414,6 @@ window.drawGnnOverlay = function() {
     ctx.fillText("Скрыть панель", panelBtnX + btnSize + 8, panelBtnY + 11);
 
     ctx.restore();
-
     // === 4. ОБРАБОТЧИК КЛИКОВ (добавляется только один раз) ===
     if (!window._gnnLegendClickListenerAdded) {
         canvas.addEventListener('click', (e) => {

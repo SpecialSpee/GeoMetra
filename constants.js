@@ -30,10 +30,6 @@ let aiLogicInterval;
 window.gameMode = "single"; // или просто: gameMode = "single";
 
 
-
-
-
-
 // constants.js (новый блок констант)
 const BUILDING_ACTIVATION_DELAYS = {
   base: 5000,            // 5 секунд
@@ -176,19 +172,16 @@ const BEACON_COST = { gold: 27, silicon: 38, plasma: 12 };
 const BASE2_COST = { gold: 81, silicon: 92, plasma: 43 };
 const BARRACKS2_COST = { gold: 65, silicon: 72, plasma: 19 };
 const TURRET2_COST = { gold: 21, silicon: 36, plasma: 14 };
-const TURRET3_COST = { gold: 27, silicon: 46, plasma: 19 };
 // Поздняя игра (3 уровень)
 const BASE3_COST = { gold: 92, silicon: 108, plasma: 52 };
 const BARRACKS3_COST = { gold: 73, silicon: 84, plasma: 24 };
-
+const TURRET3_COST = { gold: 27, silicon: 46, plasma: 19 };
 
 
 // === Константы и глобальные переменные для тумана войны ===
 const FOG_CELL_SIZE = 45;   // размер ячейки тумана (в мировых единицах)
 
 const VISION_RADIUS = 250;     // радиус видимости юнита игрока (в мировых единицах)
-
-
 
 const WORKER_SPEED = 50;
 const FIGHTER_BULLET_CONFIG = { speed: 200, lifetime: 0.8, damage: 10 };
@@ -271,7 +264,6 @@ function canAfford(cost, owner) {
 function evaluateResourceDensity(x, y, radius) {
   let density = 0;
   const pos = { x, y };
-  // Запрос только ресурсов (предполагается, что у ресурсов есть тип gold, silicon или plasma)
   const resources = getObjectsInRange(pos, radius)
     .filter(r => r.type === "gold" || r.type === "silicon" || r.type === "plasma");
   resources.forEach(resource => {
@@ -333,7 +325,7 @@ function startRepairProcess(repairman, command) {
 
   const repairRate = 5;
   const intervalTime = 100;
-  const REPAIR_COST = { gold: 0.3, silicon: 0.4, plasma: 0.2 };
+  const REPAIR_COST = { gold: 1, silicon: 4, plasma: 3 };
   const intervalsPerCycle = 5000 / intervalTime;
   const costGoldPerInterval = REPAIR_COST.gold / intervalsPerCycle;
   const costSiliconPerInterval = REPAIR_COST.silicon / intervalsPerCycle;
