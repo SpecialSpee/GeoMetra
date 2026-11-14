@@ -1675,6 +1675,8 @@ function onBuildingDestroyed(building) {
   mobilizeDefendersAround(building);
 }
 
+
+
 function updateGameState(deltaTime) {
   // Обновляем квадродерево
   quadtree.clear();
@@ -1967,7 +1969,7 @@ function seededRandom(seed) {
   return function () { state = state * 16807 % 2147483647; return (state - 1) / 2147483646; };
 }
 
-function generateResources(countPerType = 50, seed = 777) {
+function generateResources(countPerType = 100, seed = 777) {
   const rand = seededRandom(seed);
   const resourceTypes = ["gold", "silicon", "plasma"];
   

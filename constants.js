@@ -30,6 +30,8 @@ let aiBase = null;
 let aiLogicInterval;
 window.gameMode = "single"; // или просто: gameMode = "single";
 
+
+
   const CFG = {
     MAX_NODES: 160,
     NODE_FEATURES: 53,

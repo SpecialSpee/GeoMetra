@@ -1,6 +1,6 @@
 // === Глобальные переменные, необходимые для оставшихся функций ===
 let failedClusters = []; // Массив неудачных точек для построек
-
+const DEFENSE_RADIUS = 200;
 // === 1. Проверки и пререквизиты ===
 function hasBuilding(buildingType, owner) {
   const found = gameState.buildings.some(b => b.owner === owner && b.type === buildingType);
@@ -24,6 +24,57 @@ function canBuild(buildingType) {
     }
   }
   return true;
+}
+
+function reactToAttack() {
+  // Выбираем ключевые здания для быстрого реагирования
+  const keyBuildings = gameState.buildings.filter(b =>
+    b.owner === "ai" &&
+    ["warehouse", "repairWorkshop", "base", "base2", "base3", "beacon"].includes(b.type)
+  );
+  
+  keyBuildings.forEach(building => {
+    const queryRange = {
+      x: building.x - DEFENSE_RADIUS,
+      y: building.y - DEFENSE_RADIUS,
+      width: DEFENSE_RADIUS * 2,
+      height: DEFENSE_RADIUS * 2
+    };
+    
+    // Получаем объекты из квадродерева через кэшированную функцию
+    const objectsInRange = getCachedObjectsInRange(queryRange) || [];
+    
+    // Фильтруем вражеские объекты (принадлежащие игроку) в радиусе защиты
+    const enemies = objectsInRange.filter(obj =>
+      obj.owner === "player" &&
+      Math.hypot(obj.x - building.x, obj.y - building.y) < DEFENSE_RADIUS
+    );
+    
+    // Если обнаружен хотя бы один враг, запускаем реакцию
+    if (enemies.length > 0) { // можно использовать условие >= 1
+      // Находим свободные боевые единицы для защиты
+      const freeUnits = gameState.units.filter(u =>
+        u.owner === "ai" &&
+        (u.type === "fighter" || u.type === "assault" || u.type === "elite") &&
+        (!u.commandQueue || u.commandQueue.length === 0) &&
+        !u.defending
+      );
+      
+      freeUnits.forEach(unit => {
+        // Находим ближайшего врага относительно здания
+        const nearestEnemy = enemies.reduce((prev, curr) =>
+          Math.hypot(curr.x - building.x, curr.y - building.y) <
+          Math.hypot(prev.x - building.x, prev.y - building.y) ? curr : prev
+        );
+        if (nearestEnemy) {
+          unit.commandQueue = [];
+          unit.commandQueue.push({ type: "move", x: nearestEnemy.x, y: nearestEnemy.y });
+          unit.commandQueue.push({ type: "attack", target: nearestEnemy });
+          unit.defending = true;
+        }
+      });
+    }
+  });
 }
 
 // === 2. Управление очередью построек ===

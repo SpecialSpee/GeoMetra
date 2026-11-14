@@ -3103,7 +3103,7 @@ findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 31
 	GnnAI.cfg.WORLD_HEIGHT = typeof worldHeight !== 'undefined' ? worldHeight : 2000;
   
   // !!!генерация  ресурсов
-    if (typeof generateResources === "function") generateResources(50);
+    if (typeof generateResources === "function") generateResources(100);
   
     if (typeof initFogOfWar === "function") initFogOfWar();
     camera.offsetX = canvas.width / 2 - playerBase.x * camera.scale;
