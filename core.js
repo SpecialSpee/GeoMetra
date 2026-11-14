@@ -1627,6 +1627,54 @@ function processProductionQueue(building) {
   }
 }
 
+// Пример: при уничтожении здания (или продаже) вызываем функцию для маркировки зоны
+function onBuildingDestroyed(building) {
+	if (gameMode === "neural" && building.owner === "ai") {
+  recentThreats.push({
+    x: building.x,
+    y: building.y,
+    timestamp: Date.now(),
+    type: "destruction",
+    severity: 100
+  });
+}
+
+  // Удаляем индикатор производства/очереди найма, если он существует
+  const prodIndicator = document.getElementById("productionIndicator_" + building.id);
+  if (prodIndicator) {
+    prodIndicator.remove();
+  }
+  
+  // Если здание — турель, останавливаем её активность
+  if (building.type === "turret" || building.type === "turret2") {
+    building.active = false;
+    if (building.turretCycleId) {
+      cancelAnimationFrame(building.turretCycleId);
+      building.turretCycleId = null;
+    }
+  }
+  
+  // Удаляем здание из состояния игры
+  gameState.buildings = gameState.buildings.filter(b => b !== building);
+  
+  // Запускаем эффект разрушения
+  spawnDestructionFragments(building.x, building.y, building.width, building.height, building.type);
+  
+  // Начисляем очки за уничтожение здания, если здание принадлежало ИИ
+  if (building.owner === "ai") {
+    const points = SCORE_VALUES[building.type] || 0;
+    gameState.playerScore += points;
+    updateScoreUI();
+  }
+  
+  // Обновляем квадродерево и другие структуры
+  cleanUpBuildingReferences();
+  
+  // Дополнительные действия: реакция на атаку и мобилизация защитников
+  reactToAttack();
+  mobilizeDefendersAround(building);
+}
+
 function updateGameState(deltaTime) {
   // Обновляем квадродерево
   quadtree.clear();

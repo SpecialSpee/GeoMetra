@@ -1302,7 +1302,7 @@ if (aiBuildings.length > 5) {
       await this.loadWeights();
       this.initialized = true;
       this._initializing = false;
-      console.log(`[GnnAI] ✅ Модель (v7.5 Tactical Awareness) готова. Backend: ${tf.getBackend()}`);
+      console.log(`[GnnAI] ✅ Модель (v7.6) готова. Backend: ${tf.getBackend()}`);
     },
 
   predictData: function (state) {
@@ -2923,7 +2923,7 @@ findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 31
         const targetData = this.targetVars ? this.targetVars.map(v => ({ shape: v.shape, values: Array.from(v.dataSync()) })) : [];
         const data = { main: mainData, target: targetData };
 		await WeightDB.save(CFG.STORAGE_KEY, { version: 7.5, batches: this.trainBatches, data, backend: tf.getBackend(), actionsCount: G_ACTIONS.length, nodeFeatures: CFG.NODE_FEATURES });
-        console.log("[GnnAI] 💾 Веса успешно сохранены в IndexedDB (v7.5)");
+        console.log("[GnnAI] 💾 Веса успешно сохранены в IndexedDB (v7.6)");
       } catch (e) { console.error("[GnnAI] ❌ Ошибка сохранения весов:", e); }
     },
 
@@ -3122,7 +3122,7 @@ findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 31
     lastTime = performance.now(); 
     // ЗАПУСК ГЛАВНОГО ЦИКЛА
     requestAnimationFrame(gameLoop);
-    console.log("[GnnAI] 🚀 Матч начат (v7.5 Tactical Awareness)");
+    console.log("[GnnAI] 🚀 Матч начат (v7.6)");
     setTimeout(() => {
       document.querySelectorAll('div').forEach(div => {
         if (div.style.zIndex >= 100 && div.offsetWidth > window.innerWidth * 0.5) {
@@ -3136,7 +3136,7 @@ findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 31
     const loading = document.getElementById("loadingScreen");
     if (!loading || document.getElementById("gnnButton")) return;
     const btn = document.createElement("button");
-    btn.id = "gnnButton"; btn.innerText ="Граф ИИ vv7.5 Tactical Awareness";
+    btn.id = "gnnButton"; btn.innerText ="Граф ИИ vv7.6";
     btn.style.cssText = "font-family: 'Orbitron', sans-serif; font-size: 18px; padding: 12px 28px; border: 2px solid #00ff99; color: #00ff99; background: rgba(0,255,120,0.08); border-radius: 50px; box-shadow: 0 0 15px rgba(0,255,120,0.5); cursor: pointer; transition: all 0.3s ease; z-index: 10; margin-top: 10px;";
     btn.onmouseenter = () => { btn.style.background = "rgba(0,255,120,0.2)"; btn.style.transform ="scale(1.05)"; };
     btn.onmouseleave = () => { btn.style.background = "rgba(0,255,120,0.08)"; btn.style.transform ="scale(1)"; };
