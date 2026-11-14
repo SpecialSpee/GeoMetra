@@ -3,7 +3,6 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, maximum-scale=3, viewport-fit=cover">
-
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="mobile-web-app-capable" content="yes">
@@ -12,8 +11,6 @@
   <title>GeoMetra</title>
  <link rel="stylesheet" href="/style.css">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500&display=swap" rel="stylesheet">
-
-
   <link rel="preload" href="/src/icons/warehouse.png" as="image">
   <link rel="preload" href="/src/icons/repairWorkshop.png" as="image">
   <link rel="preload" href="/src/icons/turret.png" as="image">
@@ -25,8 +22,6 @@
   <link rel="preload" href="/src/icons/barracks.png" as="image">
   <link rel="preload" href="/src/icons/barracks2.png" as="image">
   <link rel="preload" href="/src/icons/barracks3.png" as="image">
-	
-
 	
 	<script>
 (function () {
@@ -64,8 +59,9 @@
 </script>
 
 </head>
+	
 <body>
-	<!-- В файле index.html, сразу после открытия <body> добавьте этот блок (представление) -->
+
 <div id="presentationScreen">
   <canvas id="matrixCanvas"></canvas>
   <div id="logoContainer">
@@ -93,7 +89,6 @@
   </div>
 </div>
 
-<!-- После экрана представления будет основной загрузочный экран, который содержит видео и кнопку "Исследовать..." -->
 <div id="loadingScreen" style="display: none;">
   <video autoplay muted loop playsinline id="loadingVideo">
     <source src="/src/video/background.mp4" type="video/mp4">
@@ -118,16 +113,14 @@
     <!-- <input type="text" id="chat-input" placeholder="Введите..." />-->
     <!-- <button id="chat-send">➤</button>-->
   <!-- </div>
-
   <!-- история — может скрываться -->
   <!-- <div id="chat-messages"></div>-->
-
   <!-- кнопка переключения истории -->
   <!-- <button id="chat-toggle">🡇 Скрыть чат</button>-->
 <!-- </div>-->
 
 <!-- всплывающее сообщение -->
-<div id="chat-float"></div>
+ <!--<div id="chat-float"></div>-->
 
 	<div id="orientationWarning" style="
   display: none; position: fixed; top: 0; left: 0;
@@ -139,11 +132,9 @@
   <p>Пожалуйста, поверните устройство в альбомную ориентацию</p>
 </div>
 
-	  <canvas id="loading-canvas"></canvas>
+<canvas id="loading-canvas"></canvas>
 <button id="fsToggle">…</button>
-  <canvas id="gameCanvas"></canvas>
-	
-
+<canvas id="gameCanvas"></canvas>
 	
  <div id="controlsWrapper" style="display: none;">
 	  <!-- UI: счетчики ресурсов -->
@@ -154,6 +145,7 @@
       ИИ: 💰: <span id="aiGold">100</span> | ⚙: <span id="aiSilicon">100</span> | 🧪: <span id="aiPlasma">50</span>
     </span>
   </div>
+	 
     <div id="leftControlPanel">
       <!--<button id="group1">Ⅰ</button>-->
       <!--<button id="group2">Ⅱ</button>-->
@@ -162,13 +154,12 @@
       <button onclick="setFormation(2)">📏</button>
       <button onclick="setFormation(3)">🔺</button>
     </div>
+	 
     <div id="rightControlPanel">
 		
 		<!--<button id="trainNeuralAIButton">ХОРОШО</button>-->
 		<!--<button id="badDecisionButton">ПЛОХО</button>-->
 		<!--<button id="resetNeuralAIButton">СБРОС</button>-->
-
-
 
       <button onclick="selectAllFighters()">🌐</button>
       <button onclick="commandScout()">🛰️</button>
@@ -176,6 +167,7 @@
       <button onclick="commandDefence()">🛡️</button>
       <button id="clearSelectionBtn">🚫</button>
     </div>
+	 
 	 <div id="buildingTooltip" style="
   position: fixed;
   padding: 4px 8px;
@@ -188,9 +180,8 @@
   display: none;
   white-space: nowrap;
 "></div>
-	 
-	 
-	 <div id="perkSlots">
+	  
+<div id="perkSlots">
   <div class="perk-slot" data-slot="0"></div>
   <div class="perk-slot" data-slot="1"></div>
   <div class="perk-slot" data-slot="2"></div>
@@ -200,14 +191,13 @@
   <!-- Здесь будут все доступные перки -->
 </div>
 
-	  <div id="scoreCounter">
+  <div id="scoreCounter">
     GEO: 0
   </div>
 	
-
   </div>
 
-  <div id="panelToggleTab">◀</div>
+ <div id="panelToggleTab">◀</div>
 
 <script>
   // Очистка кэша при необходимости (раскомментировать при обновлении)
@@ -224,10 +214,10 @@
   <script src="/inputs.js" defer></script>
   <script src="/script.js" defer></script>
   <script src="/aiLogic.js" defer></script>
-  <script src="/pvp.js" defer></script>
-  <script src="/tutorial.js" defer></script>
+  <!--<script src="/pvp.js" defer></script>-->
+  <!--<script src="/tutorial.js" defer></script>-->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.14.0"></script>
-  <script src="/neuralAI.js"></script>
+  <!--<script src="/neuralAI.js"></script>-->
   <script src="/aiScheduler.js" defer></script>
   <script src="/gnnAI.js" defer></script>
   <script src="trainingBot.js"></script>

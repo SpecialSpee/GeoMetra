@@ -9,6 +9,66 @@ let particleUpdateAccumulator = 0;
 let idCollisionCount = 0;
 const PARTICLE_UPDATE_INTERVAL = 0.033;
 
+// ==========================================
+// 🔥 GNN СОБЫТИЙНЫЕ ХУКИ (Mission Logging)
+// ==========================================
+window.GnnEventHooks = {
+  onUnitDamaged: function(unit, damage, source) {
+    if (!unit || !unit.missionLog) return;
+    unit.missionLog.damageTaken += damage;
+    unit.missionLog.events.push({
+      t: performance.now() - unit.missionLog.startTime,
+      type: "damage_taken",
+      amount: damage,
+      from: source ? { type: source.type, owner: source.owner, id: source.id } : { type: "area_effect" },
+      pos: { x: unit.x, y: unit.y },
+      hpAfter: unit.health
+    });
+    if (source && source.type && source.type.startsWith("turret")) unit.missionLog.hitByTurret = true;
+  },
+  onUnitDealtDamage: function(unit, damage, target) {
+    if (!unit || !unit.missionLog) return;
+    if (target && target.id === unit.missionLog.targetId) {
+      unit.missionLog.damageDealt += damage;
+    }
+    unit.missionLog.events.push({
+      t: performance.now(),
+      type: "damage_dealt",
+      amount: damage,
+      to: target ? { id: target.id, type: target.type, owner: target.owner } : null,
+      isPrimaryTarget: target && target.id === unit.missionLog.targetId
+    });
+  },
+	
+  onUnitDeath: function(unit, killer) {
+    if (!unit || !unit.missionLog) return;
+    unit.missionLog.alive = false;
+    unit.missionLog.deathPos = { x: unit.x, y: unit.y };
+    unit.missionLog.killedBy = killer ? { type: killer.type, owner: killer.owner, id: killer.id } : null;
+    unit.missionLog.events.push({
+      t: performance.now() - unit.missionLog.startTime,
+      type: "death",
+      pos: unit.missionLog.deathPos,
+      killedBy: unit.missionLog.killedBy,
+      hpAtDeath: 0
+    });
+  },
+  onUnitReachedTarget: function(unit, target) {
+    if (!unit || !unit.missionLog) return;
+    if (target && target.id === unit.missionLog.targetId) {
+      unit.missionLog.reachedTarget = true;
+      unit.missionLog.events.push({
+        t: performance.now() - unit.missionLog.startTime,
+        type: "reached_target",
+        targetPos: { x: target.x, y: target.y },
+        targetHP: target.health
+      });
+    }
+  }
+};
+
+
+
 function addUnit(unit) {
   // 🔥 АВТОМАТИЧЕСКОЕ ПРИСВАИВАНИЕ ID, если его нет
   if (!unit.id || unit.id === undefined) {
@@ -28,7 +88,10 @@ function addUnit(unit) {
   if (unit.defending) gameState.defenders.push(unit);
 }
 
-function removeUnit(unit) {
+function removeUnit(unit, killer = null) {
+  // 🔥 ХУК СМЕРТИ
+  if (typeof window.GnnEventHooks !== 'undefined') window.GnnEventHooks.onUnitDeath(unit, killer);
+  
   cleanupUnitState(unit);
   for (let key in unitGroups) unitGroups[key] = unitGroups[key].filter(u => u !== unit);
   if (gameMode === "pvp" && unit.owner === playerId) sendPvpAction({ type: "die", unitId: unit.id });
@@ -463,6 +526,10 @@ function processCommandQueue(unit) {
       unit.commandQueue = []; unit.target = null; return;
     }
     unit.target = target;
+    
+    // 🔥 ХУК ДОСТИЖЕНИЯ ЦЕЛИ (начало атаки)
+    if (typeof window.GnnEventHooks !== 'undefined') window.GnnEventHooks.onUnitReachedTarget(unit, target);
+    
     const dist = Math.hypot(unit.x - target.x, unit.y - target.y);
     if (unit.range && dist > unit.range) { moveUnit(unit, target.x, target.y, () => { processCommandQueue(unit); }); } 
     else { dynamicAttack(unit, target, 1 / 60); requestAnimationFrame(() => processCommandQueue(unit)); }
@@ -809,7 +876,9 @@ function updateBullets(deltaTime) {
       let target = candidates[j];
       if (target.owner !== bullet.shooter.owner && target.health > 0) {
         target.health -= bullet.damage;
-	    if (typeof onDamage === "function") onDamage(target, bullet.damage);
+        // 🔥 ХУК УРОНА
+        if (typeof window.GnnEventHooks !== 'undefined') window.GnnEventHooks.onUnitDamaged(target, bullet.damage, bullet.shooter);
+        if (typeof onDamage === "function") onDamage(target, bullet.damage);
         hit = true;
         
         if (bullet.isMissile || bullet.isArtillery) {
@@ -821,7 +890,7 @@ function updateBullets(deltaTime) {
         if (target.health <= 0) {
           spawnDestructionFragments(target.x, target.y, target.width || 10, target.height || 10, target.type);
           if (target instanceof Building) onBuildingDestroyed(target);
-          else removeUnit(target);
+		  else removeUnit(target, bullet.shooter); // 🔥 ПЕРЕДАЕМ УБИЙЦУ
         }
         break; // Пуля поражает первую цель и исчезает
       }
@@ -861,7 +930,7 @@ function applySplashDamage(bullet) {
           if (obj instanceof Building) {
             if (typeof onBuildingDestroyed === "function") onBuildingDestroyed(obj);
           } else {
-            if (typeof removeUnit === "function") removeUnit(obj);
+            if (typeof removeUnit === "function") removeUnit(obj, bullet.shooter); // 🔥 ПЕРЕДАЕМ УБИЙЦУ
           }
         }
       }
@@ -1173,14 +1242,6 @@ function spawnResourceToken(worker, resourceType) {
   worker.carriedResourceToken = token;
 }
 
-function updateWorkerResourceToken(worker) {
-  if (worker.carriedResourceToken) {
-    const token = worker.carriedResourceToken;
-    token.x = worker.x + token.offsetX;
-    token.y = worker.y + token.offsetY;
-  }
-}
-
 function startWorkerCycle(worker, warehouse) {
   // 🔥 ИСПРАВЛЕНИЕ: Если нейросеть дала рабочему боевую команду — отменяем её
   if (worker.commandQueue && worker.commandQueue.length > 0) {
@@ -1354,21 +1415,6 @@ function startWorkerCycle(worker, warehouse) {
       startWorkerCycle(worker, warehouse);
     }, 2000);
   });
-}
-
-function startFighterCycle(fighter) {
-  if (!fighter) return;
-  function cycle() {
-    if (fighter.health <= 0) return;
-    if (fighter.commandQueue.length > 0) { processCommandQueue(fighter); requestAnimationFrame(cycle); return; }
-    if (fighter.target && fighter.target.health > 0) { dynamicAttack(fighter, fighter.target, 1/60); } 
-    else {
-      let enemies = getEnemiesInRange({ x: fighter.x, y: fighter.y }, fighter.range).filter(e => e.owner !== fighter.owner && e.health > 0);
-      if (enemies.length > 0) fighter.target = enemies.sort((a, b) => Math.hypot(a.x - fighter.x, a.y - fighter.y) - Math.hypot(b.x - fighter.x, b.y - fighter.y))[0];
-    }
-    requestAnimationFrame(cycle);
-  }
-  cycle();
 }
 
 function startTurretCycle(turret) {
@@ -1710,6 +1756,40 @@ function createCapturePointsForBase(base) {
   return pts;
 }
 
+function startAssaultEliteCycle(unit) {
+  if (!unit) return;
+  function cycle() {
+    if (unit.health <= 0) return;
+    
+    // Если есть команды – обрабатываем их и продолжаем цикл
+    if (unit.commandQueue && unit.commandQueue.length > 0) {
+      processCommandQueue(unit);
+      requestAnimationFrame(cycle);
+      return;
+    }
+    
+    // Если у юнита есть цель, и она жива, вызываем динамическую атаку
+    if (unit.target && unit.target.health > 0) {
+      if (unit.type === "assault") {
+        dynamicAttackAssault(unit, unit.target, 1/60);
+      } else if (unit.type === "elite") {
+        dynamicAttackElite(unit, unit.target, 1/60);
+      }
+    } else {
+      // Если цели нет или она мертва, ищем новую цель
+      let enemies = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
+                    .filter(e => e.owner !== unit.owner && e.health > 0);
+      if (enemies.length > 0) {
+        unit.target = enemies.sort((a, b) =>
+          Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
+        )[0];
+      }
+    }
+    requestAnimationFrame(cycle);
+  }
+  cycle();
+}
+
 function spawnWaveFromCapturePoint(cp) {
   const side = cp.owner;
   if (!side) return;
@@ -1746,15 +1826,36 @@ function animateMoveAndScale(unit, targetX, targetY, targetScale, duration, call
 }
 
 function recallRepairmenFromWorkshop(workshop) {
-  const recalledRepairmen = gameState.units.filter(u => u.owner === playerId && u.type === "repairman" && u.hidden && u.inWorkshop === workshop);
+  const recalledRepairmen = gameState.units.filter(u =>
+    u.owner === playerId &&
+    u.type === "repairman" &&
+    u.hidden && u.inWorkshop === workshop
+  );
+
   if (recalledRepairmen.length > 0) {
     recalledRepairmen.forEach(u => {
-      if (u.currentMovementAnimation) { cancelAnimationFrame(u.currentMovementAnimation); u.currentMovementAnimation = null; }
-      if (u.waitingAnimation) { cancelAnimationFrame(u.waitingAnimation); u.waitingAnimation = null; }
-      const exitOffset = 20, angle = Math.random() * Math.PI * 2;
-      animateMoveAndScale(u, workshop.x + exitOffset * Math.cos(angle), workshop.y + exitOffset * Math.sin(angle), 1, 500, () => { u.hidden = false; u.inWorkshop = null; });
+      if (u.currentMovementAnimation) {
+        cancelAnimationFrame(u.currentMovementAnimation);
+        u.currentMovementAnimation = null;
+      }
+      if (u.waitingAnimation) {
+        cancelAnimationFrame(u.waitingAnimation);
+        u.waitingAnimation = null;
+      }
+
+      const exitOffset = 20;
+      const angle = Math.random() * Math.PI * 2;
+      const exitX = workshop.x + exitOffset * Math.cos(angle);
+      const exitY = workshop.y + exitOffset * Math.sin(angle);
+
+      animateMoveAndScale(u, exitX, exitY, 1, 500, () => {
+        u.hidden = false;
+        u.inWorkshop = null;
+      });
     });
-  } else { hireRepairmanForPlayer(workshop); }
+  } else {
+    hireRepairmanForPlayer(workshop);
+  }
 }
 
 function spawnAtBoundary(building, offset = 10) {
@@ -1818,13 +1919,19 @@ function seededRandom(seed) {
   return function () { state = state * 16807 % 2147483647; return (state - 1) / 2147483646; };
 }
 
-function generateResources(seed = 777) {
+function generateResources(countPerType = 50, seed = 777) {
   const rand = seededRandom(seed);
   const resourceTypes = ["gold", "silicon", "plasma"];
+  
   resourceTypes.forEach(type => {
-    for (let i = 0; i < 100; i++) {
-      const x = rand() * (worldWidth - 20) + 10, y = rand() * (worldHeight - 20) + 10;
-      const max = type === "gold" ? 100 : type === "silicon" ? 75 : 50;
+    // 🔥 ИСПРАВЛЕНО: теперь количество берется из параметра countPerType, а не захардкожено!
+    for (let i = 0; i < countPerType; i++) {
+      const x = rand() * (worldWidth - 20) + 10;
+      const y = rand() * (worldHeight - 20) + 10;
+      
+      // Если вы также хотите изменить количество ресурса В ОДНОМ месторождении, меняйте цифры здесь:
+      const max = type === "gold" ? 150 : type === "silicon" ? 100 : 75;
+      
       gameState.resources.push(new Resource(type, x, y, max, max));
     }
   });

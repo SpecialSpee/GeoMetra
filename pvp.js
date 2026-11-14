@@ -1,7 +1,6 @@
 let socket = null;
-let playerId = null;
 let playerTeam = null;
-let opponentId = null;
+
 let pvpStartedAt = 0;
 
 

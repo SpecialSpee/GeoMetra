@@ -1,7 +1,8 @@
 let gameStarted = false;
 let buildQueue = [];
 
-
+let playerId = null;
+let opponentId = null;
 
 let shockAvailable = true;
 let shockActive = false;
@@ -29,8 +30,108 @@ let aiBase = null;
 let aiLogicInterval;
 window.gameMode = "single"; // или просто: gameMode = "single";
 
+  const CFG = {
+    MAX_NODES: 160,
+    NODE_FEATURES: 53,
+    GLOBAL_FEATURES: 36,
+    HIDDEN: 128,
+    LR: 0.00005,
+    DECISION_MS: 500,
+    MIN_COMMIT_MS: 30000,
+    WORLD_WIDTH: 2000,
+    WORLD_HEIGHT: 2000,
+    BUILD_QUEUE_MS: 500,
+    ECO_MS: 1500,
+    TRAIN_MS: 2000,
+    SAVE_EVERY_BATCHES: 10,
+    INTERACTION_RADIUS: 320,
+    BASE_THREAT_RADIUS: 450,
+    REPLAY_SIZE: 2000,
+    BATCH_SIZE: 64,
+    AUTO_ECONOMY: false,
+    BC_MODE:  false,
+    BC_TRANSITION_BATCHES: 1500,
+    STORAGE_KEY: "geomestra_gnn_weights_v7_5",
+    STATS_KEY: "geomestra_gnn_benchmark_v7_5",
+    GAMMA: 0.99,
+    CLIP_EPSILON: 0.2,
+    ENTROPY_COEF: 0.08,
+    GRADIENT_CLIP_NORM: 5.0
+  };
 
-// constants.js (новый блок констант)
+  const WeightDB = {
+    db: null,
+    isClosing: false,
+    async init() {
+      if (this.isClosing) await new Promise(r => setTimeout(r, 500));
+      if (this.db) return;
+      try {
+        this.db = await new Promise((resolve, reject) => {
+          const req = indexedDB.open('GnnAI_Weights_DB', 1);
+          req.onupgradeneeded = () => req.result.createObjectStore('models');
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      } catch (e) {
+        console.error("[WeightDB] Ошибка открытия БД:", e);
+        this.db = null;
+      }
+    },
+	  
+    async save(key, data) {
+      if (this.isClosing) return;
+      await this.init();
+      if (!this.db) return;
+      return new Promise((resolve, reject) => {
+        try {
+          const tx = this.db.transaction('models', 'readwrite');
+          tx.objectStore('models').put(data, key);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        } catch (e) { reject(e); }
+      });
+    },
+	  
+    async load(key) {
+      if (this.isClosing) return null;
+      await this.init();
+      if (!this.db) return null;
+      return new Promise((resolve, reject) => {
+        try {
+          const tx = this.db.transaction('models', 'readonly');
+          const req = tx.objectStore('models').get(key);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        } catch (e) { reject(e); }
+      });
+    }
+  };
+
+  const THREAT_ASSESSMENT = {
+    turret: 3, turret2: 5, turret3: 7,
+    fighter: 2, assault: 4, elite: 6
+  };
+
+
+const G_ACTIONS = [
+  "defend",
+  "build_warehouse","build_repair","build_barracks", 
+  "build_turret1","build_beacon", 
+  "build_base2","build_barracks2","build_turret2",
+  "build_base3","build_barracks3","build_turret3",
+  "hireWorker","hireRepairman","hireFighter","hireAssault","hireElite",
+  // НОВЫЕ ТАКТИКИ:
+  "strike_weak",       // ударить по слабому месту (обход скоплений)
+  "focus_fire",        // сконцентрировать огонь на одной цели
+  "retreat_regroup",   // отступить и перегруппироваться
+  "flank_attack",      // атаковать с фланга
+  "harass_economy",    // рейд по экономике (склады/рабочие)
+  "all_in_base",       // всё на базу
+  "idle"
+];
+
+
+
 const BUILDING_ACTIVATION_DELAYS = {
   base: 5000,            // 5 секунд
   base2: 8000,           // 8 секунд
@@ -323,7 +424,7 @@ function startRepairProcess(repairman, command) {
     return;
   }
 
-  const repairRate = 5;
+  const repairRate = 15;
   const intervalTime = 100;
   const REPAIR_COST = { gold: 1, silicon: 4, plasma: 3 };
   const intervalsPerCycle = 5000 / intervalTime;

@@ -83,6 +83,196 @@ const starField = {
 };
 starField.init();
 
+window.drawGnnOverlay = function() {
+    const canvas = document.getElementById("gameCanvas");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    if (typeof window.worldToScreen !== 'function') return;
+    if (!window.GnnAI || !window.GnnAI.lastState || gameMode !== "gnn") return; 
+    const state = window.GnnAI.lastState;
+    if (!state.nodes || state.nodes.length === 0) return;
+    const nodes = state.nodes;
+    const INTERACTION_RADIUS = window.GnnAI.cfg.INTERACTION_RADIUS || 320;
+    // === 1. ЕСЛИ ПАНЕЛЬ СКРЫТА, РИСУЕМ ТОЛЬКО МАЛЕНЬКУЮ ИКОНКУ ===
+    if (!window.showGnnLegend) {
+        ctx.save();
+        ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+        ctx.fillRect(10, 10, 26, 26);
+        ctx.strokeStyle = "#00ff99";
+        ctx.lineWidth = 1.0;
+        ctx.strokeRect(10, 10, 26, 26);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "16px monospace";
+        ctx.fillText("🧠", 15, 29);
+        ctx.restore();
+        return; // Выходим, ничего больше не рисуем
+    }
+    // === 2. РИСУЕМ ГРАФ (СВЯЗИ + УЗЛЫ), ЕСЛИ ВКЛЮЧЕНО ===
+    if (window.showGnnGraph) {
+        ctx.save();
+        ctx.lineCap = 'round';
+        
+        function getConnectionStyle(ni, nj, d) {
+            const isThreat = (ni.owner === "player" && nj.owner ==="ai") || (nj.owner ==="player" && ni.owner ==="ai");
+            if (isThreat) {
+                const urgency = 1 - (d / INTERACTION_RADIUS);
+                return { color: `rgba(255, 0, 0, ${0.6 + urgency * 0.4})`, width: 1.0, dash: false, priority: 10 };
+            }
+            const isProd = (ni.type.includes("barracks") && ["fighter","assault","elite"].includes(nj.type)) ||
+                           (nj.type.includes("barracks") && ["fighter","assault","elite"].includes(ni.type));
+            if (isProd) return { color: "rgba(0, 200, 255, 0.5)", width: 1.0, dash: false, priority: 5 };
+            const isLogistics = (ni.type === "warehouse" && ["gold","silicon","plasma"].includes(nj.type)) ||
+                                (nj.type === "warehouse" && ["gold","silicon","plasma"].includes(ni.type));
+            if (isLogistics) return { color: "rgba(255, 215, 0, 0.3)", width: 1.0, dash: false, priority: 5 };
+            const isDefense = (ni.type.startsWith("turret") && !nj.type.startsWith("turret")) ||
+                              (nj.type.startsWith("turret") && !ni.type.startsWith("turret"));
+            if (isDefense) return { color: "rgba(255, 100, 50, 0.3)", width: 1.0, dash: false, priority: 5 };
+            const isRepair = (ni.type === "repairWorkshop" && nj.hp < 0.9) || (nj.type ==="repairWorkshop" && ni.hp < 0.9);
+            if (isRepair) return { color: "rgba(0, 255, 100, 0.3)", width: 1.0, dash: true, priority: 5 };
+
+            const isStrategy = (ni.type === "beacon" && (nj.type.includes("base") || nj.type ==="beacon")) ||
+                               (nj.type === "beacon" && (ni.type.includes("base") || ni.type ==="beacon"));
+            if (isStrategy) return { color: "rgba(180, 0, 255, 0.3)", width: 1.0, dash: true, priority: 5 };
+            const alpha = Math.max(0.1, 0.3 * (1 - d / INTERACTION_RADIUS));
+            return { color: `rgba(150, 150, 150, ${alpha})`, width: 1.0, dash: false, priority: 1 };
+        }
+        const connections = [];
+        for (let i = 0; i < nodes.length; i++) {
+            const ni = nodes[i];
+            if (!ni.valid) continue;
+            for (let j = i + 1; j < nodes.length; j++) {
+                const nj = nodes[j];
+                if (!nj.valid) continue;
+                const d = Math.hypot(ni.x - nj.x, ni.y - nj.y);
+                if (d > INTERACTION_RADIUS) continue;
+                connections.push({ ni, nj, d, style: getConnectionStyle(ni, nj, d) });
+            }
+        }
+        connections.sort((a, b) => a.style.priority - b.style.priority);
+
+        for (const conn of connections) {
+            const { ni, nj, style } = conn;
+            const p1 = window.worldToScreen(ni.x, ni.y);
+            const p2 = window.worldToScreen(nj.x, nj.y);
+            ctx.strokeStyle = style.color;
+            ctx.lineWidth = style.width;
+            ctx.setLineDash(style.dash ? [4, 4] : []);
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        // Узлы
+        for (let i = 0; i < nodes.length; i++) {
+            const ni = nodes[i];
+            if (!ni.valid) continue;
+            let r = 2.5;
+            if (ni.type.includes("base")) r = 5;
+            else if (ni.type.includes("barracks") || ni.type.includes("warehouse") || ni.type.includes("turret")) r = 3.5;
+            const pos = window.worldToScreen(ni.x, ni.y);
+            ctx.fillStyle = ni.owner === "ai" ?"#00ff99" :"#ff4444";
+            ctx.shadowColor = (ni.type.includes("base") || ni.type.includes("elite")) ? ctx.fillStyle :"transparent";
+            ctx.shadowBlur = (ni.type.includes("base") || ni.type.includes("elite")) ? 8 : 0;
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+    // === 3. РИСУЕМ ПОЛНУЮ ПАНЕЛЬ ЛЕГЕНДЫ ===
+    ctx.save();
+    const legendW = 200;
+    const legendH = 215; // Увеличили высоту для второго флажка
+    
+    ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+    ctx.fillRect(10, 10, legendW, legendH);
+    ctx.strokeStyle = "#00ff99";
+    ctx.lineWidth = 1.0;
+    ctx.strokeRect(10, 10, legendW, legendH);
+    
+    ctx.font = "bold 12px monospace";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText("🧠 GNN ТАКТИКА:", 20, 30);  
+	
+    const legendItems = [
+        { color: "rgba(255, 0, 0, 0.5)", text:"⚠️ УГРОЗА", dash: false },
+        { color: "rgba(0, 200, 255, 0.5)", text:"🏭 Производство", dash: false },
+        { color: "rgba(255, 215, 0, 0.5)", text:"💰 Логистика", dash: false },
+        { color: "rgba(255, 100, 50, 0.5)", text:"🛡️ Оборона", dash: false },
+        { color: "rgba(0, 255, 100, 0.5)", text:"🔧 Ремонт", dash: true },
+        { color: "rgba(180, 0, 255, 0.5)", text:"📡 Стратегия", dash: true },
+        { color: "rgba(150, 150, 150, 0.5)", text:"📍 География", dash: false }
+    ];
+	
+    legendItems.forEach((item, idx) => {
+        const y = 50 + idx * 18;
+        ctx.strokeStyle = item.color;
+        ctx.lineWidth = 1.0;
+        ctx.setLineDash(item.dash ? [3, 3] : []);
+        ctx.beginPath();
+        ctx.moveTo(20, y);
+        ctx.lineTo(36, y);
+        ctx.stroke();
+        
+        ctx.fillStyle = "#cccccc";
+        ctx.font = "11px monospace";
+        ctx.fillText(item.text, 44, y + 4);
+    });
+    ctx.setLineDash([]);
+    // --- ФЛАЖОК 1: Показывать граф ---
+    const graphBtnX = 20, graphBtnY = 176, btnSize = 14;
+    ctx.strokeStyle = window.showGnnGraph ? "#00ff99" :"#666666";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(graphBtnX, graphBtnY, btnSize, btnSize);
+    if (window.showGnnGraph) {
+        ctx.fillStyle = "#00ff99";
+        ctx.fillRect(graphBtnX + 2, graphBtnY + 2, btnSize - 4, btnSize - 4);
+    }
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 11px monospace";
+    ctx.fillText("Показывать граф", graphBtnX + btnSize + 8, graphBtnY + 11);
+    // --- ФЛАЖОК 2: Отображать панель ---
+    const panelBtnX = 20, panelBtnY = 196;
+    ctx.strokeStyle = "#ff6b6b"; // Красноватый оттенок для действия"скрыть"
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(panelBtnX, panelBtnY, btnSize, btnSize);
+    // Рисуем галочку, так как панель сейчас открыта
+    ctx.fillStyle = "#ff6b6b";
+    ctx.fillRect(panelBtnX + 2, panelBtnY + 2, btnSize - 4, btnSize - 4);
+    
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 11px monospace";
+    ctx.fillText("Скрыть панель", panelBtnX + btnSize + 8, panelBtnY + 11);
+
+    ctx.restore();
+    // === 4. ОБРАБОТЧИК КЛИКОВ (добавляется только один раз) ===
+    if (!window._gnnLegendClickListenerAdded) {
+        canvas.addEventListener('click', (e) => {
+            const x = e.offsetX;
+            const y = e.offsetY;
+            
+            if (!window.showGnnLegend) {
+                // Клик по маленькой иконке (10, 10, 26, 26)
+                if (x >= 10 && x <= 36 && y >= 10 && y <= 36) {
+                    window.showGnnLegend = true;
+                }
+            } else {
+                // Клик по "Скрыть панель" (зона 10..210, 190..215)
+                if (x >= 10 && x <= 210 && y >= 190 && y <= 215) {
+                    window.showGnnLegend = false;
+                }
+                // Клик по "Показывать граф" (зона 10..210, 170..190)
+                else if (x >= 10 && x <= 210 && y >= 170 && y <= 190) {
+                    window.showGnnGraph = !window.showGnnGraph;
+                }
+            }
+        });
+        window._gnnLegendClickListenerAdded = true;
+    }
+};
+
 function createSaleIndicator() {
   let indicator = document.getElementById("saleIndicator");
   if (!indicator) {

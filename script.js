@@ -36,10 +36,6 @@ const margin = 200, minBaseDistancePercent = 60;
 // ОРИГИНАЛЬНЫЕ ФУНКЦИИ МЕНЮ СТРОИТЕЛЬСТВА (С КАРТИНКАМИ)
 // ============================================================
 
-function hasBuilding(type, owner) {
-  return gameState.buildings.some(b => b.owner === owner && b.type === type && b.active);
-}
-
 function canAfford(cost, owner) {
   const res = owner === "ai" ? gameState.aiResources : gameState.playerResources;
   return res.gold >= (cost.gold || 0) &&
@@ -916,38 +912,7 @@ function hireEliteForPlayer(barracks3) {
   barracks3.productionQueue.push(order);
 }
 
-function recallRepairmenFromWorkshop(workshop) {
-  const recalledRepairmen = gameState.units.filter(u =>
-    u.owner === playerId &&
-    u.type === "repairman" &&
-    u.hidden && u.inWorkshop === workshop
-  );
 
-  if (recalledRepairmen.length > 0) {
-    recalledRepairmen.forEach(u => {
-      if (u.currentMovementAnimation) {
-        cancelAnimationFrame(u.currentMovementAnimation);
-        u.currentMovementAnimation = null;
-      }
-      if (u.waitingAnimation) {
-        cancelAnimationFrame(u.waitingAnimation);
-        u.waitingAnimation = null;
-      }
-
-      const exitOffset = 20;
-      const angle = Math.random() * Math.PI * 2;
-      const exitX = workshop.x + exitOffset * Math.cos(angle);
-      const exitY = workshop.y + exitOffset * Math.sin(angle);
-
-      animateMoveAndScale(u, exitX, exitY, 1, 500, () => {
-        u.hidden = false;
-        u.inWorkshop = null;
-      });
-    });
-  } else {
-    hireRepairmanForPlayer(workshop);
-  }
-}
 
 // ============================================================
 // ФУНКЦИЯ ПОКАЗА ПРЕДУПРЕЖДЕНИЙ
