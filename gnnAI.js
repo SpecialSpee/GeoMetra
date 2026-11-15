@@ -34,6 +34,7 @@
 
   
   const GnnAI = {
+    lastReconDiscoveryCheck: 0,
     cfg: CFG,
     actions: G_ACTIONS,
     model: null,
@@ -57,6 +58,11 @@
       techProgressionTime: 0
     },
     missionCache: [],
+
+    // 🔥 СТРАТЕГИЧЕСКАЯ ПАМЯТЬ: кэш разведанных узлов
+    reconMemory: new Map(), // key: "type_x_y", value: {obj, type, owner, x, y, hp, lastSeen, isStale}
+    MAX_MEMORY_AGE: 30000,  // Забывать узлы старше 30 секунд
+
     lastStagnationCheck: 0,
     lastBuildingBuilt: {},
     lastArmySize: 0,
@@ -1310,6 +1316,59 @@ evaluateExpansion: function (now) {
   }
 },    
  
+// 🔥 НАГРАДА ЗА РАЗВЕДКУ НОВЫХ УЗЛОВ
+evaluateReconDiscovery: function (now) {
+  if (!this.lastReconDiscoveryCheck || now - this.lastReconDiscoveryCheck < 2000) return;
+  this.lastReconDiscoveryCheck = now;
+  
+  let reward = 0;
+  let reasons = [];
+  
+  // Считаем сколько новых вражеских объектов мы обнаружили за последние 2 секунды
+  const recentDiscoveries = [];
+  for (const [key, mem] of this.reconMemory.entries()) {
+    if (mem.owner === "player" && (now - mem.lastSeen) < 2000) {
+      // Проверяем, не было ли это "первое обнаружение" (когда узел только появился в памяти)
+      if (!mem._rewarded) {
+        recentDiscoveries.push(mem);
+        mem._rewarded = true; // Помечаем чтобы не награждать повторно
+      }
+    }
+  }
+  
+  if (recentDiscoveries.length > 0) {
+    const discoveryReward = recentDiscoveries.length * 5.0;
+    reward += discoveryReward;
+    reasons.push(`RECON_DISCOVERY: обнаружено ${recentDiscoveries.length} новых вражеских объектов (+${discoveryReward.toFixed(1)})`);
+    
+    // Бонус за разведку важных целей
+    const importantTargets = recentDiscoveries.filter(m => 
+      ["base","base2","base3","barracks","barracks2","barracks3","warehouse","turret","turret2","turret3"].includes(m.type)
+    );
+    if (importantTargets.length > 0) {
+      const importantReward = importantTargets.length * 10.0;
+      reward += importantReward;
+      reasons.push(`IMPORTANT_RECON: ${importantTargets.length} важных целей (+${importantReward.toFixed(1)})`);
+    }
+  }
+  
+  // Штраф за долгое отсутствие разведки (если память пустая или очень старая)
+  const enemyNodesInMemory = Array.from(this.reconMemory.values()).filter(m => m.owner === "player");
+  if (enemyNodesInMemory.length === 0 && performance.now() / 60000 > 1.0) {
+    reward -= 3.0;
+    reasons.push("BLIND: нет информации о враге!");
+  }
+  
+  if (reward !== 0) {
+    const state = this.buildGraphState();
+    if (state) {
+      this.replay.push({ X: state.X, A_distance: state.A_distance, A_threat: state.A_threat, actionIndex: AIDX.idle, reward });
+      if (reward > 0) console.log(`[GnnAI] 🔭 Разведка: +${reward.toFixed(1)} (${reasons.join(', ')})`);
+      else console.warn(`[GnnAI] ⚠️ Разведка: ${reward.toFixed(1)} (${reasons.join(', ')})`);
+    }
+  }
+},
+
   evaluatePhaseRewards: function (now) {
     if (!this.lastPhaseCheck || now - this.lastPhaseCheck < 5000) return;
     this.lastPhaseCheck = now;
@@ -1653,6 +1712,7 @@ init: async function () {
           this.evaluateOpponentGap(now);
           this.evaluateRecon(now);
           this.evaluateExpansion(now);
+          this.evaluateReconDiscovery(now);
           this.evaluateEconomyEfficiency(now);
           this.evaluateMissions();
           this.checkEconomicParalysis(now);
@@ -1802,117 +1862,194 @@ init: async function () {
 
 buildGraphState: function () {
   if (!gameState || !aiBase || !aiBase.maxHealth || aiBase.maxHealth <= 0 || aiBase.health < 0) return null;
-  const raw = [{ obj: aiBase, type: "base", owner: "ai", x: aiBase.x, y: aiBase.y, hp: Math.min(1, aiBase.health / aiBase.maxHealth), valid: 1 }];
+  
+  const now = performance.now();
+  const raw = [{ obj: aiBase, type: "base", owner: "ai", x: aiBase.x, y: aiBase.y, hp: Math.min(1, aiBase.health / aiBase.maxHealth), valid: 1, freshness: 1.0 }];
   const candidates = [];
-
+  const newlySeen = new Set(); // Для награды за разведку
+  
   // ==========================================
-  // 🔥 ШАГ 1: Собираем "Источники Зрения" (Vision Sources)
+  // 🔥 ШАГ 1: Собираем "Источники Зрения"
   // ==========================================
   const visionSources = [];
-  
-  // Здания ИИ дают обзор
   for (const b of gameState.buildings) {
     if (b.owner === "ai" && b.health > 0) {
-      let r = 300; // Базовый радиус обзора
-      if (b.type.startsWith("turret")) r = b.visionRadius || b.range || 400; // Турели видят дальше всех
+      let r = 300;
+      if (b.type.startsWith("turret")) r = b.visionRadius || b.range || 400;
       else if (b.type.includes("base")) r = 400;
       else if (b.type === "beacon") r = 350;
       else if (b.type === "barracks") r = 320;
       visionSources.push({x: b.x, y: b.y, r: r});
     }
   }
-  
-  // Юниты ИИ дают обзор
   for (const u of gameState.units) {
     if (u.owner === "ai" && u.health > 0) {
       let r = u.type === "worker" ? 200 : (u.visionRadius || u.engagementRadius || 350);
       visionSources.push({x: u.x, y: u.y, r: r});
     }
   }
-
-  // Функция проверки: попадает ли точка в хотя бы один круг обзора
+  
   const isVisible = (x, y) => {
     for (let i = 0; i < visionSources.length; i++) {
       const v = visionSources[i];
-      // Быстрая проверка по квадрату (дешевле для CPU), потом точная по кругу
       if (Math.abs(x - v.x) <= v.r && Math.abs(y - v.y) <= v.r) {
         if (Math.hypot(x - v.x, y - v.y) <= v.r) return true;
       }
     }
     return false;
   };
-
+  
   // ==========================================
-  // 🔥 ШАГ 2: Фильтруем кандидатов через "Туман войны"
+  // 🔥 ШАГ 2: Обновляем память и собираем кандидатов
   // ==========================================
   try {
-    // 1. Юниты
+    // 2A. Юниты
     for (const u of gameState.units) {
       if (!u || u.health <= 0 || !isFinite(u.x) || !isFinite(u.y)) continue;
       
-      // Своих боевых юнитов видим ВСЕГДА (даже если они зашли за горизонт)
-      if (u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type)) {
-        candidates.push(u);
-      } 
-      // Вражеских юнитов видим ТОЛЬКО если они в зоне обзора
-      else if (u.owner !== "ai" && ["fighter", "assault", "elite"].includes(u.type)) {
-        if (isVisible(u.x, u.y)) candidates.push(u);
+      const memKey = `unit_${u.type}_${u.id}`;
+      const isVisibleNow = isVisible(u.x, u.y);
+      
+      // Своих боевых юнитов видим ВСЕГДА
+      if (u.owner === "ai" && ["fighter","assault","elite"].includes(u.type)) {
+        candidates.push({obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), valid: 1, freshness: 1.0});
+        this.reconMemory.set(memKey, {obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), lastSeen: now, isStale: false});
+        continue;
+      }
+      
+      // Вражеские юниты — обновляем память если видим, иначе берём из памяти
+      if (u.owner !== "ai" && ["fighter","assault","elite"].includes(u.type)) {
+        if (isVisibleNow) {
+          newlySeen.add(memKey);
+          this.reconMemory.set(memKey, {obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), lastSeen: now, isStale: false});
+          candidates.push({obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), valid: 1, freshness: 1.0});
+        }
       }
     }
     
-    // 2. Здания
+    // 2B. Здания
     for (const b of gameState.buildings) {
       if (!b || b.health <= 0 || b === aiBase || !isFinite(b.x) || !isFinite(b.y)) continue;
       
+      const memKey = `building_${b.type}_${b.id}`;
+      const isVisibleNow = isVisible(b.x, b.y);
+      
       if (b.owner === "ai") {
-        candidates.push(b); // Свои здания всегда видны
+        candidates.push({obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), valid: 1, freshness: 1.0});
+        this.reconMemory.set(memKey, {obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), lastSeen: now, isStale: false});
       } else {
-        if (isVisible(b.x, b.y)) candidates.push(b); // Вражеские только в зоне видимости
+        if (isVisibleNow) {
+          newlySeen.add(memKey);
+          this.reconMemory.set(memKey, {obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), lastSeen: now, isStale: false});
+          candidates.push({obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), valid: 1, freshness: 1.0});
+        }
       }
     }
     
-    // 3. Ресурсы
+    // 2C. Ресурсы
     for (const r of gameState.resources) {
       if (!r || r.amount <= 0) continue;
-      // Ресурсы видим только если рядом есть наш юнит или здание (логистическая зона)
-      if (isVisible(r.x, r.y)) candidates.push(r);
+      const memKey = `resource_${r.type}_${Math.round(r.x)}_${Math.round(r.y)}`;
+      const isVisibleNow = isVisible(r.x, r.y);
+      if (isVisibleNow) {
+        newlySeen.add(memKey);
+        this.reconMemory.set(memKey, {obj: r, type: r.type, owner: "neutral", x: r.x, y: r.y, hp: r.amount / (r.max || 1), lastSeen: now, isStale: false});
+        candidates.push({obj: r, type: r.type, owner: "neutral", x: r.x, y: r.y, hp: r.amount / (r.max || 1), valid: 1, freshness: 1.0});
+      }
     }
   } catch (e) { return null; }
-
+  
   // ==========================================
-  // ШАГ 3: Скоринг и заполнение графа (без изменений)
+  // 🔥 ШАГ 3: Добавляем "stale" узлы из памяти (то что видели раньше, но не видим сейчас)
+  // ==========================================
+  const staleCandidates = [];
+  for (const [key, mem] of this.reconMemory.entries()) {
+    // Пропускаем если уже добавили как свежий
+    if (newlySeen.has(key)) continue;
+    
+    const age = now - mem.lastSeen;
+    
+    // Удаляем слишком старые узлы из памяти
+    if (age > this.MAX_MEMORY_AGE) {
+      this.reconMemory.delete(key);
+      continue;
+    }
+    
+    // Проверяем, не уничтожен ли объект (для зданий/юнитов с ID)
+    if (mem.obj && mem.obj.health !== undefined && mem.obj.health <= 0) {
+      this.reconMemory.delete(key);
+      continue;
+    }
+    
+    // Вычисляем "свежесть" (1.0 = только что видели, 0.0 = почти забыли)
+    const freshness = Math.max(0.1, 1.0 - (age / this.MAX_MEMORY_AGE));
+    
+    staleCandidates.push({
+      obj: mem.obj,
+      type: mem.type,
+      owner: mem.owner,
+      x: mem.x,
+      y: mem.y,
+      hp: mem.hp,
+      valid: 1,
+      freshness: freshness,
+      isStale: true,
+      lastSeen: mem.lastSeen
+    });
+  }
+  
+  // Сортируем stale-кандидатов по важности (вражеские здания/юниты первыми)
+  staleCandidates.sort((a, b) => {
+    const aPriority = (a.owner === "player" ? 1000 : 0) + (["fighter","assault","elite","base","barracks","warehouse"].includes(a.type) ? 500 : 0);
+    const bPriority = (b.owner === "player" ? 1000 : 0) + (["fighter","assault","elite","base","barracks","warehouse"].includes(b.type) ? 500 : 0);
+    return bPriority - aPriority;
+  });
+  
+  // Добавляем top stale-узлы в candidates (не более 15, чтобы не забить граф)
+  candidates.push(...staleCandidates.slice(0, 15));
+  
+  // ==========================================
+  // 🔥 ШАГ 4: Скоринг и заполнение графа
   // ==========================================
   const scoreObj = (o) => {
-    const d = Math.hypot(o.x - aiBase.x, o.y - aiBase.y);
-    let s = 10000; 
+    let s = 10000;
     if (o.owner === "player") s += 5000;
     if (o.owner === "ai") s += 2500;
     if (["fighter","assault","elite"].includes(o.type)) {
       s += 3000;
-      if (o.owner === "ai" && o.commandQueue && o.commandQueue.length > 0) s += 2000;
+      if (o.owner === "ai" && o.obj && o.obj.commandQueue && o.obj.commandQueue.length > 0) s += 2000;
     }
     if (o.type?.startsWith("turret")) s += 1600;
-    if (["base","base2","base3","barracks","barracks2","barracks3", "warehouse","repairWorkshop","beacon"].includes(o.type)) s += 1200;
-    if (["gold","silicon","plasma"].includes(o.type)) s += 800 + (o.amount || 0) * 2;
+    if (["base","base2","base3","barracks","barracks2","barracks3","warehouse","repairWorkshop","beacon"].includes(o.type)) s += 1200;
+    if (["gold","silicon","plasma"].includes(o.type)) s += 800 + (o.hp || 0) * 800;
+    // 🔥 Бонус за свежесть информации
+    if (o.freshness !== undefined) s += o.freshness * 500;
     return s;
   };
-
+  
   candidates.sort((a, b) => scoreObj(b) - scoreObj(a));
+  
   for (const o of candidates.slice(0, CFG.MAX_NODES - 1)) {
-    const maxHp = o.maxHealth || o.max || 1;
-    const hpVal = (maxHp > 0) ? Math.max(0, Math.min(1, (o.health ?? o.amount ?? 1) / maxHp)) : 0;
-    raw.push({ obj: o, type: o.type || "unknown", owner: o.owner || "none", x: o.x, y: o.y, hp: hpVal, valid: 1 });
+    raw.push({
+      obj: o.obj,
+      type: o.type || "unknown",
+      owner: o.owner || "none",
+      x: o.x,
+      y: o.y,
+      hp: o.hp || 0,
+      valid: 1,
+      freshness: o.freshness !== undefined ? o.freshness : 1.0,
+      isStale: o.isStale || false
+    });
   }
-
+  
   while (raw.length < CFG.MAX_NODES) {
-    raw.push({ obj: null, type: "pad", owner: "none", x: 0, y: 0, hp: 0, valid: 0 });
+    raw.push({ obj: null, type: "pad", owner: "none", x: 0, y: 0, hp: 0, valid: 0, freshness: 0, isStale: false });
   }
-
-  // ... (далее идет расчет матриц A_distance и A_threat, оставь его как есть) ...
-
+  
   const X = raw.map(n => this.nodeFeatures(n));
-  const A_distance = []; 
-  const A_threat = [];   
+  const A_distance = [];
+  const A_threat = [];
   
   for (let i = 0; i < CFG.MAX_NODES; i++) {
     const row_dist = [];
@@ -1921,162 +2058,38 @@ buildGraphState: function () {
     
     for (let j = 0; j < CFG.MAX_NODES; j++) {
       const nj = raw[j];
-      
-      if (!ni.valid || !nj.valid) { 
-        row_dist.push(0); 
-        row_threat.push(0); 
-        continue; 
-      }
-      if (i === j) { 
-        row_dist.push(1); 
-        row_threat.push(1); 
-        continue; 
-      }
+      if (!ni.valid || !nj.valid) { row_dist.push(0); row_threat.push(0); continue; }
+      if (i === j) { row_dist.push(1); row_threat.push(1); continue; }
       
       const d = Math.hypot(ni.x - nj.x, ni.y - nj.y);
       
-      // === ГЕОГРАФИЧЕСКАЯ БЛИЗОСТЬ (базовая) ===
       let geoConnection = 0;
       if (d <= CFG.INTERACTION_RADIUS) {
         geoConnection = Math.exp(-d / CFG.INTERACTION_RADIUS);
-      }     
-// === СЕМАНТИЧЕСКИЕ СВЯЗИ (логические) — ТЕПЕРЬ ДЛЯ ВСЕХ ИГРОКОВ! ===
-let semanticConnection = 0;
-// 1. ЛОГИСТИЧЕСКИЕ СВЯЗИ (склады ↔ ресурсы)
-if (ni.type === "warehouse" && ["gold","silicon","plasma"].includes(nj.type)) {
-  const maxResDist = 400;
-  if (d < maxResDist) {
-    semanticConnection = Math.max(semanticConnection, 0.9 * (1 - d / maxResDist));
-  }
-}
-if (nj.type === "warehouse" && ["gold","silicon","plasma"].includes(ni.type)) {
-  const maxResDist = 400;
-  if (d < maxResDist) {
-    semanticConnection = Math.max(semanticConnection, 0.9 * (1 - d / maxResDist));
-  }
-}
-// 2. РАБОЧИЕ ↔ СКЛАДЫ
-if (ni.type === "warehouse" && nj.type ==="worker") {
-  semanticConnection = Math.max(semanticConnection, 0.85);
-}
-if (nj.type === "warehouse" && ni.type ==="worker") {
-  semanticConnection = Math.max(semanticConnection, 0.85);
-}
-// 3. РЕМОНТНЫЕ СВЯЗИ (мастерские ↔ поврежденные объекты < 90% HP) — УБРАНО owner === "ai"
-if (ni.type === "repairWorkshop" && nj.obj && nj.hp < 0.9) {
-  const maxRepairDist = 350;
-  if (d < maxRepairDist) {
-    const damageFactor = 1 - nj.hp;
-    semanticConnection = Math.max(semanticConnection, 0.8 * damageFactor * (1 - d / maxRepairDist));
-  }
-}
-if (nj.type === "repairWorkshop" && ni.obj && ni.hp < 0.9) {
-  const maxRepairDist = 350;
-  if (d < maxRepairDist) {
-    const damageFactor = 1 - ni.hp;
-    semanticConnection = Math.max(semanticConnection, 0.8 * damageFactor * (1 - d / maxRepairDist));
-  }
-}
-// 4. РЕМОНТНИКИ ↔ МАСТЕРСКИЕ
-if (ni.type === "repairWorkshop" && nj.type ==="repairman") {
-  semanticConnection = Math.max(semanticConnection, 0.9);
-}
-if (nj.type === "repairWorkshop" && ni.type ==="repairman") {
-  semanticConnection = Math.max(semanticConnection, 0.9);
-}
-// 5. ПРОИЗВОДСТВЕННЫЕ СВЯЗИ (казармы → юниты) — УБРАНО owner === "ai"
-const productionLinks = {
-  "barracks": ["fighter"],
-  "barracks2": ["assault","fighter"],
-  "barracks3": ["elite","assault","fighter"],
-  "warehouse": ["worker"],
-  "repairWorkshop": ["repairman"]
-};
-
-if (productionLinks[ni.type] && productionLinks[ni.type].includes(nj.type)) {
-  semanticConnection = Math.max(semanticConnection, 0.95);
-}
-if (productionLinks[nj.type] && productionLinks[nj.type].includes(ni.type)) {
-  semanticConnection = Math.max(semanticConnection, 0.95);
-}
-// 6. ОБОРОНИТЕЛЬНЫЕ СВЯЗИ (турели ↔ защищаемые объекты) — УБРАНО owner === "ai"
-const turretRanges = {
-  "turret": 250,
-  "turret2": 500,
-  "turret3": 450
-};
-
-if (turretRanges[ni.type]) {
-  const range = turretRanges[ni.type];
-  if (d < range && !nj.type.startsWith("turret")) {
-    let importance = 0.5;
-    if (nj.type.includes("base")) importance = 1.0;
-    else if (nj.type.includes("barracks")) importance = 0.8;
-    else if (nj.type === "warehouse") importance = 0.7;
-    
-    semanticConnection = Math.max(semanticConnection, importance * (1 - d / range));
-  }
-}
-if (turretRanges[nj.type]) {
-  const range = turretRanges[nj.type];
-  if (d < range && !ni.type.startsWith("turret")) {
-    let importance = 0.5;
-    if (ni.type.includes("base")) importance = 1.0;
-    else if (ni.type.includes("barracks")) importance = 0.8;
-    else if (ni.type === "warehouse") importance = 0.7;
-    
-    semanticConnection = Math.max(semanticConnection, importance * (1 - d / range));
-  }
-}
-// 7. СТРАТЕГИЧЕСКИЕ СВЯЗИ (маяки ↔ расширение) — УБРАНО owner === "ai"
-if ((ni.type === "beacon" || nj.type ==="beacon")) {
-  const beaconRange = 300;
-  if (d < beaconRange && (ni.type.includes("base") || nj.type.includes("base") || ni.type ==="beacon" || nj.type ==="beacon")) {
-    semanticConnection = Math.max(semanticConnection, 0.7 * (1 - d / beaconRange));
-  }
-}
-// 8. ИЕРАРХИЧЕСКИЕ СВЯЗИ (базы ↔ все здания) — УБРАНО owner === "ai"
-if ((ni.type.includes("base") || nj.type.includes("base"))) {
-  if ((ni.type.includes("base") && !nj.type.includes("base")) || 
-      (nj.type.includes("base") && !ni.type.includes("base"))) {
-    const baseRange = 500;
-    if (d < baseRange) {
-      semanticConnection = Math.max(semanticConnection, 0.6 * (1 - d / baseRange));
-    }
-  }
-}
-// 9. БОЕВЫЕ ЮНИТЫ ↔ ИХ ЦЕЛИ (атака)
-if ((ni.type === "fighter" || ni.type ==="assault" || ni.type ==="elite") && nj.owner !== ni.owner) {
-  if (nj.obj && nj.obj.commandQueue && nj.obj.commandQueue.length > 0) {
-    const targetCmd = nj.obj.commandQueue.find(cmd => cmd.type === "attack");
-    if (targetCmd && targetCmd.target === ni.obj) {
-      semanticConnection = Math.max(semanticConnection, 0.9);
-    }
-  }
-}
+      }
       
-      // === ОБЪЕДИНЕНИЕ СВЯЗЕЙ (география + семантика) ===
-      // Берем максимум из географической и семантической связи
+      // Семантические связи (оставь как есть — они уже умные)
+      let semanticConnection = 0;
+      // ... (весь блок семантических связей из твоего кода)
+      
       const finalConnection = Math.max(geoConnection, semanticConnection);
+      row_dist.push(finalConnection);
       
-      row_dist.push(finalConnection);    
-      // === УГРОЗЫ (для A_threat) ===
       let threatValue = 0;
-      if (ni.owner === "player" && nj.owner ==="ai") {
+      if (ni.owner === "player" && nj.owner === "ai") {
         const enemyDps = this.getUnitDps(ni.type) || 0;
         if (d < 300) threatValue = (enemyDps / 100) * Math.exp(-d / 200);
-      } else if (ni.owner === "ai" && nj.owner ==="ai") {
-        if (d < 200) threatValue = 0.5 * Math.exp(-d / 150); 
-      } else if (ni.owner === "ai" && nj.owner ==="player") {
+      } else if (ni.owner === "ai" && nj.owner === "ai") {
+        if (d < 200) threatValue = 0.5 * Math.exp(-d / 150);
+      } else if (ni.owner === "ai" && nj.owner === "player") {
         const myDps = this.getUnitDps(ni.type) || 0;
         if (d < 250) threatValue = (myDps / 100) * Math.exp(-d / 200);
       }
-      
       row_threat.push(Math.min(1, threatValue));
-    }   
+    }
+    
     const sum_dist = row_dist.reduce((a, b) => a + b, 0) + 1e-9;
     const sum_threat = row_threat.reduce((a, b) => a + b, 0) + 1e-9;
-    
     A_distance.push(row_dist.map(v => v / sum_dist));
     A_threat.push(row_threat.map(v => v / sum_threat));
   }
@@ -2539,20 +2552,22 @@ trainBatch: function () {
 		  else if (n.type === "elite") targetPriority = 0.45;
 		}
 
-		let missionProgress = 0;     // 0-1: сколько урона нанесено цели
-		let missionStuck = 0;        // 1 если долго без прогресса
-		let missionHitByTurret = 0;  // 1 если получал урон от турели
-		let missionEfficiency = 0;   // damageDealt / damageTaken
+    let missionProgress = 0;
+    let missionStuck = 0;
+    let missionHitByTurret = 0;
+    let missionEfficiency = 0;
+    if (isCombat && n.obj && n.obj.missionLog) {
+      const ml = n.obj.missionLog;
+      const targetStartHP = ml.targetStartHP || 1;
+      missionProgress = Math.min(1, ml.damageDealt / targetStartHP);
+      const elapsed = (performance.now() - ml.startTime) / 1000;
+      missionStuck = (elapsed > 15 && ml.damageDealt < 10) ? 1 : 0;
+      missionHitByTurret = ml.hitByTurret ? 1 : 0;
+      missionEfficiency = Math.min(5, ml.damageDealt / Math.max(1, ml.damageTaken));
+    }
 
-		if (isCombat && n.obj && n.obj.missionLog) {
-		  const ml = n.obj.missionLog;
-		  const targetStartHP = ml.targetStartHP || 1;
-		  missionProgress = Math.min(1, ml.damageDealt / targetStartHP);
-		  const elapsed = (performance.now() - ml.startTime) / 1000;
-		  missionStuck = (elapsed > 15 && ml.damageDealt < 10) ? 1 : 0;
-		  missionHitByTurret = ml.hitByTurret ? 1 : 0;
-		  missionEfficiency = Math.min(5, ml.damageDealt / Math.max(1, ml.damageTaken));
-		}
+    const freshness = n.freshness !== undefined ? n.freshness : 1.0;
+    const isStale = n.isStale ? 1 : 0;
 
       return [
         n.valid ? 1 : 0, n.owner === "ai" ? 1 : 0, n.owner ==="player" ? 1 : 0, n.hp || 0,
@@ -2565,11 +2580,11 @@ trainBatch: function () {
         isEconomic, isExpansion, techLevel / 3, isUnderAttack, isIdle, logisticsScore,
         (n.obj && n.obj.commandQueue && n.obj.commandQueue.length > 0) ? 1 : 0, 
         (n.obj && n.obj.attackCooldown !== undefined && n.obj.attackCooldownMax && n.obj.attackCooldownMax > 0) 
-        ? 1.0 - (n.obj.attackCooldown / n.obj.attackCooldownMax) : 1.0,
+        ? 1.0 - (n.obj.attackCooldown / n.obj.attackCooldownMax) : 1.0, 
         workersOnBuilding, nearestEnemyDist, enemyClusterNear, ourClusterStrength, hpRatio,
-		cooldownProgress, hasTarget, targetIsBuilding, targetHP,
-		surrounded, targetPriority, surrounded, targetPriority,
-		missionProgress, missionStuck, missionHitByTurret, missionEfficiency
+		    cooldownProgress, hasTarget, targetIsBuilding, targetHP,
+		    surrounded, targetPriority, surrounded, targetPriority,
+		    missionProgress, missionStuck, missionHitByTurret, missionEfficiency, freshness, isStale
       ].map(v => isFinite(v) ? v : 0);
     },
 
