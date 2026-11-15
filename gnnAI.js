@@ -2981,7 +2981,12 @@ findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 31
     }
     return null;
 },
+
     metrics: function () {
+      // Кэшируем результат на 100ms
+      if (this._metricsCache && performance.now() - this._metricsCacheTime < 100) {
+        return this._metricsCache;
+      }
       const baseHp = aiBase && aiBase.maxHealth ? Math.max(0, aiBase.health / aiBase.maxHealth) : 0;
       const enemyNear = gameState.units.filter(u => u.owner === "player" && u.health > 0 && aiBase && Math.hypot(u.x - aiBase.x, u.y - aiBase.y) < CFG.BASE_THREAT_RADIUS).length;
       const aiArmy = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0).length;
@@ -3002,6 +3007,15 @@ findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 31
         resTotal, ecoEfficiency,
         res: { gold: Math.round(ar.gold || 0), silicon: Math.round(ar.silicon || 0), plasma: Math.round(ar.plasma || 0) } 
       };
+      const result = {
+        baseHp, enemyNear, aiArmy, enemyArmy, techLevel, aiBuildings, aiTurrets, aiWarehouses, playerAlive,
+        resTotal, ecoEfficiency,
+        res: { gold: Math.round(ar.gold || 0), silicon: Math.round(ar.silicon || 0), plasma: Math.round(ar.plasma || 0) }
+      };
+      
+      this._metricsCache = result;
+      this._metricsCacheTime = performance.now();
+      return result;
     },
 
     startEpisode: function (mode) {
@@ -3699,13 +3713,22 @@ loadWeights: async function () {
     document.getElementById('ov-army').innerText = m.aiArmy;
     document.getElementById('ov-workers').innerText = workers;
   };
-  const _origRAF = window.requestAnimationFrame;
-  window.requestAnimationFrame = function(callback) {
-    return _origRAF(function(ts) {
-      if (window.gameStarted && !gameState.gameEnded) window.updateTrainingOverlay();
-      callback(ts);
-    });
-  };
+    const _origRAF = window.requestAnimationFrame;
+    let lastOverlayUpdate = 0;
+    const OVERLAY_UPDATE_INTERVAL = 200; // Обновлять оверлей раз в 200ms вместо каждого кадра
+
+    window.requestAnimationFrame = function(callback) {
+      return _origRAF(function(ts) {
+        if (window.gameStarted && !gameState.gameEnded) {
+          // Обновляем оверлей только если прошло 200ms
+          if (ts - lastOverlayUpdate > OVERLAY_UPDATE_INTERVAL) {
+            window.updateTrainingOverlay();
+            lastOverlayUpdate = ts;
+          }
+        }
+        callback(ts);
+      });
+    };
 
   window.addEventListener("load", () => {
     if (typeof addMenuButton === "function") addMenuButton();
