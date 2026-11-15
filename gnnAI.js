@@ -705,11 +705,11 @@ evaluateMissions: function () {
       const totalDefendersAtStart = mission.intent.unitIds ? mission.intent.unitIds.length : 0;
 
       if (enemiesAtStart > 0 && enemiesNearAnchorNow === 0 && aliveDefenders > 0) {
-        rewardDelta = 6.0; reason = "successful_defense_OUTCOME"; isResolved = true;
+        rewardDelta = 60.0; reason = "successful_defense_OUTCOME"; isResolved = true;
       } else if (enemiesAtStart === 0 && enemiesNearAnchorNow === 0) {
-        rewardDelta = -3.0; reason = "defending_nothing_penalty"; isResolved = true;
+        rewardDelta = -30.0; reason = "defending_nothing_penalty"; isResolved = true;
       } else if (totalDefendersAtStart > 0 && aliveDefenders === 0) {
-        rewardDelta = -6.0; reason = "all_defenders_lost_OUTCOME"; isResolved = true;
+        rewardDelta = -60.0; reason = "all_defenders_lost_OUTCOME"; isResolved = true;
       } else if (enemiesNearAnchorNow > 0 && aliveDefenders > 0) {
         rewardDelta = 0.5; 
       }
@@ -2878,24 +2878,31 @@ validActionMask: function () {
     if (has("barracks2") && can(ASSAULT_COST)) {
       mask[AIDX.hireAssault] = 1;
     }
+    
   }
-  // ============================================
-  // 🔥 УРОВЕНЬ 3: БАЗА 3 → КАЗАРМА 3 + ТУРЕЛЬ 3
-  // ============================================
-  const hasBase3 = has("base3");
-  if (hasBase3) {
-    // 5. После постройки базы 3 открываются казарма 3 и турель 3
-    if (barracks3 === 0 && can(BARRACKS3_COST)) {
-      mask[AIDX.build_barracks3] = 1;
+// ============================================
+// 🔥 УРОВЕНЬ 3: ТИР 3 (base3, barracks3, turret3, elite)
+// ============================================
+if (this.curriculumTier >= 3) {
+    const hasBarracks2 = has("barracks2");
+    if (hasBarracks2 && base3 === 0 && can(BASE3_COST)) {
+        mask[AIDX.build_base3] = 1;
     }
-    const activeTurrets3 = getCount("turret3");
-    if (activeTurrets3 < (beacons + 1) * 2 && can(TURRET3_COST)) {
-      mask[AIDX.build_turret3] = 1;
+    
+    const hasBase3 = has("base3");
+    if (hasBase3) {
+        if (barracks3 === 0 && can(BARRACKS3_COST)) {
+            mask[AIDX.build_barracks3] = 1;
+        }
+        const activeTurrets3 = getCount("turret3");
+        if (activeTurrets3 < (beacons + 1) * 2 && can(TURRET3_COST)) {
+            mask[AIDX.build_turret3] = 1;
+        }
+        if (has("barracks3") && can(ELITE_COST)) {
+            mask[AIDX.hireElite] = 1;
+        }
     }
-    if (has("barracks3") && can(ELITE_COST)) {
-      mask[AIDX.hireElite] = 1;
-    }
-  }
+}
   // ============================================
   // 🔥 ТАКТИКИ (доступны при наличии армии)
   // ============================================

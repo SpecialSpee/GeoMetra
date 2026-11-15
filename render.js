@@ -179,52 +179,76 @@ window.drawGnnOverlay = function() {
             ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
             ctx.fill();
         }
+
+            // 🔥 ОТРИСОВКА ВИРТУАЛЬНЫХ УЗЛОВ
+            // Рисуются только когда включено "Показывать граф"
+            for (let i = 0; i < nodes.length; i++) {
+                const ni = nodes[i];
+                if (!ni.valid || !ni.isVirtual) continue;
+                
+                const pos = window.worldToScreen(ni.x, ni.y);
+                
+                if (ni.virtualType === "threat") {
+                    // Зона угрозы: красный круг радиуса опасности
+                    const radiusPx = (ni.threatRadius || 300) * camera.scale;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radiusPx, 0, Math.PI * 2);
+                    ctx.fillStyle = "rgba(255, 0, 0, 0.08)";
+                    ctx.fill();
+                    ctx.strokeStyle = "rgba(255, 0, 0, 0.4)";
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([4, 4]);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    // Маркер центра
+                    ctx.fillStyle = "rgba(255, 60, 60, 0.9)";
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, 6, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = "#ffffff";
+                    ctx.font = "bold 9px monospace";
+                    ctx.fillText("⚠", pos.x - 4, pos.y + 3);
+                } 
+                else if (ni.virtualType === "flank") {
+                    // Фланговая точка: голубый ромб
+                    ctx.fillStyle = "rgba(0, 255, 255, 0.8)";
+                    ctx.beginPath();
+                    ctx.moveTo(pos.x, pos.y - 5);
+                    ctx.lineTo(pos.x + 5, pos.y);
+                    ctx.lineTo(pos.x, pos.y + 5);
+                    ctx.lineTo(pos.x - 5, pos.y);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.strokeStyle = "#00ffff";
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                    // Индекс фланга
+                    ctx.fillStyle = "#000000";
+                    ctx.font = "bold 7px monospace";
+                    ctx.fillText(String(ni.flankIndex !== undefined ? ni.flankIndex : "?"), pos.x - 2, pos.y + 2);
+                } 
+                else if (ni.virtualType === "recon") {
+                    // Точка разведки: жёлтый круг с буквой R
+                    ctx.fillStyle = "rgba(255, 255, 0, 0.7)";
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.strokeStyle = "#ffff00";
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                    ctx.fillStyle = "#ffffff";
+                    ctx.font = "bold 8px monospace";
+                    ctx.fillText("R", pos.x + 6, pos.y + 3);
+                }
+            }
+
         ctx.restore();
     }
-
-    // 🔥 ОТРИСОВКА ВИРТУАЛЬНЫХ УЗЛОВ
-for (let i = 0; i < nodes.length; i++) {
-  const ni = nodes[i];
-  if (!ni.valid || !ni.isVirtual) continue;
-  
-  const pos = window.worldToScreen(ni.x, ni.y);
-  let color = "#ffffff";
-  let radius = 4;
-  
-  if (ni.virtualType === "threat") {
-    color = "rgba(255, 0, 0, 0.6)";
-    radius = 8;
-    // Рисуем круг опасной зоны
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, ni.threatRadius * camera.scale, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255, 0, 0, 0.1)";
-    ctx.fill();
-    ctx.strokeStyle = "rgba(255, 0, 0, 0.4)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  } else if (ni.virtualType === "flank") {
-    color = "rgba(0, 255, 255, 0.8)";
-    radius = 5;
-  } else if (ni.virtualType === "recon") {
-    color = "rgba(255, 255, 0, 0.6)";
-    radius = 4;
-  }
-  
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-  ctx.fill();
-  
-  // Подпись
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "10px monospace";
-  ctx.fillText(ni.virtualType[0].toUpperCase(), pos.x + 6, pos.y + 3);
-}
 
     // === 3. РИСУЕМ ПОЛНУЮ ПАНЕЛЬ ЛЕГЕНДЫ ===
     ctx.save();
     const legendW = 200;
-    const legendH = 215; // Увеличили высоту для второго флажка
+    const legendH = 275; // Увеличили высоту для второго флажка
     
     ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
     ctx.fillRect(10, 10, legendW, legendH);
@@ -236,15 +260,18 @@ for (let i = 0; i < nodes.length; i++) {
     ctx.fillStyle = "#ffffff";
     ctx.fillText("🧠 GNN ТАКТИКА:", 20, 30);  
 	
-    const legendItems = [
-        { color: "rgba(255, 0, 0, 0.5)", text:"⚠️ УГРОЗА", dash: false },
-        { color: "rgba(0, 200, 255, 0.5)", text:"🏭 Производство", dash: false },
-        { color: "rgba(255, 215, 0, 0.5)", text:"💰 Логистика", dash: false },
-        { color: "rgba(255, 100, 50, 0.5)", text:"🛡️ Оборона", dash: false },
-        { color: "rgba(0, 255, 100, 0.5)", text:"🔧 Ремонт", dash: true },
-        { color: "rgba(180, 0, 255, 0.5)", text:"📡 Стратегия", dash: true },
-        { color: "rgba(150, 150, 150, 0.5)", text:"📍 География", dash: false }
-    ];
+const legendItems = [
+    { color: "rgba(255, 0, 0, 0.5)", text: "⚠️ УГРОЗА", dash: false },
+    { color: "rgba(0, 200, 255, 0.5)", text: "🏭 Производство", dash: false },
+    { color: "rgba(255, 215, 0, 0.5)", text: "💰 Логистика", dash: false },
+    { color: "rgba(255, 100, 50, 0.3)", text: "🛡️ Оборона", dash: false },
+    { color: "rgba(0, 255, 100, 0.5)", text: "🔧 Ремонт", dash: true },
+    { color: "rgba(180, 0, 255, 0.5)", text: "📡 Стратегия", dash: true },
+    { color: "rgba(150, 150, 150, 0.5)", text: "📍 География", dash: false },
+    { color: "rgba(255, 0, 0, 0.6)", text: "🔴 Зона угрозы", dash: true },
+    { color: "rgba(0, 255, 255, 0.8)", text: "🔷 Фланг", dash: false },
+    { color: "rgba(255, 255, 0, 0.8)", text: "🟡 Разведка", dash: false }
+];
 	
     legendItems.forEach((item, idx) => {
         const y = 50 + idx * 18;
@@ -262,7 +289,7 @@ for (let i = 0; i < nodes.length; i++) {
     });
     ctx.setLineDash([]);
     // --- ФЛАЖОК 1: Показывать граф ---
-    const graphBtnX = 20, graphBtnY = 176, btnSize = 14;
+    const graphBtnX = 20, graphBtnY = 236, btnSize = 14;
     ctx.strokeStyle = window.showGnnGraph ? "#00ff99" :"#666666";
     ctx.lineWidth = 1.5;
     ctx.strokeRect(graphBtnX, graphBtnY, btnSize, btnSize);
@@ -274,7 +301,7 @@ for (let i = 0; i < nodes.length; i++) {
     ctx.font = "bold 11px monospace";
     ctx.fillText("Показывать граф", graphBtnX + btnSize + 8, graphBtnY + 11);
     // --- ФЛАЖОК 2: Отображать панель ---
-    const panelBtnX = 20, panelBtnY = 196;
+    const panelBtnX = 20, panelBtnY = 256;
     ctx.strokeStyle = "#ff6b6b"; // Красноватый оттенок для действия"скрыть"
     ctx.lineWidth = 1.5;
     ctx.strokeRect(panelBtnX, panelBtnY, btnSize, btnSize);
@@ -300,11 +327,11 @@ for (let i = 0; i < nodes.length; i++) {
                 }
             } else {
                 // Клик по "Скрыть панель" (зона 10..210, 190..215)
-                if (x >= 10 && x <= 210 && y >= 190 && y <= 215) {
+                if (x >= 10 && x <= 210 && y >= 250 && y <= 275) {
                     window.showGnnLegend = false;
                 }
                 // Клик по "Показывать граф" (зона 10..210, 170..190)
-                else if (x >= 10 && x <= 210 && y >= 170 && y <= 190) {
+                else if (x >= 10 && x <= 210 && y >= 230 && y <= 250) {
                     window.showGnnGraph = !window.showGnnGraph;
                 }
             }

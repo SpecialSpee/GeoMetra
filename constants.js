@@ -33,7 +33,7 @@ window.gameMode = "single"; // или просто: gameMode = "single";
 
 
   const CFG = {
-    MAX_NODES: 75,
+    MAX_NODES: 160,
     NODE_FEATURES: 55,
     GLOBAL_FEATURES: 36,
     HIDDEN: 128,
