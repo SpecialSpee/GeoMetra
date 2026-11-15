@@ -3715,7 +3715,7 @@ loadWeights: async function () {
   };
     const _origRAF = window.requestAnimationFrame;
     let lastOverlayUpdate = 0;
-    const OVERLAY_UPDATE_INTERVAL = 200; // Обновлять оверлей раз в 200ms вместо каждого кадра
+    const OVERLAY_UPDATE_INTERVAL = 500; // Обновлять оверлей раз в 200ms вместо каждого кадра
 
     window.requestAnimationFrame = function(callback) {
       return _origRAF(function(ts) {
