@@ -64,6 +64,8 @@
     lastResourceTotal: 0,
     lastEcoEffCheck: 0,
     lastTechLevel: 1,
+    lastReconCheck: 0,
+    lastExpansionCheck: 0,
     lastStrategicChangeTime: 0,
     lastStrategicAction: null,
     bcActive: true,
@@ -1060,6 +1062,253 @@ if (aiBuildings.length > 5) {
         }
       }
     },
+
+// ==========================================
+// 🔥 ОЦЕНКА РАЗВЕДКИ ТЕРРИТОРИИ ЮНИТАМИ
+// ==========================================
+evaluateRecon: function (now) {
+  if (!this.lastReconCheck || now - this.lastReconCheck < 3000) return;
+  this.lastReconCheck = now;
+  
+  const m = this.metrics();
+  const gameTimeMin = performance.now() / 60000;
+  let reward = 0;
+  let reasons = [];
+  
+  // 1. Проверяем, как далеко от базы находятся наши боевые юниты
+  const combatUnits = gameState.units.filter(u => 
+    u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0
+  );
+  
+  if (combatUnits.length > 0) {
+    // Считаем максимальное расстояние от базы до наших юнитов
+    let maxDist = 0;
+    let totalDist = 0;
+    combatUnits.forEach(u => {
+      const d = Math.hypot(u.x - aiBase.x, u.y - aiBase.y);
+      totalDist += d;
+      if (d > maxDist) maxDist = d;
+    });
+    const avgDist = totalDist / combatUnits.length;
+    
+    // Награда за дальнюю разведку
+    if (maxDist > 600) {
+      reward += 15.0;
+      reasons.push(`DEEP_RECON: юниты на расстоянии ${maxDist.toFixed(0)}px от базы`);
+    } else if (maxDist > 400) {
+      reward += 8.0;
+      reasons.push(`MEDIUM_RECON: юниты на расстоянии ${maxDist.toFixed(0)}px`);
+    } else if (maxDist > 250) {
+      reward += 3.0;
+      reasons.push(`LIGHT_RECON: юниты на расстоянии ${maxDist.toFixed(0)}px`);
+    }
+    
+    // Штраф за сидение у базы
+    if (gameTimeMin > 2.0 && avgDist < 200 && combatUnits.length >= 3) {
+      const campPenalty = -10.0;
+      reward += campPenalty;
+      reasons.push(`BASE_CAMPING: ${combatUnits.length} юнитов сидят у базы (среднее ${avgDist.toFixed(0)}px)`);
+    }
+  } else if (gameTimeMin > 1.5) {
+    // Нет боевых юнитов - штраф
+    reward -= 5.0;
+    reasons.push("NO_RECON_UNITS: нет боевых юнитов для разведки");
+  }
+  
+  // 2. Проверяем разнообразие направлений разведки
+  if (combatUnits.length >= 2) {
+    const directions = new Set();
+    combatUnits.forEach(u => {
+      const angle = Math.atan2(u.y - aiBase.y, u.x - aiBase.x);
+      const sector = Math.floor((angle + Math.PI) / (Math.PI / 2)); // 4 сектора
+      directions.add(sector);
+    });
+    
+    if (directions.size >= 3) {
+      reward += 10.0;
+      reasons.push(`MULTI_DIRECTION_RECON: разведка в ${directions.size} направлениях`);
+    } else if (directions.size === 2) {
+      reward += 4.0;
+      reasons.push(`DUAL_DIRECTION_RECON: разведка в 2 направлениях`);
+    } else if (directions.size === 1 && combatUnits.length >= 3) {
+      reward -= 5.0;
+      reasons.push(`SINGLE_DIRECTION: все юниты в одном направлении`);
+    }
+  }
+  
+  // 3. Штраф за долгое отсутствие разведки
+  if (gameTimeMin > 3.0 && combatUnits.length === 0) {
+    const idlePenalty = -8.0;
+    reward += idlePenalty;
+    reasons.push(`NO_RECON_FOR_LONG_TIME: ${gameTimeMin.toFixed(1)} мин без разведки`);
+  }
+  
+  if (reward !== 0) {
+    const currentState = this.buildGraphState();
+    if (currentState) {
+      this.replay.push({ 
+        X: currentState.X, 
+        A_distance: currentState.A_distance, 
+        A_threat: currentState.A_threat, 
+        actionIndex: AIDX.idle, 
+        reward 
+      });
+      if (reward > 0) {
+        console.log(`[GnnAI] 🛰️ Разведка: +${reward.toFixed(1)} (${reasons.join(', ')})`);
+      } else {
+        console.warn(`[GnnAI] ⚠️ Разведка: ${reward.toFixed(1)} (${reasons.join(', ')})`);
+      }
+    }
+  }
+},
+
+// ==========================================
+// 🔥 ОЦЕНКА ЭКСПАНСИИ И ФОРПОСТОВ
+// ==========================================
+evaluateExpansion: function (now) {
+  if (!this.lastExpansionCheck || now - this.lastExpansionCheck < 5000) return;
+  this.lastExpansionCheck = now;
+  
+  const m = this.metrics();
+  const gameTimeMin = performance.now() / 60000;
+  let reward = 0;
+  let reasons = [];
+  
+  // 1. Находим все здания ИИ и группируем их по кластерам
+  const aiBuildings = gameState.buildings.filter(b => 
+    b.owner === "ai" && b.health > 0 && b.type !== "base"
+  );
+  
+  if (aiBuildings.length === 0) {
+    if (gameTimeMin > 2.0) {
+      reward -= 10.0;
+      reasons.push("NO_EXPANSION: нет зданий за пределами базы");
+    }
+    if (reward !== 0) {
+      const currentState = this.buildGraphState();
+      if (currentState) {
+        this.replay.push({ 
+          X: currentState.X, 
+          A_distance: currentState.A_distance, 
+          A_threat: currentState.A_threat, 
+          actionIndex: AIDX.idle, 
+          reward 
+        });
+        console.warn(`[GnnAI] 🏗️ Экспансия: ${reward.toFixed(1)} (${reasons.join(', ')})`);
+      }
+    }
+    return;
+  }
+  
+  // 2. Ищем полноценные форпосты (маяк + турель + склад + мастерская в радиусе 300px)
+  const outposts = [];
+  const beacons = aiBuildings.filter(b => b.type === "beacon");
+  
+  beacons.forEach(beacon => {
+    const nearby = aiBuildings.filter(b => 
+      Math.hypot(b.x - beacon.x, b.y - beacon.y) < 300
+    );
+    
+    const hasTurret = nearby.some(b => b.type.startsWith("turret"));
+    const hasWarehouse = nearby.some(b => b.type === "warehouse");
+    const hasWorkshop = nearby.some(b => b.type === "repairWorkshop");
+    const hasBarracks = nearby.some(b => b.type.startsWith("barracks"));
+    
+    const score = (hasTurret ? 1 : 0) + (hasWarehouse ? 1 : 0) + 
+                  (hasWorkshop ? 1 : 0) + (hasBarracks ? 1 : 0);
+    
+    if (score >= 3) {
+      outposts.push({ beacon, score, buildings: nearby });
+    }
+  });
+  
+  // 3. Награды за форпосты
+  if (outposts.length > 0) {
+    const outpostReward = outposts.length * 25.0;
+    reward += outpostReward;
+    reasons.push(`OUTPOSTS_BUILT: ${outposts.length} полноценных форпостов (+${outpostReward.toFixed(1)})`);
+    
+    // Дополнительная награда за дальние форпосты
+    outposts.forEach(op => {
+      const dist = Math.hypot(op.beacon.x - aiBase.x, op.beacon.y - aiBase.y);
+      if (dist > 500) {
+        reward += 15.0;
+        reasons.push(`DEEP_OUTPOST: форпост на расстоянии ${dist.toFixed(0)}px`);
+      } else if (dist > 350) {
+        reward += 8.0;
+        reasons.push(`MEDIUM_OUTPOST: форпост на расстоянии ${dist.toFixed(0)}px`);
+      }
+    });
+  }
+  
+  // 4. Проверяем кластеризацию зданий (штраф за кучкование)
+  if (aiBuildings.length >= 5) {
+    let totalDist = 0;
+    let pairCount = 0;
+    
+    for (let i = 0; i < Math.min(aiBuildings.length, 15); i++) {
+      for (let j = i + 1; j < Math.min(aiBuildings.length, 15); j++) {
+        totalDist += Math.hypot(
+          aiBuildings[i].x - aiBuildings[j].x,
+          aiBuildings[i].y - aiBuildings[j].y
+        );
+        pairCount++;
+      }
+    }
+    
+    const avgDist = pairCount > 0 ? totalDist / pairCount : 0;
+    
+    if (avgDist < 150) {
+      const clusterPenalty = -15.0;
+      reward += clusterPenalty;
+      reasons.push(`BUILDING_CLUSTER: здания слишком близко (среднее ${avgDist.toFixed(0)}px)`);
+    } else if (avgDist < 250) {
+      const minorPenalty = -5.0;
+      reward += minorPenalty;
+      reasons.push(`SLIGHT_CLUSTER: здания близко (среднее ${avgDist.toFixed(0)}px)`);
+    } else if (avgDist > 400) {
+      reward += 10.0;
+      reasons.push(`GOOD_SPREAD: здания хорошо распределены (среднее ${avgDist.toFixed(0)}px)`);
+    }
+  }
+  
+  // 5. Награда за разнообразие зданий на разных позициях
+  const buildingTypes = new Set(aiBuildings.map(b => b.type));
+  if (buildingTypes.size >= 4) {
+    reward += 8.0;
+    reasons.push(`BUILDING_DIVERSITY: ${buildingTypes.size} типов зданий`);
+  }
+  
+  // 6. Штраф за отсутствие маяков при наличии ресурсов
+  if (gameTimeMin > 3.0 && beacons.length === 0 && m.resTotal > 0.3) {
+    reward -= 12.0;
+    reasons.push("NO_BEACONS: есть ресурсы, но нет маяков для экспансии");
+  }
+  
+  // 7. Бонус за экспансию в ранней игре
+  if (gameTimeMin < 4.0 && outposts.length > 0) {
+    reward += 20.0;
+    reasons.push("EARLY_EXPANSION: форпосты построены до 4 минуты!");
+  }
+  
+  if (reward !== 0) {
+    const currentState = this.buildGraphState();
+    if (currentState) {
+      this.replay.push({ 
+        X: currentState.X, 
+        A_distance: currentState.A_distance, 
+        A_threat: currentState.A_threat, 
+        actionIndex: AIDX.idle, 
+        reward 
+      });
+      if (reward > 0) {
+        console.log(`[GnnAI] 🏗️ Экспансия: +${reward.toFixed(1)} (${reasons.join(', ')})`);
+      } else {
+        console.warn(`[GnnAI] ⚠️ Экспансия: ${reward.toFixed(1)} (${reasons.join(', ')})`);
+      }
+    }
+  }
+},    
  
   evaluatePhaseRewards: function (now) {
     if (!this.lastPhaseCheck || now - this.lastPhaseCheck < 5000) return;
@@ -1402,6 +1651,8 @@ init: async function () {
           this.evaluateStagnation(now);
           this.evaluateMilitaryBalance(now);
           this.evaluateOpponentGap(now);
+          this.evaluateRecon(now);
+          this.evaluateExpansion(now);
           this.evaluateEconomyEfficiency(now);
           this.evaluateMissions();
           this.checkEconomicParalysis(now);
@@ -1550,72 +1801,114 @@ init: async function () {
 },
 
 buildGraphState: function () {
-  // Жесткая проверка валидности gameState
   if (!gameState || !aiBase || !aiBase.maxHealth || aiBase.maxHealth <= 0 || aiBase.health < 0) return null;
-  
-  const raw = [{ obj: aiBase, type: "base", owner:"ai", x: aiBase.x, y: aiBase.y, hp: Math.min(1, aiBase.health / aiBase.maxHealth), valid: 1 }];
+  const raw = [{ obj: aiBase, type: "base", owner: "ai", x: aiBase.x, y: aiBase.y, hp: Math.min(1, aiBase.health / aiBase.maxHealth), valid: 1 }];
   const candidates = [];
 
-  // Безопасный сбор кандидатов
-  try {
-      // 🔥 ИСКЛЮЧАЕМ рабочих и ремонтников — у них скриптовые циклы
-      for (const u of gameState.units) {
-          if (u && u.health > 0 && isFinite(u.x) && isFinite(u.y)) {
-              // Оставляем только боевых юнитов
-              if (["fighter","assault","elite"].includes(u.type)) {
-                  candidates.push(u);
-              }
-              // Рабочих и ремонтников НЕ добавляем
-          }
+  // ==========================================
+  // 🔥 ШАГ 1: Собираем "Источники Зрения" (Vision Sources)
+  // ==========================================
+  const visionSources = [];
+  
+  // Здания ИИ дают обзор
+  for (const b of gameState.buildings) {
+    if (b.owner === "ai" && b.health > 0) {
+      let r = 300; // Базовый радиус обзора
+      if (b.type.startsWith("turret")) r = b.visionRadius || b.range || 400; // Турели видят дальше всех
+      else if (b.type.includes("base")) r = 400;
+      else if (b.type === "beacon") r = 350;
+      else if (b.type === "barracks") r = 320;
+      visionSources.push({x: b.x, y: b.y, r: r});
+    }
+  }
+  
+  // Юниты ИИ дают обзор
+  for (const u of gameState.units) {
+    if (u.owner === "ai" && u.health > 0) {
+      let r = u.type === "worker" ? 200 : (u.visionRadius || u.engagementRadius || 350);
+      visionSources.push({x: u.x, y: u.y, r: r});
+    }
+  }
+
+  // Функция проверки: попадает ли точка в хотя бы один круг обзора
+  const isVisible = (x, y) => {
+    for (let i = 0; i < visionSources.length; i++) {
+      const v = visionSources[i];
+      // Быстрая проверка по квадрату (дешевле для CPU), потом точная по кругу
+      if (Math.abs(x - v.x) <= v.r && Math.abs(y - v.y) <= v.r) {
+        if (Math.hypot(x - v.x, y - v.y) <= v.r) return true;
       }
-      for (const b of gameState.buildings) if (b && b.health > 0 && b !== aiBase && isFinite(b.x) && isFinite(b.y)) candidates.push(b);
-  // 🔥 ВСЕ ресурсы на карте, без фильтра по расстоянию
-	for (const r of gameState.resources) if (r && r.amount > 0) candidates.push(r);
+    }
+    return false;
+  };
+
+  // ==========================================
+  // 🔥 ШАГ 2: Фильтруем кандидатов через "Туман войны"
+  // ==========================================
+  try {
+    // 1. Юниты
+    for (const u of gameState.units) {
+      if (!u || u.health <= 0 || !isFinite(u.x) || !isFinite(u.y)) continue;
+      
+      // Своих боевых юнитов видим ВСЕГДА (даже если они зашли за горизонт)
+      if (u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type)) {
+        candidates.push(u);
+      } 
+      // Вражеских юнитов видим ТОЛЬКО если они в зоне обзора
+      else if (u.owner !== "ai" && ["fighter", "assault", "elite"].includes(u.type)) {
+        if (isVisible(u.x, u.y)) candidates.push(u);
+      }
+    }
+    
+    // 2. Здания
+    for (const b of gameState.buildings) {
+      if (!b || b.health <= 0 || b === aiBase || !isFinite(b.x) || !isFinite(b.y)) continue;
+      
+      if (b.owner === "ai") {
+        candidates.push(b); // Свои здания всегда видны
+      } else {
+        if (isVisible(b.x, b.y)) candidates.push(b); // Вражеские только в зоне видимости
+      }
+    }
+    
+    // 3. Ресурсы
+    for (const r of gameState.resources) {
+      if (!r || r.amount <= 0) continue;
+      // Ресурсы видим только если рядом есть наш юнит или здание (логистическая зона)
+      if (isVisible(r.x, r.y)) candidates.push(r);
+    }
   } catch (e) { return null; }
 
-	const scoreObj = (o) => {
-	  const d = Math.hypot(o.x - aiBase.x, o.y - aiBase.y);
-	  let s = 10000; // Базовый скор без штрафа за расстояние
-
-	  // 🔥 Вражеские объекты — высокий приоритет (видеть угрозу)
-	  if (o.owner === "player") s += 5000;
-
-	  // 🔥 Свои объекты — тоже высокий приоритет (защищать и развивать)
-	  if (o.owner === "ai") s += 2500;
-
-	  // 🔥 Боевые юниты ВСЕГДА важны, даже если далеко!
-	  if (["fighter","assault","elite"].includes(o.type)) {
-		s += 3000;
-		if (o.owner === "ai" && o.commandQueue && o.commandQueue.length > 0) {
-		  s += 2000;
-		}
-	  }
-	  // 🔥 Турели — важны для обороны
-	  if (o.type?.startsWith("turret")) s += 1600;
-
-	  // 🔥 Здания — все одинаково важны, независимо от расстояния
-	  if (["base","base2","base3","barracks","barracks2","barracks3", 
-		   "warehouse","repairWorkshop","beacon"].includes(o.type)) {
-		s += 1200;
-	  }
-
-	  // 🔥 Ресурсы — приоритет зависит от количества
-	  if (["gold","silicon","plasma"].includes(o.type)) {
-		s += 800 + (o.amount || 0) * 2; // Чем больше ресурса, тем важнее
-	  }
-	  return s;
-	};
+  // ==========================================
+  // ШАГ 3: Скоринг и заполнение графа (без изменений)
+  // ==========================================
+  const scoreObj = (o) => {
+    const d = Math.hypot(o.x - aiBase.x, o.y - aiBase.y);
+    let s = 10000; 
+    if (o.owner === "player") s += 5000;
+    if (o.owner === "ai") s += 2500;
+    if (["fighter","assault","elite"].includes(o.type)) {
+      s += 3000;
+      if (o.owner === "ai" && o.commandQueue && o.commandQueue.length > 0) s += 2000;
+    }
+    if (o.type?.startsWith("turret")) s += 1600;
+    if (["base","base2","base3","barracks","barracks2","barracks3", "warehouse","repairWorkshop","beacon"].includes(o.type)) s += 1200;
+    if (["gold","silicon","plasma"].includes(o.type)) s += 800 + (o.amount || 0) * 2;
+    return s;
+  };
 
   candidates.sort((a, b) => scoreObj(b) - scoreObj(a));
   for (const o of candidates.slice(0, CFG.MAX_NODES - 1)) {
     const maxHp = o.maxHealth || o.max || 1;
     const hpVal = (maxHp > 0) ? Math.max(0, Math.min(1, (o.health ?? o.amount ?? 1) / maxHp)) : 0;
-    raw.push({ obj: o, type: o.type || "unknown", owner: o.owner ||"none", x: o.x, y: o.y, hp: hpVal, valid: 1 });
+    raw.push({ obj: o, type: o.type || "unknown", owner: o.owner || "none", x: o.x, y: o.y, hp: hpVal, valid: 1 });
   }
 
   while (raw.length < CFG.MAX_NODES) {
-    raw.push({ obj: null, type: "pad", owner:"none", x: 0, y: 0, hp: 0, valid: 0 });
+    raw.push({ obj: null, type: "pad", owner: "none", x: 0, y: 0, hp: 0, valid: 0 });
   }
+
+  // ... (далее идет расчет матриц A_distance и A_threat, оставь его как есть) ...
 
   const X = raw.map(n => this.nodeFeatures(n));
   const A_distance = []; 
