@@ -31,6 +31,8 @@
     fighter: 2, assault: 4, elite: 6
   };
 
+
+  
   const GnnAI = {
     cfg: CFG,
     actions: G_ACTIONS,
@@ -1819,7 +1821,7 @@ evaluatePending: function (now) {
     },
 
 trainBatch: function () {
-  // 🔥 Блокируем запуск нового обучения, пока идет сохранение или другое обучение
+  // 🔥 Блокируем запуск, если уже идет обучение, сохранение или мало данных
   if (this.training || this.isSaving || this.replay.length < CFG.BATCH_SIZE) return;
   this.training = true;
 
@@ -1827,33 +1829,42 @@ trainBatch: function () {
   for (let i = 0; i < CFG.BATCH_SIZE; i++) {
     const sample = this.replay.getRandom();
     if (!sample) continue;
-    const xValid = sample.X && Array.isArray(sample.X) && sample.X.length === CFG.MAX_NODES && Array.isArray(sample.X[0]) && sample.X[0].length === CFG.NODE_FEATURES;
-    const aDistValid = sample.A_distance && Array.isArray(sample.A_distance) && sample.A_distance.length === CFG.MAX_NODES;
-    if (xValid && aDistValid && isFinite(sample.reward)) {
+    
+    // 🔥 Проверка валидности (поддерживает и плоский, и 2D массив)
+    const isXValid = sample.X && (
+      (Array.isArray(sample.X) && sample.X.length === CFG.MAX_NODES * CFG.NODE_FEATURES) ||
+      (Array.isArray(sample.X) && Array.isArray(sample.X[0]) && sample.X.length === CFG.MAX_NODES && sample.X[0].length === CFG.NODE_FEATURES)
+    );
+    const isDistValid = sample.A_distance && Array.isArray(sample.A_distance) && sample.A_distance.length === CFG.MAX_NODES;
+    
+    if (isXValid && isDistValid && isFinite(sample.reward)) {
       batch.push(sample);
     }
   }
-  if (batch.length < 4) { 
-    this.training = false; 
-    return; 
-  } 
-  
-  // 🔥 КРИТИЧЕСКИЙ ФИКС УТЕЧКИ: падуем батч до константного размера
-while (batch.length < CFG.BATCH_SIZE) {
+
+  if (batch.length < 4) {
+    this.training = false;
+    return;
+  }
+
+  // 🔥 КРИТИЧЕСКИЙ ФИКС №1: ДОБИВАЕМ БАТЧ ДО КОНСТАНТНОГО РАЗМЕРА
+  // Это гарантирует, что форма тензоров ВСЕГДА одинаковая, и TF.js переиспользует одни и те же текстуры.
+  while (batch.length < CFG.BATCH_SIZE) {
     batch.push(batch[Math.floor(Math.random() * batch.length)]);
-}
-const B = CFG.BATCH_SIZE; // 🔥 КОНСТАНТА — форма тензоров всегда одинакова
+  }
+  
+  const B = CFG.BATCH_SIZE; // 🔥 КРИТИЧЕСКИЙ ФИКС №2: ТЕПЕРЬ B ВСЕГДА КОНСТАНТА (например, 64)
   const shouldSave = (this.trainBatches + 1) % CFG.SAVE_EVERY_BATCHES === 0;
 
   // 🔥 ОДИН ЕДИНСТВЕННЫЙ tf.tidy для всего обучения
   tf.tidy(() => {
     try {
       const xs = tf.tensor3d(batch.map(b => b.X), [B, CFG.MAX_NODES, CFG.NODE_FEATURES]);
-      const as_dist = tf.tensor3d(batch.map(b => b.A_distance), [B, CFG.MAX_NODES, CFG.MAX_NODES]);  
-      const as_threat = tf.tensor3d(batch.map(b => b.A_threat), [B, CFG.MAX_NODES, CFG.MAX_NODES]);  
-      const act = tf.tensor1d(batch.map(b => b.actionIndex), "int32");    
+      const as_dist = tf.tensor3d(batch.map(b => b.A_distance), [B, CFG.MAX_NODES, CFG.MAX_NODES]); 
+      const as_threat = tf.tensor3d(batch.map(b => b.A_threat), [B, CFG.MAX_NODES, CFG.MAX_NODES]); 
+      const act = tf.tensor1d(batch.map(b => b.actionIndex), "int32"); 
       const oldLogProbs = tf.tensor1d(batch.map(b => isFinite(b.oldLogProb) ? b.oldLogProb : -10.0), "float32");
-      const oldValues = tf.tensor1d(batch.map(b => isFinite(b.value) ? b.value : 0.0), "float32"); 
+      const oldValues = tf.tensor1d(batch.map(b => isFinite(b.value) ? b.value : 0.0), "float32");
       
       const rewardsRaw = batch.map(b => Math.max(-10, Math.min(10, b.reward))); 
       const meanR = rewardsRaw.reduce((a,b)=>a+b,0) / B;
@@ -1907,23 +1918,19 @@ const B = CFG.BATCH_SIZE; // 🔥 КОНСТАНТА — форма тензор
         }
         return totalLoss;
       }, this.vars);
-      
-      // 🔥 БЕЗОПАСНЫЙ КЛИППИНГ ГРАДИЕНТОВ (без вложенных tidy, которые ломают ссылки)
+
+      // 🔥 БЕЗОПАСНЫЙ КЛИППИНГ ГРАДИЕНТОВ
       const gradValues = this.vars.map(v => grads[v.name]).filter(Boolean);
       let clipCoef = 1.0;
-      
       if (gradValues.length > 0) {
         const sumSquares = gradValues.map(g => g.square().sum());
         const globalNorm = tf.addN(sumSquares).sqrt();
         const normVal = globalNorm.dataSync()[0];
         clipCoef = Math.min(1.0, CFG.GRADIENT_CLIP_NORM / (normVal + 1e-8));
-        
-        // Ручная очистка промежуточных тензоров нормы (они не нужны после вычисления коэффициента)
-        sumSquares.forEach(t => t.dispose());
+        sumSquares.forEach(t => t.dispose()); // Чистим промежуточные тензоры
         globalNorm.dispose();
       }
 
-      // Формируем финальные градиенты
       const finalGrads = {};
       this.vars.forEach(v => {
         const g = grads[v.name];
@@ -1936,16 +1943,15 @@ const B = CFG.BATCH_SIZE; // 🔥 КОНСТАНТА — форма тензор
 
       this.optimizer.applyGradients(finalGrads);
 
-      // 🔥 РУЧНАЯ ОЧИСТКА ВСЕХ ГРАДИЕНТОВ (и исходных, и финальных)
-      // Это предотвращает утечку памяти и использование удаленных тензоров
+      // 🔥 РУЧНАЯ ОЧИСТКА ВСЕХ ГРАДИЕНТОВ
       this.vars.forEach(v => {
         if (grads[v.name]) grads[v.name].dispose();
         if (finalGrads[v.name]) finalGrads[v.name].dispose();
       });
 
       const lossVal = value.dataSync()[0];
-      value.dispose(); // Очищаем тензор значения лосса
-
+      value.dispose(); 
+      
       if (!isFinite(lossVal)) {
         console.error("[GnnAI] ❌ Loss стал NaN! Сброс...");
         this.training = false;
@@ -1958,9 +1964,7 @@ const B = CFG.BATCH_SIZE; // 🔥 КОНСТАНТА — форма тензор
         const mem = tf.memory();
         console.log(`[GnnAI Train] Batch: ${this.trainBatches}, Loss: ${lossVal.toFixed(4)}, GPU: ${(mem.numBytes / 1024 / 1024).toFixed(1)} MB, Tensors: ${mem.numTensors}`);
       }
-      
       this.updateTargetNetwork();
-      
     } catch (e) {
       console.error("[GnnAI] train error", e);
     } finally {
@@ -1968,26 +1972,25 @@ const B = CFG.BATCH_SIZE; // 🔥 КОНСТАНТА — форма тензор
     }
   });
 
-  // 🔥 АСИНХРОННОЕ СОХРАНЕНИЕ ВНЕ tf.tidy (гарантированно не мешает WebGL)
+  // 🔥 АСИНХРОННОЕ СОХРАНЕНИЕ ВНЕ tf.tidy
   if (shouldSave) {
-      this.isSaving = true;
-      // 🔥 Ждем ДВА кадра вместо setTimeout + tf.nextFrame, чтобы гарантировать, что GPU полностью освободил ресурсы после tidy
-      requestAnimationFrame(() => {
-          requestAnimationFrame(async () => {
-              try {
-                  await this.saveWeights();
-              } catch (e) {
-                  console.error("[GnnAI] save error:", e);
-              } finally {
-                  this.isSaving = false;
-              }
-          });
+    this.isSaving = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(async () => {
+        try {
+          await this.saveWeights();
+        } catch (e) {
+          console.error("[GnnAI] save error:", e);
+        } finally {
+          this.isSaving = false;
+        }
       });
+    });
   } else {
-      this.isSaving = false; // Снимаем блокировку, если не сохраняем
+    this.isSaving = false;
   }
 },
-    
+
     updateTargetNetwork: function () {
       if (!this.targetVars) return;
       tf.tidy(() => {
@@ -3049,9 +3052,23 @@ checkEnd: async function () {
   }
 },
 
-// Внутри объекта GnnAI
-saveWeights: async function () {
+    // Внутри объекта GnnAI
+    saveWeights: async function () {
     if (!this.vars || this.vars.length === 0) return;
+    // 🔥 ЗАЩИТА: если WebGL контекст мёртв — НЕ читаем тензоры, иначе краш
+    if (tf.getBackend() === 'webgl') {
+        try {
+            const canvas = document.querySelector('canvas');
+            if (canvas) {
+                const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+                if (gl && gl.isContextLost()) {
+                    console.error("[GnnAI] 💥 WebGL контекст мёртв, сохранение отменено");
+                    this.isSaving = false;
+                    return;
+                }
+            }
+        } catch (e) {}
+    }
 
     // 🔥 ЗАЩИТА ОТ ПАНИКИ: Проверяем, нет ли NaN/Inf в весах перед сохранением
     let hasInvalidWeights = false;
@@ -3075,19 +3092,27 @@ saveWeights: async function () {
 
     try {
         console.log(`[GnnAI] 💾 Начало сохранения весов (Batch: ${this.trainBatches})...`);
-        
-        // 🔥 КЛЮЧЕВОЙ ФИКС: Читаем данные безопасно.
-        // На некоторых конфигурациях dataSync из GPU может быть опасен при перегрузке.
-        // Мы уже проверили валидность выше, теперь собираем payload.
+        // 🔥 ЯДЕРНЫЙ ФИКС: переключиться на CPU для безопасного чтения dataSync()
+        const originalBackend = tf.getBackend();
+        if (originalBackend !== 'cpu') {
+            console.log("[GnnAI] 🔄 Временное переключение на CPU backend...");
+            await tf.setBackend('cpu');
+            await tf.ready();
+        }
         const mainData = this.vars.map(v => ({ 
             shape: v.shape, 
-            values: Array.from(v.dataSync()) // Это блокирующий вызов, но он необходим
+            values: Array.from(v.dataSync())
         }));
-        
         const targetData = this.targetVars ? this.targetVars.map(v => ({ 
             shape: v.shape, 
             values: Array.from(v.dataSync()) 
         })) : [];
+        // Возвращаем оригинальный backend
+        if (originalBackend !== 'cpu') {
+            console.log(`[GnnAI] 🔄 Возврат на backend: ${originalBackend}`);
+            await tf.setBackend(originalBackend);
+            await tf.ready();
+        }
 
         const payload = {
             version: 7.6,
