@@ -66,6 +66,7 @@
     lastStrategicAction: null,
     bcActive: true,
     bcBatchCount: 0,
+    db: null,
 
 PREREQUISITES: {
    "turret": "barracks",       // ← ДОБАВИТЬ
@@ -206,6 +207,29 @@ if (ourClusters.length > 0 && enemyClusters.length > 0) {
         Math.min(1, 60 / timeToAffordWarehouse), isRichEnoughToExpand, isEconomyChoked, emptyWh, emptyRatio, income, enemyClusterThreat, ourClusterStrength, nearestEnemyClusterDist, flankOpportunity, localPowerBalance                      
     ];
 },
+
+  // 🔥 НОВАЯ ФУНКЦИЯ: Инициализация БД до начала игры
+  initWeightDB: async function () {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('GnnAI_Weights_DB', 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('models')) {
+          db.createObjectStore('models');
+          console.log("[GnnAI] 🗄️ Таблица 'models' создана в IndexedDB.");
+        }
+      };
+      req.onsuccess = (e) => {
+        this.db = e.target.result; // Сохраняем соединение глобально для объекта
+        console.log("[GnnAI] ✅ IndexedDB успешно инициализирована и готова к записи.");
+        resolve();
+      };
+      req.onerror = (e) => {
+        console.error("[GnnAI] ❌ Ошибка инициализации IndexedDB:", e.target.error);
+        reject(e.target.error);
+      };
+    });
+  },
 
     registerAction: function (action, graphState, intent, actionIndex, isExpert = false) {
       if (!graphState || !graphState.X || !graphState.A_distance) return;
@@ -1230,80 +1254,121 @@ if (aiBuildings.length > 5) {
       this.lastResourceTotal = currentRes;
     },
 
-    init: async function () {
-      if (this.initialized) return;
-      if (this._initializing) {
-        while (this._initializing) await new Promise(r => setTimeout(r, 50));
-        return;
-      }
-      this._initializing = true;
-      
-      if (!window.tf) { console.error("[GnnAI] TF.js не найден"); this._initializing = false; return; }  
-      try {
-        await tf.setBackend('webgpu').catch(() => tf.setBackend('webgl'));
-        await tf.ready();
-      } catch (e) {
-        console.warn("[GnnAI] Backend fallback", e);
-        try { await tf.setBackend('webgl'); await tf.ready(); } catch (e2) {
-          console.error("[GnnAI] Нет доступного backend", e2);
-          this._initializing = false;
-          return;
-        }
-	}
-      const H = CFG.HIDDEN;
-      const F = CFG.NODE_FEATURES;
-      const G = CFG.GLOBAL_FEATURES;
-      const A = G_ACTIONS.length; 
-      const v = (shape, scale = 0.08) => tf.variable(tf.randomNormal(shape, 0, scale));
-      const W_attn = v([F * 2, 1]);
-      const W1 = v([F, H]), b1 = tf.variable(tf.zeros([H]));
-      const W2 = v([H, H]), b2 = tf.variable(tf.zeros([H]));
-      const Wp = v([H + G, H]), bp = tf.variable(tf.zeros([H]));   
-      const W_adv = v([H, A]);
-      const b_adv = tf.variable(tf.zeros([A]));     
-      const W_val = v([H, 1]);
-      const b_val = tf.variable(tf.zeros([1]));
-      this.vars = [W_attn, W1, b1, W2, b2, Wp, bp, W_adv, b_adv, W_val, b_val];
-      this.targetVars = this.vars.map(v => tf.variable(v.clone()));     
-      this.optimizer = tf.train.adam(CFG.LR);
-      this.tau = 0.005;
-
-      this.model = {
-        forwardBatch: (x, adj_dist, adj_threat, globalBatchTensor) => {  
-          return tf.tidy(() => {
-            const B = x.shape[0];
-            const N = CFG.MAX_NODES;          
-            const xExpanded = x.tile([1, 1, N]).reshape([B, N, N, F]);
-            const xTransposed = x.expandDims(2).tile([1, 1, N, 1]);
-            const pairFeat = tf.concat([xExpanded, xTransposed], 3).reshape([B * N * N, F * 2]);
-            const attnLogits = tf.matMul(pairFeat, W_attn).reshape([B, N, N]);
-            const attnWeights = tf.softmax(attnLogits, 2);           
-            const combinedAdj = tf.add(
-              tf.mul(adj_dist, attnWeights),
-              tf.mul(adj_threat, attnWeights)
-            );         
-            const agg1 = tf.matMul(combinedAdj, x);
-            const h1 = tf.relu(tf.matMul(agg1.reshape([B * N, F]), W1).add(b1).reshape([B, N, H]));          
-            const agg2 = tf.matMul(combinedAdj, h1);
-            const h2 = tf.relu(tf.matMul(agg2.reshape([B * N, H]), W2).add(b2).reshape([B, N, H]));           
-            const mask = x.slice([0, 0, 0], [B, N, 1]);
-            const pooled = h2.mul(mask).sum(1).div(tf.maximum(mask.sum(1), 1));            
-            const combined = tf.concat([pooled, globalBatchTensor], 1);
-            const hp = tf.tanh(tf.add(tf.matMul(combined, Wp), bp));         
-            const advantage = tf.add(tf.matMul(hp, W_adv), b_adv);
-            const value = tf.add(tf.matMul(hp, W_val), b_val);          
-            const meanAdv = advantage.mean(1, true);
-            const logits = value.add(advantage.sub(meanAdv));
-            
-            return { logits, value };
-          });
-        }
-      };
-      await this.loadWeights();
-      this.initialized = true;
+init: async function () {
+  if (this.initialized) return;
+  if (this._initializing) {
+    while (this._initializing) await new Promise(r => setTimeout(r, 50));
+    return;
+  }
+  this._initializing = true;
+  if (!window.tf) { 
+    console.error("[GnnAI] TF.js не найден"); 
+    this._initializing = false; 
+    return; 
+  }  
+  
+  try {
+    await tf.setBackend('webgpu').catch(() => tf.setBackend('webgl'));
+    await tf.ready();
+  } catch (e) {
+    console.warn("[GnnAI] Backend fallback", e);
+    try { 
+      await tf.setBackend('webgl');
+      await tf.ready();
+    } catch (e2) {
+      console.error("[GnnAI] Нет доступного backend", e2);
       this._initializing = false;
-      console.log(`[GnnAI] ✅ Модель (v7.6) готова. Backend: ${tf.getBackend()}`);
-    },
+      return;
+    }
+  }
+
+  // 👉 👉 👉 ВСТАВЛЯЕМ ОБРАБОТЧИК ЗДЕСЬ 👈 👈 👈
+  // TF.js уже выбрал бэкенд, теперь мы вешаем "стража" на Canvas
+  const canvas = document.querySelector('canvas');
+  if (canvas) {
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault(); // Обязательно, чтобы браузер дал нам шанс на восстановление
+      console.error("[GnnAI] 💥 WebGL контекст потерян!");
+      
+      setTimeout(() => {
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        if (!gl || gl.isContextLost()) {
+          console.error("[GnnAI] ❌ Контекст не восстановился. Перезагрузка страницы...");
+          location.reload();
+        } else {
+          console.log("[GnnAI] ✅ Контекст успешно восстановлен браузером");
+        }
+      }, 2000);
+    });
+    
+    canvas.addEventListener('webglcontextrestored', () => {
+      console.log("[GnnAI] ✅ Событие webglcontextrestored получено");
+      // Если контекст восстановился, нам, возможно, придется пересоздать переменные TF.js,
+      // но пока оставим перезагрузку как самый надежный fallback, если восстановление не сработает.
+    });
+  }
+  // 👆 👆 👆 КОНЕЦ ВСТАВКИ 👆 👆 👆
+
+  // 🔥 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Инициализируем БД ДО создания модели и начала игры
+  await this.initWeightDB();
+  
+  const H = CFG.HIDDEN;
+  const F = CFG.NODE_FEATURES;
+  const G = CFG.GLOBAL_FEATURES;
+  const A = G_ACTIONS.length; 
+  const v = (shape, scale = 0.08) => tf.variable(tf.randomNormal(shape, 0, scale));
+  
+  const W_attn = v([F * 2, 1]);
+  const W1 = v([F, H]), b1 = tf.variable(tf.zeros([H]));
+  const W2 = v([H, H]), b2 = tf.variable(tf.zeros([H]));
+  const Wp = v([H + G, H]), bp = tf.variable(tf.zeros([H]));   
+  const W_adv = v([H, A]);
+  const b_adv = tf.variable(tf.zeros([A]));     
+  const W_val = v([H, 1]);
+  const b_val = tf.variable(tf.zeros([1]));
+  
+  this.vars = [W_attn, W1, b1, W2, b2, Wp, bp, W_adv, b_adv, W_val, b_val];
+  this.targetVars = this.vars.map(v => tf.variable(v.clone()));     
+  this.optimizer = tf.train.adam(CFG.LR);
+  this.tau = 0.005;
+
+  this.model = {
+    forwardBatch: (x, adj_dist, adj_threat, globalBatchTensor) => {  
+      return tf.tidy(() => {
+        const B = x.shape[0];
+        const N = CFG.MAX_NODES;          
+        const xExpanded = x.tile([1, 1, N]).reshape([B, N, N, F]);
+        const xTransposed = x.expandDims(2).tile([1, 1, N, 1]);
+        const pairFeat = tf.concat([xExpanded, xTransposed], 3).reshape([B * N * N, F * 2]);
+        const attnLogits = tf.matMul(pairFeat, W_attn).reshape([B, N, N]);
+        const attnWeights = tf.softmax(attnLogits, 2);           
+        const combinedAdj = tf.add(
+          tf.mul(adj_dist, attnWeights),
+          tf.mul(adj_threat, attnWeights)
+        );         
+        const agg1 = tf.matMul(combinedAdj, x);
+        const h1 = tf.relu(tf.matMul(agg1.reshape([B * N, F]), W1).add(b1).reshape([B, N, H]));          
+        const agg2 = tf.matMul(combinedAdj, h1);
+        const h2 = tf.relu(tf.matMul(agg2.reshape([B * N, H]), W2).add(b2).reshape([B, N, H]));           
+        const mask = x.slice([0, 0, 0], [B, N, 1]);
+        const pooled = h2.mul(mask).sum(1).div(tf.maximum(mask.sum(1), 1));            
+        const combined = tf.concat([pooled, globalBatchTensor], 1);
+        const hp = tf.tanh(tf.add(tf.matMul(combined, Wp), bp));         
+        const advantage = tf.add(tf.matMul(hp, W_adv), b_adv);
+        const value = tf.add(tf.matMul(hp, W_val), b_val);          
+        const meanAdv = advantage.mean(1, true);
+        const logits = value.add(advantage.sub(meanAdv));
+        
+        return { logits, value };
+      });
+    }
+  };
+  
+  await this.loadWeights();
+  this.initialized = true;
+  this._initializing = false;
+  console.log(`[GnnAI] ✅ Модель (v7.6) готова. Backend: ${tf.getBackend()}`);
+},
 
   predictData: function (state) {
     if (!this.model) return null;
@@ -1753,140 +1818,176 @@ evaluatePending: function (now) {
       return isFinite(delta) ? delta : 0.0; 
     },
 
-    trainBatch: function () { 
-      if (this.training || this.replay.length < CFG.BATCH_SIZE) return;
-      this.training = true;
+trainBatch: function () {
+  // 🔥 Блокируем запуск нового обучения, пока идет сохранение или другое обучение
+  if (this.training || this.isSaving || this.replay.length < CFG.BATCH_SIZE) return;
+  this.training = true;
 
-      const batch = [];
-      for (let i = 0; i < CFG.BATCH_SIZE; i++) {
-        const sample = this.replay.getRandom();
-        // Строгая фильтрация битых сэмплов
-        if (sample && sample.X && sample.A_distance && 
-            isFinite(sample.reward) && 
-            sample.X.length === CFG.MAX_NODES * CFG.NODE_FEATURES) {
-             batch.push(sample);
-        }
-      }
-      
-      if (batch.length < 10) { this.training = false; return; } 
+  const batch = [];
+  for (let i = 0; i < CFG.BATCH_SIZE; i++) {
+    const sample = this.replay.getRandom();
+    if (!sample) continue;
+    const xValid = sample.X && Array.isArray(sample.X) && sample.X.length === CFG.MAX_NODES && Array.isArray(sample.X[0]) && sample.X[0].length === CFG.NODE_FEATURES;
+    const aDistValid = sample.A_distance && Array.isArray(sample.A_distance) && sample.A_distance.length === CFG.MAX_NODES;
+    if (xValid && aDistValid && isFinite(sample.reward)) {
+      batch.push(sample);
+    }
+  }
+  if (batch.length < 4) { 
+    this.training = false; 
+    return; 
+  } 
+  
+  // 🔥 КРИТИЧЕСКИЙ ФИКС УТЕЧКИ: падуем батч до константного размера
+while (batch.length < CFG.BATCH_SIZE) {
+    batch.push(batch[Math.floor(Math.random() * batch.length)]);
+}
+const B = CFG.BATCH_SIZE; // 🔥 КОНСТАНТА — форма тензоров всегда одинакова
+  const shouldSave = (this.trainBatches + 1) % CFG.SAVE_EVERY_BATCHES === 0;
 
-      const B = batch.length;
-      
-      // Подготовка тензоров
+  // 🔥 ОДИН ЕДИНСТВЕННЫЙ tf.tidy для всего обучения
+  tf.tidy(() => {
+    try {
       const xs = tf.tensor3d(batch.map(b => b.X), [B, CFG.MAX_NODES, CFG.NODE_FEATURES]);
       const as_dist = tf.tensor3d(batch.map(b => b.A_distance), [B, CFG.MAX_NODES, CFG.MAX_NODES]);  
       const as_threat = tf.tensor3d(batch.map(b => b.A_threat), [B, CFG.MAX_NODES, CFG.MAX_NODES]);  
       const act = tf.tensor1d(batch.map(b => b.actionIndex), "int32");    
-      const rewardsRaw = batch.map(b => Math.max(-10, Math.min(10, b.reward))); 
-      const meanR = rewardsRaw.reduce((a,b)=>a+b,0) / B;
-      const variance = rewardsRaw.map(r => (r-meanR)**2).reduce((a,b)=>a+b,0)/B;
-      const stdR = Math.sqrt(variance) + 1e-6;
-      const rewardsNorm = rewardsRaw.map(r => (r - meanR) / stdR);
-      const rew = tf.tensor1d(rewardsNorm, "float32");    
       const oldLogProbs = tf.tensor1d(batch.map(b => isFinite(b.oldLogProb) ? b.oldLogProb : -10.0), "float32");
       const oldValues = tf.tensor1d(batch.map(b => isFinite(b.value) ? b.value : 0.0), "float32"); 
+      
+      const rewardsRaw = batch.map(b => Math.max(-10, Math.min(10, b.reward))); 
+      const meanR = rewardsRaw.reduce((a,b)=>a+b,0) / B;
+      const variance = rewardsRaw.reduce((a, b) => a + (b - meanR) ** 2, 0) / B;
+      const stdR = Math.sqrt(variance) + 1e-6;
+      const rew = tf.tensor1d(rewardsRaw.map(r => (r - meanR) / stdR), "float32");    
+      
       const masks = batch.map(b => {
-          let m = b.actionMask;
-          if (!m || m.length !== G_ACTIONS.length) m = new Array(G_ACTIONS.length).fill(1);
-          return m;
+        let m = b.actionMask;
+        if (!m || m.length !== G_ACTIONS.length) m = new Array(G_ACTIONS.length).fill(1);
+        return m;
       });
       const maskTensor = tf.tensor2d(masks, [B, G_ACTIONS.length]);
-      const globalFeatures = this.getGlobalFeatures();
-      const safeGlobal = globalFeatures.map(v => isFinite(v) ? v : 0);
-      const globalBatchData = Array(B).fill(safeGlobal);
-      const globalBatch = tf.tensor2d(globalBatchData, [B, CFG.GLOBAL_FEATURES]);
-      let loss = null;
-      try {
-        const { value, grads } = tf.variableGrads(() => {
-          const { logits, value } = this.model.forwardBatch(xs, as_dist, as_threat, globalBatch);  
-          const clippedValue = tf.clipByValue(value, -50, 50);
-          const bcRatio = Math.max(0, 1 - (this.trainBatches / CFG.BC_TRANSITION_BATCHES));
-          const inverseMask = maskTensor.sub(1).mul(-1e9); 
-          const maskedLogits = logits.add(inverseMask);
-          const logProbs = tf.log(tf.softmax(maskedLogits).add(1e-10));      
-          const oneHot = tf.oneHot(act, G_ACTIONS.length);
-          const newLogProbs = logProbs.mul(oneHot).sum(1);       
-          const values = clippedValue.squeeze();
-          const advantage = rew.sub(values);        
-          const ratio = tf.exp(newLogProbs.sub(oldLogProbs));
-          const clippedRatio = tf.clipByValue(ratio, 1 - CFG.CLIP_EPSILON, 1 + CFG.CLIP_EPSILON);        
-          const surrogate1 = ratio.mul(advantage);
-          const surrogate2 = clippedRatio.mul(advantage);
-          const actorLoss = tf.minimum(surrogate1, surrogate2).mul(-1).mean();           
-          const valueClipped = oldValues.add(tf.clipByValue(values.sub(oldValues), -0.5, 0.5));
-          const criticLoss1 = values.sub(rew).square();
-          const criticLoss2 = valueClipped.sub(rew).square();
-          const criticLoss = tf.maximum(criticLoss1, criticLoss2).mean();    
-          const probs = tf.softmax(maskedLogits);
-          const entropy = probs.mul(logProbs).mul(-1).sum(1).mean();
-          let totalLoss;
-          const hasExpertData = batch.some(b => b.isExpert);
-          
-          if (bcRatio > 0.1 || hasExpertData) {
-              const bcLoss = logProbs.mul(oneHot).sum(1).mul(-1).mean();
-              const expertWeight = hasExpertData ? 2.0 : 1.0;
-              totalLoss = bcLoss.mul(bcRatio * expertWeight).add(actorLoss.mul(1 - bcRatio)).add(criticLoss.mul(0.5));
-          } else {
-              if (this.bcActive) {
-                  console.log("[GnnAI] 🎓 BC завершен. Full PPO mode.");
-                  this.bcActive = false;
-              }
-              totalLoss = actorLoss.add(criticLoss.mul(0.5)).sub(entropy.mul(CFG.ENTROPY_COEF));
-          }
-          return totalLoss;
-        }, this.vars);
-
-        // Clip gradients by global norm
-        const clippedGrads = {};
-        const gradList = [];
-        for (let v of this.vars) {
-            if (grads[v.name]) gradList.push(grads[v.name]);
-        }
-        
-        const globalNorm = tf.addN(gradList.map(g => g.square())).sqrt();
-        const clipCoef = tf.minimum(1.0, CFG.GRADIENT_CLIP_NORM.div(globalNorm.add(1e-8)));
-        
-        for (let v of this.vars) {
-            if (grads[v.name]) {
-                clippedGrads[v.name] = grads[v.name].mul(clipCoef);
+      const globalFeatures = this.getGlobalFeatures().map(v => isFinite(v) ? v : 0);
+      const globalBatch = tf.tensor2d(Array(B).fill(globalFeatures), [B, CFG.GLOBAL_FEATURES]);
+      
+      const { value, grads } = tf.variableGrads(() => {
+        const { logits, value } = this.model.forwardBatch(xs, as_dist, as_threat, globalBatch);  
+        const clippedValue = tf.clipByValue(value, -50, 50);
+        const bcRatio = Math.max(0, 1 - (this.trainBatches / CFG.BC_TRANSITION_BATCHES));
+        const inverseMask = maskTensor.sub(1).mul(-1e9); 
+        const maskedLogits = logits.add(inverseMask);
+        const logProbs = tf.log(tf.softmax(maskedLogits).add(1e-10));      
+        const oneHot = tf.oneHot(act, G_ACTIONS.length);
+        const newLogProbs = logProbs.mul(oneHot).sum(1);       
+        const values = clippedValue.squeeze();
+        const advantage = rew.sub(values);        
+        const ratio = tf.exp(newLogProbs.sub(oldLogProbs));
+        const clippedRatio = tf.clipByValue(ratio, 1 - CFG.CLIP_EPSILON, 1 + CFG.CLIP_EPSILON);        
+        const surrogate1 = ratio.mul(advantage);
+        const surrogate2 = clippedRatio.mul(advantage);
+        const actorLoss = tf.minimum(surrogate1, surrogate2).mul(-1).mean();           
+        const valueClipped = oldValues.add(tf.clipByValue(values.sub(oldValues), -0.5, 0.5));
+        const criticLoss1 = values.sub(rew).square();
+        const criticLoss2 = valueClipped.sub(rew).square();
+        const criticLoss = tf.maximum(criticLoss1, criticLoss2).mean();    
+        const probs = tf.softmax(maskedLogits);
+        const entropy = probs.mul(logProbs).mul(-1).sum(1).mean();
+        let totalLoss;
+        const hasExpertData = batch.some(b => b.isExpert);
+        if (bcRatio > 0.1 || hasExpertData) {
+            const bcLoss = logProbs.mul(oneHot).sum(1).mul(-1).mean();
+            const expertWeight = hasExpertData ? 2.0 : 1.0;
+            totalLoss = bcLoss.mul(bcRatio * expertWeight).add(actorLoss.mul(1 - bcRatio)).add(criticLoss.mul(0.5));
+        } else {
+            if (this.bcActive) {
+                console.log("[GnnAI] 🎓 BC завершен. Full PPO mode.");
+                this.bcActive = false;
             }
+            totalLoss = actorLoss.add(criticLoss.mul(0.5)).sub(entropy.mul(CFG.ENTROPY_COEF));
         }
-
-        this.optimizer.applyGradients(clippedGrads);
+        return totalLoss;
+      }, this.vars);
+      
+      // 🔥 БЕЗОПАСНЫЙ КЛИППИНГ ГРАДИЕНТОВ (без вложенных tidy, которые ломают ссылки)
+      const gradValues = this.vars.map(v => grads[v.name]).filter(Boolean);
+      let clipCoef = 1.0;
+      
+      if (gradValues.length > 0) {
+        const sumSquares = gradValues.map(g => g.square().sum());
+        const globalNorm = tf.addN(sumSquares).sqrt();
+        const normVal = globalNorm.dataSync()[0];
+        clipCoef = Math.min(1.0, CFG.GRADIENT_CLIP_NORM / (normVal + 1e-8));
         
-        // Dispose gradients manually
-        for (let k in grads) grads[k].dispose();
-        clipCoef.dispose();
+        // Ручная очистка промежуточных тензоров нормы (они не нужны после вычисления коэффициента)
+        sumSquares.forEach(t => t.dispose());
         globalNorm.dispose();
-
-        const lv = value.dataSync()[0];
-        
-        if (!isFinite(lv)) {
-            console.error("[GnnAI] ❌ Loss стал NaN! Сброс...");
-            this.reset();
-            this.training = false;
-            return;
-        }
-
-        this.trainBatches++;
-        if (this.trainBatches % 10 === 0) {
-          console.log(`[GnnAI Train] Batch: ${this.trainBatches}, Loss: ${lv.toFixed(4)}`);
-        }
-        if (this.trainBatches % CFG.SAVE_EVERY_BATCHES === 0) {
-          this.saveWeights(); 
-        }
-        this.updateTargetNetwork();
-
-      } catch (e) {
-        console.error("[GnnAI] train error", e);
-      } finally {
-        xs.dispose(); as_dist.dispose(); as_threat.dispose(); 
-        act.dispose(); rew.dispose(); oldLogProbs.dispose(); oldValues.dispose(); 
-        globalBatch.dispose(); maskTensor.dispose();
-        this.training = false;
       }
-    },
 
+      // Формируем финальные градиенты
+      const finalGrads = {};
+      this.vars.forEach(v => {
+        const g = grads[v.name];
+        if (g) {
+          finalGrads[v.name] = g.mul(clipCoef);
+        } else {
+          finalGrads[v.name] = tf.zerosLike(v);
+        }
+      });
+
+      this.optimizer.applyGradients(finalGrads);
+
+      // 🔥 РУЧНАЯ ОЧИСТКА ВСЕХ ГРАДИЕНТОВ (и исходных, и финальных)
+      // Это предотвращает утечку памяти и использование удаленных тензоров
+      this.vars.forEach(v => {
+        if (grads[v.name]) grads[v.name].dispose();
+        if (finalGrads[v.name]) finalGrads[v.name].dispose();
+      });
+
+      const lossVal = value.dataSync()[0];
+      value.dispose(); // Очищаем тензор значения лосса
+
+      if (!isFinite(lossVal)) {
+        console.error("[GnnAI] ❌ Loss стал NaN! Сброс...");
+        this.training = false;
+        setTimeout(() => this.reset(), 0);
+        return;
+      }
+      
+      this.trainBatches++;
+      if (this.trainBatches % 10 === 0) {
+        const mem = tf.memory();
+        console.log(`[GnnAI Train] Batch: ${this.trainBatches}, Loss: ${lossVal.toFixed(4)}, GPU: ${(mem.numBytes / 1024 / 1024).toFixed(1)} MB, Tensors: ${mem.numTensors}`);
+      }
+      
+      this.updateTargetNetwork();
+      
+    } catch (e) {
+      console.error("[GnnAI] train error", e);
+    } finally {
+      this.training = false;
+    }
+  });
+
+  // 🔥 АСИНХРОННОЕ СОХРАНЕНИЕ ВНЕ tf.tidy (гарантированно не мешает WebGL)
+  if (shouldSave) {
+      this.isSaving = true;
+      // 🔥 Ждем ДВА кадра вместо setTimeout + tf.nextFrame, чтобы гарантировать, что GPU полностью освободил ресурсы после tidy
+      requestAnimationFrame(() => {
+          requestAnimationFrame(async () => {
+              try {
+                  await this.saveWeights();
+              } catch (e) {
+                  console.error("[GnnAI] save error:", e);
+              } finally {
+                  this.isSaving = false;
+              }
+          });
+      });
+  } else {
+      this.isSaving = false; // Снимаем блокировку, если не сохраняем
+  }
+},
+    
     updateTargetNetwork: function () {
       if (!this.targetVars) return;
       tf.tidy(() => {
@@ -1896,7 +1997,7 @@ evaluatePending: function (now) {
           const updated = v.mul(this.tau).add(tv.mul(1 - this.tau));
           tv.assign(updated);
         }
-      });
+      }); 
     },
     
     getUnitDps: function(type) {
@@ -2222,6 +2323,8 @@ validActionMask: function () {
     },
 
 execute: function (action, actionIndex, state) {
+    //console.log("🔥 ПРЯМОЕ УПРАВЛЕНИЕ GNN: Выполняю действие ->", action); // <-- ДОБАВИТЬ ЭТО
+
   const tacticalActions = ["strike_weak", "focus_fire", "retreat_regroup", "flank_attack",
                            "harass_economy", "all_in_base", "defend",
                            "tactic_all_in", "tactic_harass", "tactic_push", "tactic_defend"];
@@ -2639,6 +2742,7 @@ if (buildingType === "beacon") {
     },
 
     autoEconomy: function () {
+      if (gameMode === "gnn") return; // 🔥 ОТКЛЮЧАЕМ для GNN
       if (window.fullRLMode) return;
       if (typeof aiHireWorker !== "function") return;
       for (const b of gameState.buildings) {
@@ -2894,76 +2998,337 @@ findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 31
       console.groupEnd();
     },
 
-    checkEnd: async function () {
-      if (gameState.gameEnded) return;
-      const aiBaseAlive = gameState.buildings.some(b => b.owner === "ai" && b.type ==="base" && b.health > 0);
-      const playerBaseAlive = gameState.buildings.some(b => b.owner === "player" && b.type ==="base" && b.health > 0);
-      if (!aiBaseAlive || !playerBaseAlive) {
-        gameState.gameEnded = true;
-        console.log("[GnnAI] 💾 Игра завершена. Сохранение весов...");
-        await this.saveWeights();
-        if (!aiBaseAlive) this.finishEpisode("loss");
-        else this.finishEpisode("win");
-        if (window.autoRestartEnabled) {
-          setTimeout(() => {
-            console.log("[Curriculum] 🔄 Перезагрузка страницы для 100% чистой новой игры...");
-            localStorage.setItem('gnn_auto_restart', 'true'); 
-            window.location.reload();
-          }, 2000);
-        } else {
-          if (typeof showVictoryScreen === "function") showVictoryScreen(!aiBaseAlive ?"GNN ИИ проиграл." :"GNN ИИ победил!");
-        }
+checkEnd: async function () {
+  if (gameState.gameEnded) return;
+  const aiBaseAlive = gameState.buildings.some(b => b.owner === "ai" && b.type === "base" && b.health > 0);
+  const playerBaseAlive = gameState.buildings.some(b => b.owner === "player" && b.type === "base" && b.health > 0);
+  
+  if (!aiBaseAlive || !playerBaseAlive) {
+    gameState.gameEnded = true;
+    console.log("[GnnAI] 💾 Игра завершена. Сохранение весов...");
+    
+    // 🔥 ПРИНУДИТЕЛЬНОЕ СОХРАНЕНИЕ С ОБРАБОТКОЙ ОШИБОК
+    try {
+      await this.saveWeights();
+      console.log("[GnnAI] ✅ Веса успешно сохранены перед завершением матча");
+    } catch (e) {
+      console.error("[GnnAI] ❌ Ошибка сохранения весов:", e);
+      // 🔥 ПЛАН Б: сохраняем в localStorage как резервную копию
+      try {
+        const backup = this.vars.map(v => ({ 
+          shape: v.shape, 
+          values: Array.from(v.dataSync()).filter(isFinite) 
+        }));
+        localStorage.setItem(CFG.STORAGE_KEY + '_backup', JSON.stringify({
+          version: 7.5,
+          batches: this.trainBatches,
+          data: backup,
+          timestamp: Date.now()
+        }));
+        console.log("[GnnAI] 💾 Резервная копия сохранена в localStorage");
+      } catch (e2) {
+        console.error("[GnnAI] ❌ Даже резервное сохранение не удалось:", e2);
       }
-    },
+    }
+    
+    // 🔥 ЖДЁМ 500мс, чтобы IndexedDB гарантированно закоммитил транзакцию
+    await new Promise(r => setTimeout(r, 500));
+    
+    if (!aiBaseAlive) this.finishEpisode("loss");
+    else this.finishEpisode("win");
+    
+    if (window.autoRestartEnabled) {
+      setTimeout(() => {
+        console.log("[Curriculum] 🔄 Перезагрузка страницы для 100% чистой новой игры...");
+        localStorage.setItem('gnn_auto_restart', 'true'); 
+        window.location.reload();
+      }, 2000);
+    } else {
+      if (typeof showVictoryScreen === "function") showVictoryScreen(!aiBaseAlive ? "GNN ИИ проиграл." : "GNN ИИ победил!");
+    }
+  }
+},
 
-    saveWeights: async function () {
-      if (!this.vars.length) return;
-      try {
-        const mainData = this.vars.map(v => ({ shape: v.shape, values: Array.from(v.dataSync()) }));
-        const targetData = this.targetVars ? this.targetVars.map(v => ({ shape: v.shape, values: Array.from(v.dataSync()) })) : [];
-        const data = { main: mainData, target: targetData };
-		await WeightDB.save(CFG.STORAGE_KEY, { version: 7.5, batches: this.trainBatches, data, backend: tf.getBackend(), actionsCount: G_ACTIONS.length, nodeFeatures: CFG.NODE_FEATURES });
-        console.log("[GnnAI] 💾 Веса успешно сохранены в IndexedDB (v7.6)");
-      } catch (e) { console.error("[GnnAI] ❌ Ошибка сохранения весов:", e); }
-    },
+// Внутри объекта GnnAI
+saveWeights: async function () {
+    if (!this.vars || this.vars.length === 0) return;
 
-    loadWeights: async function () {
-      try {
-        const obj = await WeightDB.load(CFG.STORAGE_KEY);
-        if (!obj) { console.log("[GnnAI] Записей в IndexedDB не найдено. Инициализация с нуля."); return false; }
-        const mainData = obj.data.main || obj.data;
-        if (!Array.isArray(mainData)) { console.warn("[GnnAI] Ошибка формата: данные весов не являются массивом", obj); return false; }
-        if (mainData.length !== this.vars.length) { console.warn(`[GnnAI] Несовпадение архитектуры: сохранено ${mainData.length} переменных, ожидается ${this.vars.length}`); return false; }
-        if (obj.actionsCount && obj.actionsCount !== G_ACTIONS.length) { console.warn(`[GnnAI] ⚠️ Старая архитектура (${obj.actionsCount} действий) несовместима. Сброс весов.`); return false; }
-        // 🔥 НОВОЕ: Проверка совместимости NODE_FEATURES (36 → 37)
-        if (obj.nodeFeatures && obj.nodeFeatures !== CFG.NODE_FEATURES) {
-            console.warn(`[GnnAI] ⚠️ Несовпадение NODE_FEATURES: сохранено ${obj.nodeFeatures}, ожидается ${CFG.NODE_FEATURES}. Сброс весов.`);
-            return false;
+    // 🔥 ЗАЩИТА ОТ ПАНИКИ: Проверяем, нет ли NaN/Inf в весах перед сохранением
+    let hasInvalidWeights = false;
+    for (const v of this.vars) {
+        // Быстрая проверка первых и последних значений, или полное сканирование если мало параметров
+        const data = v.dataSync(); 
+        for(let i=0; i<data.length; i++) {
+            if (!isFinite(data[i])) {
+                hasInvalidWeights = true;
+                break;
+            }
         }
-       // 🔥 НОВОЕ: Проверка shapes каждой переменной
-        const shapeMismatch = mainData.some((w, i) => {
-            if (!this.vars[i]) return true;
-            return w.shape.join(',') !== this.vars[i].shape.join(',');
+        if(hasInvalidWeights) break;
+    }
+
+    if (hasInvalidWeights) {
+        console.error("[GnnAI] ❌ Обнаружены NaN/Inf веса! Пропускаем сохранение, чтобы не убить контекст.");
+        // Опционально: можно триггерить reset() здесь
+        return;
+    }
+
+    try {
+        console.log(`[GnnAI] 💾 Начало сохранения весов (Batch: ${this.trainBatches})...`);
+        
+        // 🔥 КЛЮЧЕВОЙ ФИКС: Читаем данные безопасно.
+        // На некоторых конфигурациях dataSync из GPU может быть опасен при перегрузке.
+        // Мы уже проверили валидность выше, теперь собираем payload.
+        const mainData = this.vars.map(v => ({ 
+            shape: v.shape, 
+            values: Array.from(v.dataSync()) // Это блокирующий вызов, но он необходим
+        }));
+        
+        const targetData = this.targetVars ? this.targetVars.map(v => ({ 
+            shape: v.shape, 
+            values: Array.from(v.dataSync()) 
+        })) : [];
+
+        const payload = {
+            version: 7.6,
+            batches: this.trainBatches,
+            data: { main: mainData, target: targetData },
+            backend: tf.getBackend(),
+            actionsCount: G_ACTIONS.length,
+            nodeFeatures: CFG.NODE_FEATURES,
+            savedAt: Date.now()
+        };
+
+        // Убедимся, что соединение с БД живо
+        if (!this.db) {
+            await this.initWeightDB();
+        }
+
+        const tx = this.db.transaction('models', 'readwrite');
+        const store = tx.objectStore('models');
+        store.put(payload, CFG.STORAGE_KEY);
+
+        await new Promise((resolve, reject) => {
+            tx.oncomplete = () => resolve();
+            tx.onerror = (e) => reject(e.target.error);
         });
-        if (shapeMismatch) {
-            console.warn("[GnnAI] ⚠️ Shapes весов не совпадают с архитектурой. Сброс весов.");
-            return false;
-        }
-        const checkInvalid = (arr) => arr && arr.some(w => w.values.some(v => !isFinite(v)));
-        if (checkInvalid(mainData) || checkInvalid(obj.data.target)) { console.warn("[GnnAI] ⚠️ Сохраненные веса повреждены (NaN/Infinity). Инициализация с нуля."); return false; }
-        tf.tidy(() => { 
-          mainData.forEach((w, i) => { if (this.vars[i]) this.vars[i].assign(tf.tensor(w.values, w.shape)); });
-          const targetData = obj.data.target;
-          if (targetData && this.targetVars) {
-            targetData.forEach((w, i) => { if (this.targetVars[i]) this.targetVars[i].assign(tf.tensor(w.values, w.shape)); });
-          } else if (this.targetVars) {
-            this.vars.forEach((v, i) => this.targetVars[i].assign(v.clone()));
+
+        console.log(`[GnnAI] ✅ Веса успешно сохранены в IndexedDB!`);
+    } catch (e) {
+        console.error("[GnnAI] ❌ Критическая ошибка сохранения весов:", e);
+        // Fallback в localStorage
+        try {
+            const backup = this.vars.map(v => ({ shape: v.shape, values: Array.from(v.dataSync()).filter(isFinite) }));
+            localStorage.setItem(CFG.STORAGE_KEY + '_emergency_backup', JSON.stringify({
+                version: 7.6, batches: this.trainBatches, data: { main: backup }, timestamp: Date.now()
+            }));
+        } catch (e2) {}
+    } finally {
+        this.isSaving = false;
+    }
+},
+
+// 🔥 НОВЫЙ FALLBACK: Сохранение без использования TF.js шейдеров
+_saveWeightsFallback: async function() {
+  console.log("[GnnAI] 🔄 Запуск fallback сохранения...");
+  
+  try {
+    // Переключаем backend на CPU (не использует WebGL)
+    const originalBackend = tf.getBackend();
+    await tf.setBackend('cpu');
+    await tf.ready();
+    
+    // Теперь dataSync безопасен
+    const mainData = this.vars.map(v => ({ 
+      shape: v.shape, 
+      values: Array.from(v.dataSync()) 
+    }));
+    
+    const targetData = this.targetVars ? this.targetVars.map(v => ({ 
+      shape: v.shape, 
+      values: Array.from(v.dataSync()) 
+    })) : [];
+    
+    const payload = {
+      version: 7.6,
+      batches: this.trainBatches,
+      data: { main: mainData, target: targetData },
+      backend: 'cpu-fallback',
+      actionsCount: G_ACTIONS.length,
+      nodeFeatures: CFG.NODE_FEATURES,
+      savedAt: Date.now()
+    };
+    
+    // Возвращаем оригинальный backend
+    await tf.setBackend(originalBackend);
+    await tf.ready();
+    
+    // Сохраняем в IndexedDB
+    if (this.db) {
+      const tx = this.db.transaction('models', 'readwrite');
+      tx.objectStore('models').put(payload, CFG.STORAGE_KEY);
+      console.log(`[GnnAI] 💾 Fallback: веса сохранены в IndexedDB (batch: ${this.trainBatches})`);
+    } else {
+      // Если БД недоступна — сохраняем в localStorage
+      localStorage.setItem(CFG.STORAGE_KEY + '_backup', JSON.stringify(payload));
+      console.log(`[GnnAI] 💾 Fallback: веса сохранены в localStorage`);
+    }
+    
+  } catch (e) {
+    console.error("[GnnAI] ❌ Fallback тоже не сработал:", e);
+    // Последний шанс — сохраняем только метаданные
+    try {
+      localStorage.setItem(CFG.STORAGE_KEY + '_metadata', JSON.stringify({
+        version: 7.6,
+        batches: this.trainBatches,
+        error: e.message,
+        timestamp: Date.now()
+      }));
+    } catch (e2) {
+      console.error("[GnnAI] ❌ Даже метаданные не сохранились");
+    }
+  }
+}, 
+
+// 🔥 НОВАЯ: прямой сохранитель в IndexedDB (если WeightDB отсутствует)
+_saveToIndexedDB: async function(payload) {
+  return new Promise((resolve, reject) => {
+    const DB_NAME = 'GnnAI_Weights_DB';
+    const STORE = 'models';
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE);
+      }
+    };
+    req.onsuccess = (e) => {
+      const db = e.target.result;
+      try {
+        const tx = db.transaction(STORE, 'readwrite');
+        tx.objectStore(STORE).put(payload, CFG.STORAGE_KEY);
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = (ev) => { db.close(); reject(ev.target.error); };
+      } catch (err) {
+        db.close();
+        reject(err);
+      }
+    };
+    req.onerror = (e) => reject(req.error);
+  });
+},
+
+loadWeights: async function () {
+  try {
+    let obj = null;
+    
+    // 1. Пытаемся через WeightDB
+    if (typeof WeightDB !== 'undefined' && WeightDB.load) {
+      obj = await WeightDB.load(CFG.STORAGE_KEY);
+    }
+    
+    // 2. Fallback: прямое чтение из IndexedDB
+    if (!obj) {
+      obj = await this._loadFromIndexedDB();
+    }
+    
+    // 3. Fallback: localStorage backup
+    if (!obj) {
+      const backup = localStorage.getItem(CFG.STORAGE_KEY + '_backup');
+      if (backup) {
+        try { obj = JSON.parse(backup); console.log("[GnnAI] ✅ Загружено из localStorage backup"); } 
+        catch (e) { console.warn("[GnnAI] ⚠️ backup повреждён"); }
+      }
+    }
+    
+    if (!obj) { 
+      console.log("[GnnAI] Записей не найдено. Инициализация с нуля."); 
+      return false; 
+    }
+    
+    const mainData = obj.data?.main || obj.data;
+    if (!Array.isArray(mainData)) { 
+      console.warn("[GnnAI] Ошибка формата данных"); 
+      return false; 
+    }
+    if (mainData.length !== this.vars.length) { 
+      console.warn(`[GnnAI] Несовпадение архитектуры: ${mainData.length} vs ${this.vars.length}`); 
+      return false; 
+    }
+    if (obj.actionsCount && obj.actionsCount !== G_ACTIONS.length) { 
+      console.warn(`[GnnAI] ⚠️ Старая архитектура (${obj.actionsCount} действий). Сброс.`); 
+      return false; 
+    }
+    if (obj.nodeFeatures && obj.nodeFeatures !== CFG.NODE_FEATURES) {
+      console.warn(`[GnnAI] ⚠️ Несовпадение NODE_FEATURES: в БД ${obj.nodeFeatures}, в коде ${CFG.NODE_FEATURES}. Веса сброшены.`);
+      return false;
+    }
+    if (obj.actionsCount && obj.actionsCount !== G_ACTIONS.length) {
+      console.warn(`[GnnAI] ⚠️ Несовпадение действий: в БД ${obj.actionsCount}, в коде ${G_ACTIONS.length}. Веса сброшены.`);
+      return false;
+    }
+    
+    const shapeMismatch = mainData.some((w, i) => {
+      if (!this.vars[i]) return true;
+      return w.shape.join(',') !== this.vars[i].shape.join(',');
+    });
+    if (shapeMismatch) {
+      console.warn("[GnnAI] ⚠️ Shapes не совпадают. Сброс.");
+      return false;
+    }
+    
+    const checkInvalid = (arr) => arr && arr.some(w => w.values.some(v => !isFinite(v)));
+    if (checkInvalid(mainData) || checkInvalid(obj.data?.target)) { 
+      console.warn("[GnnAI] ⚠️ Веса повреждены (NaN/Inf). Сброс."); 
+      return false; 
+    }
+    
+    tf.tidy(() => { 
+      mainData.forEach((w, i) => { 
+        if (this.vars[i]) this.vars[i].assign(tf.tensor(w.values, w.shape)); 
+      });
+      const targetData = obj.data?.target;
+      if (targetData && this.targetVars) {
+        targetData.forEach((w, i) => { 
+          if (this.targetVars[i]) this.targetVars[i].assign(tf.tensor(w.values, w.shape)); 
+        });
+      } else if (this.targetVars) {
+        this.vars.forEach((v, i) => this.targetVars[i].assign(v.clone()));
+      }
+    });
+    
+    this.trainBatches = obj.batches || 0;
+    console.log(`[GnnAI] ✅ Веса загружены (batch: ${this.trainBatches})`);
+    return true;
+  } catch (e) { 
+    console.error("[GnnAI] Ошибка загрузки:", e); 
+    return false; 
+  }
+},
+
+    _loadFromIndexedDB: async function() {
+      return new Promise((resolve) => {
+        const DB_NAME = 'GnnAI_Weights_DB';
+        const STORE = 'models';
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+        };
+        req.onsuccess = (e) => {
+          const db = e.target.result;
+          try {
+            const tx = db.transaction(STORE, 'readonly');
+            const getReq = tx.objectStore(STORE).get(CFG.STORAGE_KEY);
+            getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
+            getReq.onerror = () => { db.close(); resolve(null); };
+          } catch (err) {
+            db.close();
+            resolve(null);
           }
-        });
-        this.trainBatches = obj.batches || 0;
-        console.log(`[GnnAI] ✅ Веса успешно загружены из IndexedDB (batch: ${this.trainBatches})`);
-        return true;
-      } catch (e) { console.error("[GnnAI] Ошибка при загрузке весов:", e); return false; }
+        };
+        req.onerror = () => resolve(null);
+      });
     },
 
     printEpisodeReport: function(result) {

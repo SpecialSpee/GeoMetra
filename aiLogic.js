@@ -26,7 +26,188 @@ function canBuild(buildingType) {
   return true;
 }
 
+function updateGarrisonAssignmentsClustered() {
+  if (gameMode === "gnn") return;
+	if (gameMode === "neural") return;
+
+  // Получаем общий резерв свободных боевых юнитов (без уже назначенных)
+  const freeReserveUnits = getFreeReserveUnits();
+  const totalFreeReserve = freeReserveUnits.length;
+  // Глобальный лимит для защиты – 40 % от общего резерва
+  const globalDefenderLimit = Math.floor(totalFreeReserve * 0.2);
+
+  // Ключевые здания для защиты
+  const keyBuildingTypes = ["warehouse", "repairWorkshop", "beacon", "base", "base2", "base3", "barracks", "barracks2", "barracks3"];
+  const keyBuildings = gameState.buildings.filter(b => b.owner === "ai" && keyBuildingTypes.includes(b.type));
+  // Группируем здания по близости, используя DEFENSE_RADIUS как радиус кластеризации
+  const clusters = getBuildingClusters("ai", DEFENSE_RADIUS);
+
+  let totalAssignedGlobal = 0;
+
+  clusters.forEach(cluster => {
+    // Фильтруем здания, у которых гарнизон уже сформирован (заблокирован)
+    const clusterBuildings = cluster.filter(building => !building.garrisonLocked);
+    if (clusterBuildings.length === 0) return;
+
+    // Рассчитываем суммарную потребность для данного кластера
+    const clusterRequirement = clusterBuildings.length * DESIRED_DEFENDERS_PER_BUILDING;
+    // Получаем уже назначенных защитников для зданий этого кластера
+    const clusterDefenders = gameState.units.filter(u =>
+      u.owner === "ai" &&
+      u.defending === true &&
+      clusterBuildings.some(b => Math.hypot(u.x - b.x, u.y - b.y) < DEFENSE_RADIUS)
+    );
+    const currentClusterCount = clusterDefenders.length;
+    const missingInCluster = clusterRequirement - currentClusterCount;
+    if (missingInCluster <= 0) return;
+
+    // Вычисляем, сколько защитников можно ещё назначить, не превышая глобальный лимит
+    const remainingGlobal = globalDefenderLimit - totalAssignedGlobal;
+    if (remainingGlobal <= 0) return;
+
+    // Количество для назначения в кластере – минимум из недостающих и оставшихся глобально
+    const assignable = Math.min(missingInCluster, remainingGlobal);
+    // Распределяем равномерно по зданиям кластера
+    const perBuildingAssign = Math.floor(assignable / clusterBuildings.length);
+
+    clusterBuildings.forEach(building => {
+      // Если у здания уже сформирован гарнизон, пропускаем
+      const buildingDefenders = gameState.units.filter(u =>
+        u.owner === "ai" &&
+        u.defending === true &&
+        Math.hypot(u.x - building.x, u.y - building.y) < DEFENSE_RADIUS
+      );
+      const missingForBuilding = DESIRED_DEFENDERS_PER_BUILDING - buildingDefenders.length;
+      if (missingForBuilding <= 0) {
+        building.garrisonLocked = true;
+        return;
+      }
+      // Для данного здания назначаем не более, чем минимум из (missingForBuilding) и (perBuildingAssign)
+      const toAssignCount = Math.min(missingForBuilding, perBuildingAssign);
+      if (toAssignCount <= 0) return;
+      
+      const freeUnitsForAssignment = getFreeReserveUnits().filter(u =>
+        u.type === "fighter" || u.type === "assault" || u.type === "elite"
+      );
+      const unitsToAssign = freeUnitsForAssignment.slice(0, toAssignCount);
+      unitsToAssign.forEach(unit => {
+        unit.commandQueue = []; 
+        unit.defending = true;
+        // Добавляем случайное смещение, чтобы защитники не стояли в точке
+        const offsetX = (Math.random() - 0.5) * 40;
+        const offsetY = (Math.random() - 0.5) * 40;
+        unit.commandQueue.push({ type: "move", x: building.x + offsetX, y: building.y + offsetY });
+        //console.log(`Назначен ${unit.type} для защиты ${building.type} на (${Math.round(building.x)}, ${Math.round(building.y)})`);
+      });
+      totalAssignedGlobal += unitsToAssign.length;
+      // Если после назначения защитников для здания требуемое число достигнуто, блокируем его гарнизон
+      if (buildingDefenders.length + toAssignCount >= DESIRED_DEFENDERS_PER_BUILDING) {
+        building.garrisonLocked = true;
+      }
+    });
+  });
+}
+
+function mobilizeDefendersAround(object) {
+  if (gameMode === "gnn") return;
+  const pos = { x: object.x, y: object.y };
+  // Определяем прямоугольную область вокруг объекта для поиска врагов
+  const queryRect = {
+    x: pos.x - GREY_ZONE_RADIUS,
+    y: pos.y - GREY_ZONE_RADIUS,
+    width: GREY_ZONE_RADIUS * 2,
+    height: GREY_ZONE_RADIUS * 2
+  };
+  // Запрашиваем из квадродерева объекты в данной области
+  let enemyUnits = quadtree ? quadtree.query(queryRect) : gameState.units;
+  enemyUnits = enemyUnits.filter(u =>
+    u instanceof Unit &&
+    u.owner === "player" &&
+    Math.hypot(u.x - pos.x, u.y - pos.y) < GREY_ZONE_RADIUS
+  );
+  
+  if (enemyUnits.length >= ENEMY_ACTIVITY_THRESHOLD) {
+    // Ищем свободные боевые юниты ИИ в той же области
+    let freeUnits = quadtree ? quadtree.query(queryRect) : gameState.units;
+    freeUnits = freeUnits.filter(u =>
+      u instanceof Unit &&
+      u.owner === "ai" &&
+      (u.type === "fighter" || u.type === "assault" || u.type === "elite") &&
+      (!u.commandQueue || u.commandQueue.length === 0)
+    );
+    
+    freeUnits.forEach(unit => {
+      unit.commandQueue = [];
+		 // ❗ Проверка перед reduce
+  if (enemyUnits.length === 0) return;
+      // Находим ближайшего врага из списка enemyUnits (расстояние от центра, можно заменить на расстояние до юнита, если нужно)
+      const nearestEnemy = enemyUnits.reduce((prev, curr) => {
+        return Math.hypot(curr.x - pos.x, curr.y - pos.y) < Math.hypot(prev.x - pos.x, prev.y - pos.y)
+          ? curr : prev;
+      });
+      if (nearestEnemy) {
+        unit.commandQueue.push({ type: "move", x: nearestEnemy.x, y: nearestEnemy.y });
+        unit.commandQueue.push({ type: "attack", target: nearestEnemy });
+      }
+    });
+  }
+}
+
+function onDamage(entity, damage, source = null) {
+  // 1. Базовая защита от мертвых целей или отрицательного урона
+  if (!entity || entity.health <= 0 || damage <= 0) return;
+
+  // 2. Логирование для старого "neural" режима (если он еще используется)
+  if (gameMode === "neural" && entity.owner === "ai") {
+    if (typeof recentThreats !== "undefined") {
+      recentThreats.push({
+        x: entity.x,
+        y: entity.y,
+        timestamp: Date.now(),
+        type: "attack",
+        severity: damage
+      });
+    }
+  }
+
+  // 3. 🔥 ХУК ДЛЯ GNN: Сообщаем нейросети о полученном уроне (КРИТИЧНО ДЛЯ ОБУЧЕНИЯ!)
+  // Это позволит evaluateMissions в gnnAI.js рассчитать награду/штраф за миссию
+  if (gameMode === "gnn" && typeof window.GnnEventHooks !== "undefined") {
+    window.GnnEventHooks.onUnitDamaged(entity, damage, source);
+  }
+
+  // 4. Вычитаем здоровье
+  entity.health -= damage;
+
+  // 5. 🔥 БЛОКИРУЕМ хардкод-реакцию для GNN! 
+  // Старый ИИ реагирует мгновенно, а GNN должен научиться делать это сам через действия "defend" или "tactic_defend"
+  if (gameMode !== "gnn" && typeof reactToAttack === "function") {
+    reactToAttack();
+  }
+
+  // 6. Обработка смерти
+  if (entity.health <= 0) {
+    if (entity instanceof Building) {
+      if (typeof onBuildingDestroyed === "function") onBuildingDestroyed(entity);
+    } else if (entity instanceof Unit) {
+      if (gameMode === "pvp") {
+        if (entity.owner === playerId) {
+          if (typeof sendPvpAction === "function") sendPvpAction({ type: "die", unitId: entity.id });
+          if (typeof spawnDestructionFragments === "function") spawnDestructionFragments(entity.x, entity.y, entity.width || 10, entity.height || 10, entity.type);
+          if (typeof removeUnit === "function") removeUnit(entity, source); // Передаем source (убийцу)
+        }
+        // В PvP чужих юнитов локально не удаляем (ждем синхронизации с сервером)
+      } else {
+        // В одиночной игре — сразу удаляем
+        if (typeof spawnDestructionFragments === "function") spawnDestructionFragments(entity.x, entity.y, entity.width || 10, entity.height || 10, entity.type);
+        if (typeof removeUnit === "function") removeUnit(entity, source); // Передаем source (убийцу)
+      }
+    }
+  }
+}
+
 function reactToAttack() {
+  if (gameMode === "gnn") return;
   // Выбираем ключевые здания для быстрого реагирования
   const keyBuildings = gameState.buildings.filter(b =>
     b.owner === "ai" &&
@@ -207,10 +388,16 @@ function aiPlaceBuilding(buildingType, x, y) {
   building.builtAt = performance.now();
   gameState.buildings.push(building);
 
-  if (typeof assignDefendersToBuildings === "function") assignDefendersToBuildings();
+  // 🔥 ВОТ ИЗМЕНЕНИЕ:
+  // Если режим НЕ gnn, то разрешаем старому скрипту расставлять защитников.
+  // Если режим gnn, мы эту строку пропускаем, и нейросеть должна сама решить 
+  // отправить юнитов в защиту через действие "defend"!
+  if (gameMode !== "gnn" && typeof assignDefendersToBuildings === "function") {
+      assignDefendersToBuildings();
+  }
+
   return building;
 }
-
 // === 5. Найм юнитов (Вызывается GnnAI) ===
 function aiHireWorker(building) {
   if (!building || building.type !== "warehouse" || !building.active) return;
@@ -298,8 +485,7 @@ function aiEnqueueMilitaryUnit(unitType, building) {
 
 // === 7. Вспомогательные функции защиты и геометрии (Вызываются GnnAI) ===
 function assignDefendersToBuildings() {
-  if (gameMode === "neural" || gameMode === "gnn") return; // GnnAI управляет защитой сам
-
+  if (gameMode === "gnn" || gameMode === "neural") return; // GnnAI управляет защитой сам
   const keyBuildings = gameState.buildings.filter(b =>
     b.owner === "ai" && ["warehouse", "repairWorkshop", "beacon", "base", "base2", "base3", "barracks", "barracks2", "barracks3"].includes(b.type)
   );
