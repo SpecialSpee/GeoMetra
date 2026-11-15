@@ -181,6 +181,46 @@ window.drawGnnOverlay = function() {
         }
         ctx.restore();
     }
+
+    // 🔥 ОТРИСОВКА ВИРТУАЛЬНЫХ УЗЛОВ
+for (let i = 0; i < nodes.length; i++) {
+  const ni = nodes[i];
+  if (!ni.valid || !ni.isVirtual) continue;
+  
+  const pos = window.worldToScreen(ni.x, ni.y);
+  let color = "#ffffff";
+  let radius = 4;
+  
+  if (ni.virtualType === "threat") {
+    color = "rgba(255, 0, 0, 0.6)";
+    radius = 8;
+    // Рисуем круг опасной зоны
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, ni.threatRadius * camera.scale, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 0, 0, 0.1)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255, 0, 0, 0.4)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  } else if (ni.virtualType === "flank") {
+    color = "rgba(0, 255, 255, 0.8)";
+    radius = 5;
+  } else if (ni.virtualType === "recon") {
+    color = "rgba(255, 255, 0, 0.6)";
+    radius = 4;
+  }
+  
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+  ctx.fill();
+  
+  // Подпись
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "10px monospace";
+  ctx.fillText(ni.virtualType[0].toUpperCase(), pos.x + 6, pos.y + 3);
+}
+
     // === 3. РИСУЕМ ПОЛНУЮ ПАНЕЛЬ ЛЕГЕНДЫ ===
     ctx.save();
     const legendW = 200;

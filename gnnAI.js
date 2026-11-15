@@ -426,6 +426,67 @@ if (intent && intent.unitIds && intent.unitIds.length > 0) {
       return values[type] || 20;
     },
 
+    // 🔥 УМНЫЙ ПОИСК СЛАБЫХ МЕСТ НА ОСНОВЕ ГРАФА
+findBestTacticalTarget: function(state, tacticType) {
+  if (!state || !state.nodes) return null;
+  
+  // Берем только валидные ноды противника
+  const enemyNodes = state.nodes.filter(n => 
+    n.valid && n.owner === "player" && n.type !== "gold" && n.type !== "silicon" && n.type !== "plasma"
+  );
+  
+  if (enemyNodes.length === 0) return null;
+
+  let bestTarget = null;
+  let bestScore = -Infinity;
+
+  for (const node of enemyNodes) {
+    let score = 0;
+    
+    // 1. Базовая ценность цели (используем наш признак targetPriority из nodeFeatures)
+    // Он уже рассчитан: base=1.0, warehouse=0.85, turret=0.6 и т.д.
+    // Мы не знаем точное значение из массива, но можем эвристически оценить по типу:
+    if (node.type === "base" || node.type === "base2" || node.type === "base3") score += 100;
+    else if (node.type === "warehouse") score += 80;
+    else if (node.type === "barracks" || node.type === "barracks2" || node.type === "barracks3") score += 70;
+    else if (node.type === "repairWorkshop") score += 60;
+    else if (node.type.startsWith("turret")) score += 40;
+    else score += 20; // юниты
+
+    // 2. ШТРАФ за близость вражеских скоплений (используем признаки из графа)
+    // Если рядом много врагов (enemyClusterNear) или высокая угроза, снижаем score
+    // Мы можем оценить это, посчитав вражеские ноды в радиусе 250px от этой цели
+    const nearbyThreat = enemyNodes.filter(other => {
+      if (other === node) return false;
+      const dist = Math.hypot(node.x - other.x, node.y - other.y);
+      return dist < 250;
+    }).length;
+
+    if (nearbyThreat >= 3) score -= 60;      // Сильная оборона (кластер)
+    else if (nearbyThreat >= 2) score -= 30;  // Средняя оборона
+    else if (nearbyThreat === 0) score += 40; // Изолированная цель! (Идеально для harassment)
+
+    // 3. Специфика тактики
+    if (tacticType === "flank_attack" || tacticType === "strike_weak") {
+      // Для фланга и слабого места мы ИЩЕМ изолированные ценные цели
+      if (nearbyThreat === 0 && (node.type === "warehouse" || node.type === "barracks" || node.type.includes("base"))) {
+        score += 100; // Огромный бонус за изолированную экономику/базу
+      }
+    } else if (tacticType === "tactic_push" || tacticType === "tactic_all_in") {
+      // Для пуша мы готовы атаковать кластеры, если у нас есть перевес
+      // (Это упрощенная проверка, можно улучшить, сравнивая ourClusterStrength)
+      score += nearbyThreat * 5; 
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestTarget = node;
+    }
+  }
+
+  return bestTarget;
+},
+
 evaluateMissions: function () {
   for (let i = this.missionCache.length - 1; i >= 0; i--) {
     const mission = this.missionCache[i];
@@ -2043,8 +2104,16 @@ buildGraphState: function () {
     });
   }
   
+  // 🔥 ДОБАВЛЯЕМ ВИРТУАЛЬНЫЕ УЗЛЫ
+  const virtualNodes = this.generateVirtualNodes({ nodes: raw });
+  const maxVirtualNodes = Math.min(virtualNodes.length, 8); // Максимум 8 виртуальных узлов
+  for (let i = 0; i < maxVirtualNodes && raw.length < CFG.MAX_NODES; i++) {
+    raw.push(virtualNodes[i]);
+  }
+
+  // Паддинг до MAX_NODES
   while (raw.length < CFG.MAX_NODES) {
-    raw.push({ obj: null, type: "pad", owner: "none", x: 0, y: 0, hp: 0, valid: 0, freshness: 0, isStale: false });
+    raw.push({ obj: null, type: "pad", owner:"none", x: 0, y: 0, hp: 0, valid: 0, isVirtual: false });
   }
   
   const X = raw.map(n => this.nodeFeatures(n));
@@ -2096,7 +2165,107 @@ buildGraphState: function () {
   
   return { X, A_distance, A_threat, nodes: raw };
 },
+   
+// 🔥 ГЕНЕРАЦИЯ ВИРТУАЛЬНЫХ УЗЛОВ (Threat Zones, Flank Waypoints, Recon Targets)
+generateVirtualNodes: function(state) {
+  const virtualNodes = [];
+  const enemyNodes = state.nodes.filter(n => n.valid && n.owner === "player");
+  const aiNodes = state.nodes.filter(n => n.valid && n.owner === "ai");
+  
+  if (enemyNodes.length === 0) return virtualNodes;
+
+  // 1. УЗЛЫ УГРОЗЫ: скопления вражеских турелей/зданий
+  const enemyTurrets = enemyNodes.filter(n => n.type.startsWith("turret"));
+  if (enemyTurrets.length >= 2) {
+    // Вычисляем центр скопления турелей
+    const centerX = enemyTurrets.reduce((s, n) => s + n.x, 0) / enemyTurrets.length;
+    const centerY = enemyTurrets.reduce((s, n) => s + n.y, 0) / enemyTurrets.length;
     
+    virtualNodes.push({
+      obj: null,
+      type: "threat_zone",
+      owner: "player",
+      x: centerX,
+      y: centerY,
+      hp: 0,
+      valid: 1,
+      isVirtual: true,
+      virtualType: "threat",
+      threatRadius: 300, // Радиус опасной зоны
+      freshness: 1.0,
+      isStale: false
+    });
+  }
+
+  // 2. ФЛАНГОВЫЕ ТОЧКИ: безопасные позиции вокруг вражеской базы
+  const enemyBase = enemyNodes.find(n => n.type.includes("base"));
+  if (enemyBase) {
+    const baseX = enemyBase.x;
+    const baseY = enemyBase.y;
+    const flankDistance = 250; // Дистанция фланга от базы
+    
+    // Генерируем 4 фланговые точки (север, юг, восток, запад)
+    const flankAngles = [0, Math.PI / 2, Math.PI, Math.PI * 1.5];
+    flankAngles.forEach((angle, idx) => {
+      const flankX = baseX + Math.cos(angle) * flankDistance;
+      const flankY = baseY + Math.sin(angle) * flankDistance;
+      
+      // Проверяем, что точка не внутри threat zone
+      const inThreatZone = virtualNodes.some(v => 
+        v.virtualType === "threat" && 
+        Math.hypot(flankX - v.x, flankY - v.y) < v.threatRadius
+      );
+      
+      if (!inThreatZone) {
+        virtualNodes.push({
+          obj: null,
+          type: "flank_point",
+          owner: "neutral",
+          x: flankX,
+          y: flankY,
+          hp: 0,
+          valid: 1,
+          isVirtual: true,
+          virtualType: "flank",
+          flankIndex: idx,
+          freshness: 1.0,
+          isStale: false
+        });
+      }
+    });
+  }
+
+  // 3. ТОЧКИ РАЗВЕДКИ: направления, где мало информации
+  // (упрощённо: если вражеских узлов мало, добавляем точки вперёд)
+  if (enemyNodes.length < 5) {
+    const aiBaseNode = aiNodes.find(n => n.type === "base");
+    if (aiBaseNode) {
+      const reconDistance = 400;
+      const reconAngles = [Math.PI / 4, Math.PI * 0.75, Math.PI * 1.25, Math.PI * 1.75];
+      reconAngles.forEach((angle, idx) => {
+        const reconX = aiBaseNode.x + Math.cos(angle) * reconDistance;
+        const reconY = aiBaseNode.y + Math.sin(angle) * reconDistance;
+        
+        virtualNodes.push({
+          obj: null,
+          type: "recon_target",
+          owner: "neutral",
+          x: reconX,
+          y: reconY,
+          hp: 0,
+          valid: 1,
+          isVirtual: true,
+          virtualType: "recon",
+          freshness: 0.5,
+          isStale: false
+        });
+      });
+    }
+  }
+
+  return virtualNodes;
+},
+
     assessThreats: function () {
       const enemyUnits = gameState.units.filter(u => u.owner === "player" && u.health > 0);
       const enemyBuildings = gameState.buildings.filter(b => b.owner === "player" && b.health > 0);
@@ -2111,6 +2280,25 @@ buildGraphState: function () {
       this.strategicMemory.enemyComposition = composition;
       this.strategicMemory.threatLevel = threatLevel;
     },
+
+    // 🔥 РАЗДЕЛЕНИЕ АРМИИ НА ГРУППЫ ДЛЯ ФЛАНГОВОЙ АТАКИ
+splitArmyIntoGroups: function(freeUnits, numGroups = 2) {
+  if (freeUnits.length <= numGroups) {
+    // Если юнитов мало, каждая группа = 1 юнит
+    return freeUnits.map(u => [u]);
+  }
+  
+  // Сортируем юнитов по позиции (слева направо)
+  const sorted = [...freeUnits].sort((a, b) => a.x - b.x);
+  
+  // Распределяем по группам равномерно
+  const groups = Array.from({ length: numGroups }, () => []);
+  sorted.forEach((unit, idx) => {
+    groups[idx % numGroups].push(unit);
+  });
+  
+  return groups;
+},
 
 decide: function () {
 const state = this.buildGraphState();
@@ -2876,14 +3064,14 @@ if (action.startsWith("attack") && activeAttacks >= 3) {
     if (action === "build_beacon") return this.tryBuildSpecific("beacon", BEACON_COST, action, actionIndex, state);
     // 🔥 ТУРЕЛИ (все три тира!
     if (action === "build_turret1") return this.tryBuildSpecific("turret", TURRET_COST, action, actionIndex, state);
-    if (action === "build_turret2") return this.tryBuildSpecific("turret2", TURRET2_COST, action, actionIndex, state);
-    if (action === "build_turret3") return this.tryBuildSpecific("turret3", TURRET3_COST, action, actionIndex, state);
     // 🔥 ТИР-2
     if (action === "build_base2")     return this.tryBuildSpecific("base2", BASE2_COST, action, actionIndex, state);
     if (action === "build_barracks2") return this.tryBuildSpecific("barracks2", BARRACKS2_COST, action, actionIndex, state);
+    if (action === "build_turret2") return this.tryBuildSpecific("turret2", TURRET2_COST, action, actionIndex, state);
     // 🔥 ТИР-3
     if (action === "build_base3")     return this.tryBuildSpecific("base3", BASE3_COST, action, actionIndex, state);
     if (action === "build_barracks3") return this.tryBuildSpecific("barracks3", BARRACKS3_COST, action, actionIndex, state);
+    if (action === "build_turret3") return this.tryBuildSpecific("turret3", TURRET3_COST, action, actionIndex, state);
     if (action === "hireWorker") {
       const w = gameState.buildings.find(b => b.owner === "ai" && b.type === "warehouse" && b.active && (b.workers || 0) < (b.maxDeliveryWorkers || 5));
       if (!w) return false;
@@ -2946,64 +3134,123 @@ if (action.startsWith("attack") && activeAttacks >= 3) {
       this.registerAction(action, state, { type: "idle" }, actionIndex);
       return true;
     }
-    if (action === "strike_weak") {
-      const targets = state.nodes.filter(n => 
-        n.valid && n.owner === "player" && 
-        ["warehouse", "barracks", "beacon", "base", "base2", "base3"].includes(n.type)
-      );
-      targets.sort((a, b) => {
-        const aEnemies = gameState.units.filter(u => u.owner === "player" && Math.hypot(u.x - a.x, u.y - a.y) < 200).length;
-        const bEnemies = gameState.units.filter(u => u.owner === "player" && Math.hypot(u.x - b.x, u.y - b.y) < 200).length;
-        const aPrio = {base: 10, base2: 10, base3: 10, warehouse: 8, barracks: 7, beacon: 6}[a.type] || 5;
-        const bPrio = {base: 10, base2: 10, base3: 10, warehouse: 8, barracks: 7, beacon: 6}[b.type] || 5;
-        return (bPrio - bEnemies * 2) - (aPrio - aEnemies * 2);
-      });
-      const target = targets[0];
-      if (!target) return false;
-      const freeUnits = gameState.units.filter(u => 
-        u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
-        u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
-      );
-      if (freeUnits.length === 0) return false;
-      const enemyClusters = gameState.units.filter(u => u.owner === "player" && u.health > 0);
-      const directPathBlocked = enemyClusters.some(e => {
-        const dToTarget = Math.hypot(e.x - target.x, e.y - target.y);
-        const dToUs = Math.hypot(e.x - aiBase.x, e.y - aiBase.y);
-        return dToTarget < 150 && dToUs < 400;
-      });
-      
-      const waypoints = directPathBlocked 
-        ? [{type: "move", x: target.x + (target.y > aiBase.y ? -200 : 200), y: target.y}]
-        : [{type: "move", x: target.x, y: target.y}];
-      
-      freeUnits.forEach(u => {
-        u.commandQueue = [...waypoints, {type: "attack", target: target.obj}];
-      });
-      this.registerAction(action, state, {type: "attack", targetId: target.obj.id, tactic: "strike_weak"}, actionIndex);
-      return true;
+if (action === "strike_weak") {
+  // 1. Находим слабые цели (изолированные здания без защиты)
+  const targets = state.nodes.filter(n => 
+    n.valid && n.owner === "player" && 
+    ["warehouse", "barracks", "beacon", "base", "base2", "base3"].includes(n.type)
+  );
+  
+  // 2. Оцениваем каждую цель: приоритет - изолированность
+  targets.forEach(target => {
+    const nearbyEnemies = state.nodes.filter(n => 
+      n.valid && n.owner === "player" && 
+      Math.hypot(n.x - target.x, n.y - target.y) < 200 &&
+      n !== target
+    ).length;
+    target.isolationScore = nearbyEnemies; // Чем меньше, тем лучше
+  });
+  
+  // 3. Сортируем: сначала изолированные цели с высоким приоритетом
+  targets.sort((a, b) => {
+    const aPrio = {base: 10, base2: 10, base3: 10, warehouse: 8, barracks: 7, beacon: 6}[a.type] || 5;
+    const bPrio = {base: 10, base2: 10, base3: 10, warehouse: 8, barracks: 7, beacon: 6}[b.type] || 5;
+    return (bPrio - b.isolationScore * 2) - (aPrio - a.isolationScore * 2);
+  });
+  
+  const target = targets[0];
+  if (!target) return false;
+  
+  // 4. Находим свободных юнитов
+  const freeUnits = gameState.units.filter(u => 
+    u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
+    u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
+  );
+  
+  if (freeUnits.length === 0) return false;
+  
+  // 5. Проверяем, есть ли threat zone на пути
+  const threatZones = state.nodes.filter(n => 
+    n.valid && n.isVirtual && n.virtualType === "threat"
+  );
+  
+  const directPathBlocked = threatZones.some(zone => {
+    const distToZone = Math.hypot(zone.x - target.x, zone.y - target.y);
+    return distToZone < zone.threatRadius + 100;
+  });
+  
+  // 6. Если путь заблокирован, используем обходной маршрут через фланговую точку
+  const waypoints = directPathBlocked 
+    ? (() => {
+        const flankNodes = state.nodes.filter(n => n.valid && n.isVirtual && n.virtualType === "flank");
+        const nearestFlank = flankNodes.reduce((best, n) => {
+          const distToTarget = Math.hypot(n.x - target.x, n.y - target.y);
+          const bestDist = best ? Math.hypot(best.x - target.x, best.y - target.y) : Infinity;
+          return distToTarget < bestDist ? n : best;
+        }, null);
+        
+        return nearestFlank 
+          ? [{type: "move", x: nearestFlank.x, y: nearestFlank.y}, {type: "move", x: target.x, y: target.y}]
+          : [{type: "move", x: target.x + (target.y > aiBase.y ? -200 : 200), y: target.y}];
+      })()
+    : [{type: "move", x: target.x, y: target.y}];
+  
+  // 7. Отправляем юнитов
+  freeUnits.forEach(u => {
+    u.commandQueue = [...waypoints, {type: "attack", target: target.obj}];
+  });
+  
+  this.registerAction(action, state, {
+    type: "attack",
+    targetId: target.obj ? target.obj.id : "unknown",
+    tactic: "strike_weak",
+    targetIsolation: target.isolationScore,
+    pathBlocked: directPathBlocked
+  }, actionIndex);
+  
+  console.log(`[GnnAI] 🎯 Удар по слабому месту: ${target.type} (изоляция: ${target.isolationScore}), путь заблокирован: ${directPathBlocked}`);
+  return true;
+}
+if (action === "focus_fire") {
+  // 1. Берем цели ТОЛЬКО из того, что знает ИИ (state.nodes)
+  const enemyTargets = state.nodes.filter(n => 
+    n.valid && n.owner === "player" && n.hp > 0
+  );
+  
+  if (enemyTargets.length === 0) return false;
+
+  // 2. Сортируем: сначала здания, потом по убыванию приоритета и убыванию HP (добивать раненых)
+  enemyTargets.sort((a, b) => {
+    const aIsBuilding = ["base", "warehouse", "barracks", "turret"].includes(a.type) ? 0 : 1;
+    const bIsBuilding = ["base", "warehouse", "barracks", "turret"].includes(b.type) ? 0 : 1;
+    if (aIsBuilding !== bIsBuilding) return aIsBuilding - bIsBuilding;
+    
+    // Если приоритет одинаковый, бьем того, у кого меньше HP
+    if (a.targetPriority === b.targetPriority) {
+      return a.hp - b.hp; 
     }
-    if (action === "focus_fire") {
-      const enemies = [...gameState.units.filter(u => u.owner === "player" && u.health > 0),
-                       ...gameState.buildings.filter(b => b.owner === "player" && b.health > 0)];
-      enemies.sort((a, b) => {
-        const aIsBuilding = ["base", "warehouse", "barracks"].includes(a.type) ? 0 : 1;
-        const bIsBuilding = ["base", "warehouse", "barracks"].includes(b.type) ? 0 : 1;
-        if (aIsBuilding !== bIsBuilding) return aIsBuilding - bIsBuilding;
-        return a.health - b.health;
-      });
-      const target = enemies[0];
-      if (!target) return false;
-      const freeUnits = gameState.units.filter(u => 
-        u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
-        u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
-      );
-      if (freeUnits.length === 0) return false;
-      freeUnits.forEach(u => {
-        u.commandQueue = [{type: "attack", target: target}];
-      });
-      this.registerAction(action, state, {type: "attack", targetId: target.id, tactic: "focus_fire"}, actionIndex);
+    return b.targetPriority - a.targetPriority;
+  });
+
+  const target = enemyTargets[0];
+  
+  // 3. Находим своих свободных юнитов (здесь уместно использовать gameState)
+  const freeUnits = gameState.units.filter(u => 
+    u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
+    u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
+  );
+  
+  if (freeUnits.length === 0) return false;
+
+  freeUnits.forEach(u => {
+    // target.obj содержит реальный объект игры, если он есть, иначе создаем фейковый для команды
+    u.commandQueue = [{type: "attack", target: target.obj || {x: target.x, y: target.y, type: target.type, owner: "player", health: target.hp * 100}}];
+  });
+  
+  this.registerAction(action, state, {type: "attack", targetId: target.obj?.id || "unknown", tactic: "focus_fire"}, actionIndex);
       return true;
-    }
+}
+
     if (action === "retreat_regroup") {
       const wounded = gameState.units.filter(u => 
         u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
@@ -3019,50 +3266,115 @@ if (action.startsWith("attack") && activeAttacks >= 3) {
       this.registerAction(action, state, {type: "retreat", anchor: rallyPoint}, actionIndex);
       return true;
     }
-    if (action === "flank_attack") {
-      const enemyCenter = {
-        x: gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((s, u) => s + u.x, 0) / Math.max(1, gameState.units.filter(u => u.owner === "player" && u.health > 0).length),
-        y: gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((s, u) => s + u.y, 0) / Math.max(1, gameState.units.filter(u => u.owner === "player" && u.health > 0).length)
-      };
-      const flankAngle = Math.atan2(enemyCenter.y - aiBase.y, enemyCenter.x - aiBase.x) + Math.PI / 2;
-      const flankDist = 300;
-      const flankPoint = {
-        x: enemyCenter.x + Math.cos(flankAngle) * flankDist,
-        y: enemyCenter.y + Math.sin(flankAngle) * flankDist
-      };
-      const freeUnits = gameState.units.filter(u => 
-        u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
-        u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
-      );
-      if (freeUnits.length === 0) return false;
-      freeUnits.forEach(u => {
-        u.commandQueue = [
-          {type: "move", x: flankPoint.x, y: flankPoint.y},
-          {type: "attack", target: gameState.units.filter(u => u.owner === "player" && u.health > 0)[0] || aiBase}
-        ];
-      });
-      this.registerAction(action, state, {type: "attack", tactic: "flank"}, actionIndex);
-      return true;
-    }
-    if (action === "harass_economy") {
-      const ecoTargets = [
-        ...gameState.buildings.filter(b => b.owner === "player" && b.type === "warehouse"),
-        ...gameState.buildings.filter(b => b.owner === "player" && b.type === "repairWorkshop"),
-        ...gameState.units.filter(u => u.owner === "player" && u.type === "worker")
+
+if (action === "flank_attack") {
+  // 1. Находим фланговые точки из виртуальных узлов
+  const flankNodes = state.nodes.filter(n => 
+    n.valid && n.isVirtual && n.virtualType === "flank"
+  );
+  
+  if (flankNodes.length < 2) {
+    // Если фланговых точек нет, используем старую логику
+    const enemyCenter = {
+      x: gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((s, u) => s + u.x, 0) / Math.max(1, gameState.units.filter(u => u.owner === "player" && u.health > 0).length),
+      y: gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((s, u) => s + u.y, 0) / Math.max(1, gameState.units.filter(u => u.owner === "player" && u.health > 0).length)
+    };
+    const flankAngle = Math.atan2(enemyCenter.y - aiBase.y, enemyCenter.x - aiBase.x) + Math.PI / 2;
+    const flankDist = 300;
+    const flankPoint = {
+      x: enemyCenter.x + Math.cos(flankAngle) * flankDist,
+      y: enemyCenter.y + Math.sin(flankAngle) * flankDist
+    };
+    const freeUnits = gameState.units.filter(u => 
+      u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
+      u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
+    );
+    if (freeUnits.length === 0) return false;
+    freeUnits.forEach(u => {
+      u.commandQueue = [
+        {type: "move", x: flankPoint.x, y: flankPoint.y},
+        {type: "attack", target: gameState.units.filter(u => u.owner === "player" && u.health > 0)[0] || aiBase}
       ];
-      ecoTargets.sort((a, b) => Math.hypot(a.x - aiBase.x, a.y - aiBase.y) - Math.hypot(b.x - aiBase.x, b.y - aiBase.y));
-      const target = ecoTargets[0];
-      if (!target) return false;
-      const fighters = gameState.units.filter(u => 
-        u.owner === "ai" && u.type === "fighter" && u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
-      );
-      if (fighters.length === 0) return false;
-      fighters.forEach(u => {
-        u.commandQueue = [{type: "attack", target: target}];
-      });
-      this.registerAction(action, state, {type: "attack", tactic: "harass_economy", targetId: target.id}, actionIndex);
-      return true;
-    }
+    });
+    this.registerAction(action, state, {type: "attack", tactic: "flank"}, actionIndex);
+    return true;
+  }
+  
+  // 2. Берём 2 фланговые точки (левую и правую)
+  const flank1 = flankNodes[0];
+  const flank2 = flankNodes[Math.min(1, flankNodes.length - 1)];
+  
+  // 3. Находим свободных юнитов
+  const freeUnits = gameState.units.filter(u => 
+    u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
+    u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
+  );
+  
+  if (freeUnits.length < 2) return false;
+  
+  // 4. Разделяем армию на 2 группы
+  const groups = this.splitArmyIntoGroups(freeUnits, 2);
+  
+  // 5. Находим цель для атаки (вражеская база или ближайший враг)
+  const enemyBase = state.nodes.find(n => n.valid && n.owner === "player" && n.type.includes("base"));
+  const attackTarget = enemyBase ? enemyBase.obj : gameState.units.find(u => u.owner === "player" && u.health > 0);
+  
+  // 6. Отправляем каждую группу к своей фланговой точке
+  groups.forEach((group, idx) => {
+    const flankPoint = idx === 0 ? flank1 : flank2;
+    group.forEach(u => {
+      u.commandQueue = [
+        {type: "move", x: flankPoint.x, y: flankPoint.y},
+        {type: "attack", target: attackTarget}
+      ];
+    });
+  });
+  
+  this.registerAction(action, state, {
+    type: "attack",
+    tactic: "flank",
+    group1Size: groups[0].length,
+    group2Size: groups[1].length,
+    flank1: {x: flank1.x, y: flank1.y},
+    flank2: {x: flank2.x, y: flank2.y}
+  }, actionIndex);
+  
+  console.log(`[GnnAI] ⚔️ Фланговая атака: Группа 1 (${groups[0].length} юнитов) → (${flank1.x.toFixed(0)}, ${flank1.y.toFixed(0)}), Группа 2 (${groups[1].length} юнитов) → (${flank2.x.toFixed(0)}, ${flank2.y.toFixed(0)})`);
+  return true;
+}
+
+if (action === "harass_economy") {
+  // 1. Ищем экономические цели противника в памяти ИИ
+  const ecoTargets = state.nodes.filter(n => 
+    n.valid && n.owner === "player" && 
+    ["warehouse", "repairWorkshop", "worker"].includes(n.type) && n.hp > 0
+  );
+
+  if (ecoTargets.length === 0) return false;
+
+  // 2. Сортируем по близости к нашей базе (чтобы отправлять ближних разведчиков/файтеров)
+  ecoTargets.sort((a, b) => {
+    const distA = Math.hypot(a.x - aiBase.x, a.y - aiBase.y);
+    const distB = Math.hypot(b.x - aiBase.x, b.y - aiBase.y);
+    return distA - distB;
+  });
+
+  const target = ecoTargets[0];
+
+  // 3. Берем своих файтеров (они лучше всего подходят для харасса)
+  const fighters = gameState.units.filter(u => 
+    u.owner === "ai" && u.type === "fighter" && u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
+  );
+  
+  if (fighters.length === 0) return false;
+
+  fighters.forEach(u => {
+    u.commandQueue = [{type: "attack", target: target.obj || {x: target.x, y: target.y, type: target.type, owner: "player", health: target.hp * 100}}];
+  });
+  
+  this.registerAction(action, state, {type: "attack", tactic: "harass_economy", targetId: target.obj?.id || "unknown"}, actionIndex);
+  return true;
+}
   } catch (e) {
     console.warn("[GnnAI execute error]", action, e);
   }
