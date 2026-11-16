@@ -297,6 +297,7 @@ window.addEventListener("load", () => {
 // === Флаги визуализации ===
 if (typeof window.showGnnGraph === 'undefined') window.showGnnGraph = false;
 if (typeof window.showGnnLegend === 'undefined') window.showGnnLegend = false;
+
 // === Экспорт в глобал ===
 window.startGnnGame = startGnnGame;
 
