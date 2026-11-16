@@ -15,7 +15,7 @@ window.scheduleAIBuilding = function (type, x, y, delay = 0) {
     delay,
     failCount: 0
   });
-  console.log(`[BUILD DEBUG] 📝 Запланировано: ${type} на (${x.toFixed(0)}, ${y.toFixed(0)})`);
+  //console.log(`[BUILD DEBUG] 📝 Запланировано: ${type} на (${x.toFixed(0)}, ${y.toFixed(0)})`);
   return true;
 };
 
@@ -25,20 +25,20 @@ window.processBuildQueue = function () {
     const item = window.buildQueue[i];
     if (now - item.plannedAt >= item.delay) {
       if (typeof aiPlaceBuilding !== "function") {
-        console.error(`[BUILD DEBUG] ❌ aiPlaceBuilding НЕ НАЙДЕНА!`);
+        //console.error(`[BUILD DEBUG] ❌ aiPlaceBuilding НЕ НАЙДЕНА!`);
         window.buildQueue.splice(i, 1); i--; continue;
       }
       const built = aiPlaceBuilding(item.type, item.x, item.y);
       if (built) {
-        console.log(`[BUILD DEBUG] 🎉 УСПЕХ! ${item.type} построен на (${item.x}, ${item.y})`);
+        //console.log(`[BUILD DEBUG] 🎉 УСПЕХ! ${item.type} построен на (${item.x}, ${item.y})`);
         window.buildQueue.splice(i, 1); i--;
       } else {
         item.failCount = (item.failCount || 0) + 1;
         if (item.failCount >= 3) {
-          console.error(`[BUILD DEBUG] ❌ СБОЙ: ${item.type} не размещён после 3 попыток. Удаляю.`);
+          //console.error(`[BUILD DEBUG] ❌ СБОЙ: ${item.type} не размещён после 3 попыток. Удаляю.`);
           window.buildQueue.splice(i, 1); i--;
         } else {
-          console.warn(`[BUILD DEBUG] ⚠️ ПРОВАЛ (${item.failCount}/3): повтор через 2с.`);
+          //console.warn(`[BUILD DEBUG] ⚠️ ПРОВАЛ (${item.failCount}/3): повтор через 2с.`);
           item.plannedAt = now + 2000;
         }
       }
@@ -164,9 +164,9 @@ async function startGnnGame() {
       }
     }
     GnnAI.sessionStartL2 = Math.sqrt(l2Sum);
-    console.log(`[GnnAI] 🎬 Старт матча. Точка отсчёта L2: ${GnnAI.sessionStartL2.toFixed(4)}`);
+    //console.log(`[GnnAI] 🎬 Старт матча. Точка отсчёта L2: ${GnnAI.sessionStartL2.toFixed(4)}`);
   } catch (e) {
-    console.warn("[GnnAI] ⚠️ Не удалось зафиксировать точку отсчёта L2:", e);
+    //.warn("[GnnAI] ⚠️ Не удалось зафиксировать точку отсчёта L2:", e);
     GnnAI.sessionStartL2 = 0;
   }
 }
@@ -295,9 +295,8 @@ window.addEventListener("load", () => {
 });
 
 // === Флаги визуализации ===
-if (typeof window.showGnnGraph === 'undefined') window.showGnnGraph = true;
-if (typeof window.showGnnLegend === 'undefined') window.showGnnLegend = true;
-
+if (typeof window.showGnnGraph === 'undefined') window.showGnnGraph = false;
+if (typeof window.showGnnLegend === 'undefined') window.showGnnLegend = false;
 // === Экспорт в глобал ===
 window.startGnnGame = startGnnGame;
 

@@ -68,9 +68,9 @@ Object.assign(window.GnnAI, {
     const metrics = this.metrics();
     const executed = this.execute(finalAction, finalActionIndex, state);
     if (!executed) {
-      console.warn(`[DEBUG AI] ⚠️ Действие '${finalAction}' ЗАПРОШЕНО, но НЕ ВЫПОЛНЕНО! Ресурсы:`, JSON.stringify(gameState.aiResources));
+      //console.warn(`[DEBUG AI] ⚠️ Действие '${finalAction}' ЗАПРОШЕНО, но НЕ ВЫПОЛНЕНО! Ресурсы:`, JSON.stringify(gameState.aiResources));
     } else {
-      console.log(`[DEBUG AI] ✅ Действие '${finalAction}' успешно выполнено.`);
+      //console.log(`[DEBUG AI] ✅ Действие '${finalAction}' успешно выполнено.`);
     }
 
     this.pending.push({
@@ -266,7 +266,7 @@ Object.assign(window.GnnAI, {
             X: state.X, A_distance: state.A_distance, A_threat: state.A_threat,
             actionIndex: actionIndex, reward: spamPenalty
           });
-          console.warn(`[GnnAI] ⚠️ Спам-тактика '${action}': ${Math.round(busyRatio*100)}% армии занята → штраф ${spamPenalty.toFixed(2)}`);
+          //console.warn(`[GnnAI] ⚠️ Спам-тактика '${action}': ${Math.round(busyRatio*100)}% армии занята → штраф ${spamPenalty.toFixed(2)}`);
         }
         const recentSame = this.missionCache.filter(m => !m.resolved && m.action === action).length;
         if (recentSame > 0) {
@@ -805,7 +805,7 @@ Object.assign(window.GnnAI, {
         if (typeof rectsOverlap === "function" && rectsOverlap(rect, br)) { bad = true; break; }
       }
       if (!bad) {
-        console.log(`[GnnAI] ✅ Найдено место: ${type} на (${x.toFixed(0)}, ${y.toFixed(0)})`);
+        //console.log(`[GnnAI] ✅ Найдено место: ${type} на (${x.toFixed(0)}, ${y.toFixed(0)})`);
         return { x, y };
       }
     }
