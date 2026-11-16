@@ -4,13 +4,14 @@
 
 // Массив с путями к фоновым изображениям
 const backgroundImages = [
-  '/src/images/background1.png',
-  '/src/images/background2.png',
-  '/src/images/background3.png',
-  '/src/images/background4.png',
-  '/src/images/background5.png',
-  '/src/images/background6.png',
-  '/src/images/background7.png'
+  '/src/images/background0.png',
+  //'/src/images/background1.png',
+  //'/src/images/background2.png',
+  //'/src/images/background3.png',
+  //'/src/images/background4.png',
+  //'/src/images/background5.png',
+  //'/src/images/background6.png',
+  //'/src/images/background7.png'
 ];
 
 // Выбор случайного изображения из массива
@@ -210,23 +211,47 @@ window.drawGnnOverlay = function() {
                     ctx.fillText("⚠", pos.x - 4, pos.y + 3);
                 } 
                 else if (ni.virtualType === "flank") {
-                    // Фланговая точка: голубый ромб
-                    ctx.fillStyle = "rgba(0, 255, 255, 0.8)";
-                    ctx.beginPath();
-                    ctx.moveTo(pos.x, pos.y - 5);
-                    ctx.lineTo(pos.x + 5, pos.y);
-                    ctx.lineTo(pos.x, pos.y + 5);
-                    ctx.lineTo(pos.x - 5, pos.y);
-                    ctx.closePath();
-                    ctx.fill();
-                    ctx.strokeStyle = "#00ffff";
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-                    // Индекс фланга
-                    ctx.fillStyle = "#000000";
-                    ctx.font = "bold 7px monospace";
-                    ctx.fillText(String(ni.flankIndex !== undefined ? ni.flankIndex : "?"), pos.x - 2, pos.y + 2);
-                } 
+                    // 🔥 РАЗНАЯ ВИЗУАЛИЗАЦИЯ: Ромб для обхода, Квадрат для точки сбора
+                    const s = 7; // Размер маркера (фиксированный, не зависит от зума)
+                    
+                    if (ni.isStagingArea) {
+                        // 🔷 ТОЧКА СБОРА (Квадрат): "Накопись здесь, здесь безопасно, но впереди опасно"
+                        ctx.fillStyle = "rgba(0, 255, 255, 0.6)";
+                        ctx.fillRect(pos.x - s, pos.y - s, s * 2, s * 2);
+                        ctx.strokeStyle = "#ffffff";
+                        ctx.lineWidth = 1.5;
+                        ctx.strokeRect(pos.x - s, pos.y - s, s * 2, s * 2);
+                        
+                        // Подпись "S" (Staging)
+                        ctx.fillStyle = "#ffffff";
+                        ctx.font = "bold 8px monospace";
+                        ctx.textAlign = "center";
+                        ctx.textBaseline = "middle";
+                        ctx.fillText("S", pos.x, pos.y);
+                    } else {
+                        // 🔷 ПУТЬ ОБХОДА (Ромб): "Иди здесь, это самое тонкое место в обороне"
+                        ctx.fillStyle = "rgba(0, 255, 255, 0.85)";
+                        ctx.beginPath();
+                        ctx.moveTo(pos.x, pos.y - s);
+                        ctx.lineTo(pos.x + s, pos.y);
+                        ctx.lineTo(pos.x, pos.y + s);
+                        ctx.lineTo(pos.x - s, pos.y);
+                        ctx.closePath();
+                        ctx.fill();
+                        ctx.strokeStyle = "#00ffff";
+                        ctx.lineWidth = 1.5;
+                        ctx.stroke();
+                        
+                        // Индекс фланга
+                        ctx.fillStyle = "#000000";
+                        ctx.font = "bold 8px monospace";
+                        ctx.textAlign = "center";
+                        ctx.textBaseline = "middle";
+                        ctx.fillText(String(ni.flankIndex !== undefined ? ni.flankIndex : "?"), pos.x, pos.y);
+                    }
+                    ctx.textAlign = "left";
+                    ctx.textBaseline = "alphabetic";
+                }
                 else if (ni.virtualType === "recon") {
                     // Точка разведки: жёлтый круг с буквой R
                     ctx.fillStyle = "rgba(255, 255, 0, 0.7)";

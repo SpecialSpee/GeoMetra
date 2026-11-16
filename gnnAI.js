@@ -4201,39 +4201,88 @@ generateVirtualNodes: function(nodes) {
     });
   });
 
-  // 2. ФЛАНГОВЫЕ ТОЧКИ: ищем зазоры между ВСЕМИ зонами поражения
-  const enemyBase = enemyNodes.find(n => n.type && n.type.includes("base"));
-  if (enemyBase) {
-    const flankDist = 280;
-    const numFlanks = 8; // 8 направлений
-    
-    for (let i = 0; i < numFlanks; i++) {
-      const angle = (i / numFlanks) * Math.PI * 2;
-      const fx = enemyBase.x + Math.cos(angle) * flankDist;
-      const fy = enemyBase.y + Math.sin(angle) * flankDist;
-      
-      // Проверяем, что точка вне ВСЕХ зон угрозы (не только одной!)
-      const inAnyThreat = virtualNodes.some(v => {
-        if (v.virtualType !== "threat") return false;
-        return Math.hypot(fx - v.x, fy - v.y) < v.threatRadius;
+  // 2. ФЛАНГОВЫЕ ТОЧКИ: поиск "тонких мест" и точек сбора
+  // 🔥 ЯКОРЬ: база врага, а если её нет — центр масс вражеских турелей
+  let anchor = enemyNodes.find(n => n.type && n.type.includes("base"));
+  if (!anchor && enemyTurrets.length > 0) {
+    anchor = {
+      x: enemyTurrets.reduce((s, t) => s + t.x, 0) / enemyTurrets.length,
+      y: enemyTurrets.reduce((s, t) => s + t.y, 0) / enemyTurrets.length
+    };
+  }
+
+  if (anchor) {
+    // Вычисляем максимальный радиус угрозы от центра
+    const maxThreatR = virtualNodes
+      .filter(v => v.virtualType === "threat")
+      .reduce((mx, v) => {
+        const d = Math.hypot(v.x - anchor.x, v.y - anchor.y) + v.threatRadius;
+        return Math.max(mx, d);
+      }, 0);
+
+    const TURRET_RANGES = { turret: 250, turret2: 500, turret3: 450 };
+    const candidates = [];
+    const numAngles = 16; // Сканируем 16 направлений вокруг центра
+
+    // 🔥 СКАНИРОВАНИЕ: ищем направления с наименьшим количеством угрожающих турелей
+    for (let i = 0; i < numAngles; i++) {
+      const angle = (i / numAngles) * Math.PI * 2;
+      // Ищем точку чуть за пределами максимальной зоны поражения
+      const searchDist = maxThreatR + 60; 
+      const fx = anchor.x + Math.cos(angle) * searchDist;
+      const fy = anchor.y + Math.sin(angle) * searchDist;
+
+      // Считаем, сколько турелей "простреливают" эту конкретную точку
+      let threatCount = 0;
+      enemyTurrets.forEach(t => {
+        const distToTurret = Math.hypot(fx - t.x, fy - t.y);
+        const tRange = TURRET_RANGES[t.type] || 250;
+        if (distToTurret <= tRange) {
+          threatCount++;
+        }
       });
+
+      candidates.push({ x: fx, y: fy, threatCount, angle });
+    }
+
+    // 🔥 СОРТИРОВКА: сначала идут направления с наименьшей плотностью огня (самые "тонкие" места)
+    candidates.sort((a, b) => a.threatCount - b.threatCount);
+
+    // Берем топ-4 наименее защищенных направления
+    const numToPlace = Math.min(4, candidates.length);
+    for (let i = 0; i < numToPlace; i++) {
+      const c = candidates[i];
       
-      if (!inAnyThreat) {
-        virtualNodes.push({
-          obj: null,
-          type: "flank_point",
-          owner: "neutral",
-          x: fx,
-          y: fy,
-          hp: 0,
-          valid: 1,
-          isVirtual: true,
-          virtualType: "flank",
-          flankIndex: i,
-          freshness: 1.0,
-          isStale: false
-        });
-      }
+      // 🔥 ЛОГИКА ТОЧЕК СБОРА (Staging Area):
+      // Если даже в "самом тонком" месте есть угроза (threatCount > 0), 
+      // мы отодвигаем точку еще дальше, чтобы это было безопасное место для накопления войск, а не путь обхода.
+      const isStagingArea = c.threatCount > 0;
+      const finalDist = isStagingArea ? (maxThreatR + 150) : (maxThreatR + 60);
+      
+      const sx = anchor.x + Math.cos(c.angle) * finalDist;
+      const sy = anchor.y + Math.sin(c.angle) * finalDist;
+
+      // Проверка границ карты
+      const wW = typeof worldWidth !== 'undefined' ? worldWidth : 2000;
+      const wH = typeof worldHeight !== 'undefined' ? worldHeight : 2000;
+      if (sx < 50 || sy < 50 || sx > wW - 50 || sy > wH - 50) continue;
+
+      virtualNodes.push({
+        obj: null,
+        type: "flank_point",
+        owner: "neutral",
+        x: sx,
+        y: sy,
+        hp: 0,
+        valid: 1,
+        isVirtual: true,
+        virtualType: "flank",
+        flankIndex: i,
+        threatDensity: c.threatCount,     // Для отладки и логики ИИ
+        isStagingArea: isStagingArea,     // 🔥 КЛЮЧЕВОЙ ФЛАГ
+        freshness: 1.0,
+        isStale: false
+      });
     }
   }
 
@@ -4400,7 +4449,7 @@ generateVirtualNodes: function(nodes) {
     const loading = document.getElementById("loadingScreen");
     if (!loading || document.getElementById("gnnButton")) return;
     const btn = document.createElement("button");
-    btn.id = "gnnButton"; btn.innerText ="Граф ИИ vv7.6";
+    btn.id = "gnnButton"; btn.innerText ="Граф ИИ v7.6";
     btn.style.cssText = "font-family: 'Orbitron', sans-serif; font-size: 18px; padding: 12px 28px; border: 2px solid #00ff99; color: #00ff99; background: rgba(0,255,120,0.08); border-radius: 50px; box-shadow: 0 0 15px rgba(0,255,120,0.5); cursor: pointer; transition: all 0.3s ease; z-index: 10; margin-top: 10px;";
     btn.onmouseenter = () => { btn.style.background = "rgba(0,255,120,0.2)"; btn.style.transform ="scale(1.05)"; };
     btn.onmouseleave = () => { btn.style.background = "rgba(0,255,120,0.08)"; btn.style.transform ="scale(1)"; };
