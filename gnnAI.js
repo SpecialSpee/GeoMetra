@@ -1921,6 +1921,49 @@ init: async function () {
   }
 },
 
+// 🔥 КЛАСТЕРИЗАЦИЯ ЮНИТОВ В ОТРЯДЫ (SQUADS)
+clusterUnits: function(units, maxDist = 150) {
+  const squads = [];
+  
+  for (const u of units) {
+    let added = false;
+    
+    // Ищем подходящий отряд того же типа и владельца
+    for (const squad of squads) {
+      if (squad.baseType === u.type && squad.owner === u.owner) {
+        const dist = Math.hypot(u.x - squad.x, u.y - squad.y);
+        if (dist < maxDist) {
+          squad.units.push(u);
+          squad.count++;
+          // Пересчитываем центр масс отряда
+          squad.x = squad.units.reduce((s, unit) => s + unit.x, 0) / squad.count;
+          squad.y = squad.units.reduce((s, unit) => s + unit.y, 0) / squad.count;
+          // Средний процент HP в отряде
+          squad.hp = squad.units.reduce((s, unit) => s + (unit.health / (unit.maxHealth || 100)), 0) / squad.count;
+          added = true;
+          break;
+        }
+      }
+    }
+    
+    // Если отряд не найден, создаём новый
+    if (!added) {
+      squads.push({
+        baseType: u.type,
+        type: u.type + "_squad", // Специальный тип для графа
+        owner: u.owner,
+        units: [u],
+        count: 1,
+        x: u.x,
+        y: u.y,
+        hp: u.health / (u.maxHealth || 100),
+        commandQueue: u.commandQueue || [] // Наследуем команду лидера
+      });
+    }
+  }
+  return squads;
+},
+
 buildGraphState: function () {
   if (!gameState || !aiBase || !aiBase.maxHealth || aiBase.maxHealth <= 0 || aiBase.health < 0) return null;
 
@@ -1969,26 +2012,51 @@ buildGraphState: function () {
   // ШАГ 2: Фильтруем кандидатов через туман войны и обновляем память
   // ==========================================
   try {
-    // 2A. Юниты
+    // 2A. Юниты (с кластеризацией в отряды!)
+    // Собираем всех юнитов для кластеризации
+    const allUnitsForClustering = [];
     for (const u of gameState.units) {
       if (!u || u.health <= 0 || !isFinite(u.x) || !isFinite(u.y)) continue;
-      const memKey = `unit_${u.type}_${u.id}`;
-      const isVisibleNow = isVisible(u.x, u.y);
+      allUnitsForClustering.push(u);
+    }
 
-      if (u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type)) {
-        candidates.push({ obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), valid: 1, freshness: 1.0, isStale: false });
-        this.reconMemory.set(memKey, { obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), lastSeen: now, isStale: false, isBuilding: false });
+    // Кластеризуем их в отряды
+    const squads = this.clusterUnits(allUnitsForClustering, 150); // 150px радиус объединения
+
+    for (const squad of squads) {
+      const memKey = `squad_${squad.baseType}_${squad.owner}_${Math.round(squad.x)}_${Math.round(squad.y)}`;
+      const isVisibleNow = isVisible(squad.x, squad.y);
+
+      // 🔥 СВОИ ОТРЯДЫ: видим всегда
+      if (squad.owner === "ai" && ["fighter", "assault", "elite"].includes(squad.baseType)) {
+        candidates.push({ 
+          obj: squad, type: squad.type, owner: squad.owner, 
+          x: squad.x, y: squad.y, hp: squad.hp, 
+          count: squad.count, // 🔥 ВАЖНО: количество юнитов
+          valid: 1, freshness: 1.0, isStale: false 
+        });
+        this.reconMemory.set(memKey, { 
+          obj: squad, type: squad.type, owner: squad.owner, 
+          x: squad.x, y: squad.y, hp: squad.hp, count: squad.count,
+          lastSeen: now, isStale: false, isBuilding: false 
+        });
         continue;
       }
-      if (u.owner === "ai" && (u.type === "worker" || u.type === "repairman")) {
-        candidates.push({ obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), valid: 1, freshness: 1.0, isStale: false });
-        continue;
-      }
-      if (u.owner !== "ai" && ["fighter", "assault", "elite"].includes(u.type)) {
+
+      // 🔥 ВРАЖЕСКИЕ ОТРЯДЫ: видим или помним
+      if (squad.owner !== "ai" && ["fighter", "assault", "elite"].includes(squad.baseType)) {
         if (isVisibleNow) {
           newlySeen.add(memKey);
-          this.reconMemory.set(memKey, { obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), lastSeen: now, isStale: false, isBuilding: false });
-          candidates.push({ obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), valid: 1, freshness: 1.0, isStale: false });
+          this.reconMemory.set(memKey, { 
+            obj: squad, type: squad.type, owner: squad.owner, 
+            x: squad.x, y: squad.y, hp: squad.hp, count: squad.count,
+            lastSeen: now, isStale: false, isBuilding: false 
+          });
+          candidates.push({ 
+            obj: squad, type: squad.type, owner: squad.owner, 
+            x: squad.x, y: squad.y, hp: squad.hp, 
+            count: squad.count, valid: 1, freshness: 1.0, isStale: false 
+          });
         }
       }
     }
@@ -2744,6 +2812,7 @@ trainBatch: function () {
 
       return [
         n.valid ? 1 : 0, n.owner === "ai" ? 1 : 0, n.owner ==="player" ? 1 : 0, n.hp || 0,
+        (n.count !== undefined ? (n.count / 10) : 0),
         relX, relY, dist, isCombat ? 1 : 0, isBuilding ? 1 : 0, t === "worker" ? 1 : 0,
         t === "fighter" ? 1 : 0, t ==="assault" ? 1 : 0, t ==="elite" ? 1 : 0, t.startsWith("base") ? 1 : 0,
         isTurret ? 1 : 0, t === "warehouse" ? 1 : 0, t ==="beacon" ? 1 : 0, isResource ? 1 : 0,
@@ -2944,7 +3013,7 @@ if (tacticalActions.includes(action)) {
         
         // 📉 Штраф за спам: армия занята, а мы снова шлём тактику
         if (busyRatio > 0.5) {
-            const spamPenalty = -2.0 * busyRatio;
+            const spamPenalty = -15.0 * busyRatio;
             this.replay.push({
                 X: state.X, A_distance: state.A_distance, A_threat: state.A_threat,
                 actionIndex: actionIndex, reward: spamPenalty
@@ -2958,7 +3027,7 @@ if (tacticalActions.includes(action)) {
             !m.resolved && m.action === action
         ).length;
         if (recentSame > 0) {
-            const repeatPenalty = -3.0 * recentSame;
+            const repeatPenalty = -15.0 * recentSame;
             this.replay.push({
                 X: state.X, A_distance: state.A_distance, A_threat: state.A_threat,
                 actionIndex: actionIndex, reward: repeatPenalty
@@ -2973,7 +3042,7 @@ const activeAttacks = this.missionCache.filter(m => !m.resolved && m.intent.type
 if (action.startsWith("attack") && activeAttacks >= 3) {
     this.replay.push({
         X: state.X, A_distance: state.A_distance, A_threat: state.A_threat,
-        actionIndex: actionIndex, reward: -1.5
+        actionIndex: actionIndex, reward: -5.5
     });
     console.warn(`[GnnAI] ⚠️ Уже ${activeAttacks} атак в полёте — мягкий штраф`);
     // НЕ return false — модель может решить, что 4-я атака нужна
@@ -3034,11 +3103,13 @@ if (action.startsWith("attack") && activeAttacks >= 3) {
       const attackerIds = attackers.map(u => u.id);
 
       attackers.forEach(u => {
-        u.defending = false;
-        const tx = target.x + (Math.random() - 0.5) * 100;
-        const ty = target.y + (Math.random() - 0.5) * 100;
-        u.commandQueue = [{ type: "move", x: tx, y: ty }, { type: "attack", target: target }];
-        if (typeof processCommandQueue === "function") processCommandQueue(u);
+        // Если цель - это отряд (squad), берём первый юнит из него как физическую цель для движка
+        const physicalTarget = (attackTarget.obj && attackTarget.obj.units) ? attackTarget.obj.units[0] : attackTarget.obj;
+        
+        u.commandQueue = [
+          { type: "move", x: attackTarget.x, y: attackTarget.y }, // Летим в центр отряда
+          { type: "attack", target: physicalTarget }          // Атакуем конкретного юнита из отряда
+        ];
       });
       this.registerAction(action, state, { 
         type: "attack", 
@@ -3127,51 +3198,28 @@ if (action.startsWith("attack") && activeAttacks >= 3) {
       return true;
     }
 if (action === "strike_weak") {
-  // 1. Находим слабые цели (изолированные здания без защиты)
-  const targets = state.nodes.filter(n => 
-    n.valid && n.owner === "player" && 
-    ["warehouse", "barracks", "beacon", "base", "base2", "base3"].includes(n.type)
-  );
+  const targets = state.nodes.filter(n => n.valid && n.owner === "player" && ["warehouse", "barracks", "beacon", "base", "base2", "base3"].includes(n.type));
   
-  // 2. Оцениваем каждую цель: приоритет - изолированность
   targets.forEach(target => {
-    const nearbyEnemies = state.nodes.filter(n => 
-      n.valid && n.owner === "player" && 
-      Math.hypot(n.x - target.x, n.y - target.y) < 200 &&
-      n !== target
-    ).length;
-    target.isolationScore = nearbyEnemies; // Чем меньше, тем лучше
+    const nearbyEnemies = state.nodes.filter(n => n.valid && n.owner === "player" && Math.hypot(n.x - target.x, n.y - target.y) < 200 && n !== target).length;
+    target.isolationScore = nearbyEnemies;
   });
   
-  // 3. Сортируем: сначала изолированные цели с высоким приоритетом
   targets.sort((a, b) => {
     const aPrio = {base: 10, base2: 10, base3: 10, warehouse: 8, barracks: 7, beacon: 6}[a.type] || 5;
     const bPrio = {base: 10, base2: 10, base3: 10, warehouse: 8, barracks: 7, beacon: 6}[b.type] || 5;
     return (bPrio - b.isolationScore * 2) - (aPrio - a.isolationScore * 2);
   });
   
-  const target = targets[0];
+  const target = targets[0]; // 🔥 ЭТО УЗЕЛ ГРАФА
   if (!target) return false;
   
-  // 4. Находим свободных юнитов
-  const freeUnits = gameState.units.filter(u => 
-    u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
-    u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
-  );
-  
+  const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0));
   if (freeUnits.length === 0) return false;
   
-  // 5. Проверяем, есть ли threat zone на пути
-  const threatZones = state.nodes.filter(n => 
-    n.valid && n.isVirtual && n.virtualType === "threat"
-  );
+  const threatZones = state.nodes.filter(n => n.valid && n.isVirtual && n.virtualType === "threat");
+  const directPathBlocked = threatZones.some(zone => Math.hypot(zone.x - target.x, zone.y - target.y) < zone.threatRadius + 100);
   
-  const directPathBlocked = threatZones.some(zone => {
-    const distToZone = Math.hypot(zone.x - target.x, zone.y - target.y);
-    return distToZone < zone.threatRadius + 100;
-  });
-  
-  // 6. Если путь заблокирован, используем обходной маршрут через фланговую точку
   const waypoints = directPathBlocked 
     ? (() => {
         const flankNodes = state.nodes.filter(n => n.valid && n.isVirtual && n.virtualType === "flank");
@@ -3180,67 +3228,49 @@ if (action === "strike_weak") {
           const bestDist = best ? Math.hypot(best.x - target.x, best.y - target.y) : Infinity;
           return distToTarget < bestDist ? n : best;
         }, null);
-        
-        return nearestFlank 
-          ? [{type: "move", x: nearestFlank.x, y: nearestFlank.y}, {type: "move", x: target.x, y: target.y}]
-          : [{type: "move", x: target.x + (target.y > aiBase.y ? -200 : 200), y: target.y}];
+        return nearestFlank ? [{type: "move", x: nearestFlank.x, y: nearestFlank.y}, {type: "move", x: target.x, y: target.y}] : [{type: "move", x: target.x + (target.y > aiBase.y ? -200 : 200), y: target.y}];
       })()
     : [{type: "move", x: target.x, y: target.y}];
   
-  // 7. Отправляем юнитов
   freeUnits.forEach(u => {
-    u.commandQueue = [...waypoints, {type: "attack", target: target.obj}];
+    // 🔥 ПРОВЕРКА: если цель - отряд, берем первого юнита, иначе target.obj
+    const physicalTarget = (target.obj && target.obj.units) ? target.obj.units[0] : target.obj;
+    u.commandQueue = [...waypoints, {type: "attack", target: physicalTarget}];
   });
   
-  this.registerAction(action, state, {
-    type: "attack",
-    targetId: target.obj ? target.obj.id : "unknown",
-    tactic: "strike_weak",
-    targetIsolation: target.isolationScore,
-    pathBlocked: directPathBlocked
-  }, actionIndex);
-  
+  this.registerAction(action, state, {type: "attack", targetId: target.obj ? target.obj.id : "unknown", tactic: "strike_weak", targetIsolation: target.isolationScore, pathBlocked: directPathBlocked}, actionIndex);
   console.log(`[GnnAI] 🎯 Удар по слабому месту: ${target.type} (изоляция: ${target.isolationScore}), путь заблокирован: ${directPathBlocked}`);
   return true;
 }
 if (action === "focus_fire") {
-  // 1. Берем цели ТОЛЬКО из того, что знает ИИ (state.nodes)
-  const enemyTargets = state.nodes.filter(n => 
-    n.valid && n.owner === "player" && n.hp > 0
-  );
-  
+  const enemyTargets = state.nodes.filter(n => n.valid && n.owner === "player" && n.hp > 0);
   if (enemyTargets.length === 0) return false;
 
-  // 2. Сортируем: сначала здания, потом по убыванию приоритета и убыванию HP (добивать раненых)
   enemyTargets.sort((a, b) => {
     const aIsBuilding = ["base", "warehouse", "barracks", "turret"].includes(a.type) ? 0 : 1;
     const bIsBuilding = ["base", "warehouse", "barracks", "turret"].includes(b.type) ? 0 : 1;
     if (aIsBuilding !== bIsBuilding) return aIsBuilding - bIsBuilding;
-    
-    // Если приоритет одинаковый, бьем того, у кого меньше HP
-    if (a.targetPriority === b.targetPriority) {
-      return a.hp - b.hp; 
-    }
+    if (a.targetPriority === b.targetPriority) return a.hp - b.hp; 
     return b.targetPriority - a.targetPriority;
   });
 
-  const target = enemyTargets[0];
+  const target = enemyTargets[0]; // 🔥 ЭТО УЗЕЛ ГРАФА
   
-  // 3. Находим своих свободных юнитов (здесь уместно использовать gameState)
-  const freeUnits = gameState.units.filter(u => 
-    u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
-    u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
-  );
-  
+  const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0));
   if (freeUnits.length === 0) return false;
 
   freeUnits.forEach(u => {
-    // target.obj содержит реальный объект игры, если он есть, иначе создаем фейковый для команды
-    u.commandQueue = [{type: "attack", target: target.obj || {x: target.x, y: target.y, type: target.type, owner: "player", health: target.hp * 100}}];
+    // 🔥 ПРОВЕРКА: если цель - отряд, берем первого юнита, иначе target.obj
+    const physicalTarget = (target.obj && target.obj.units) ? target.obj.units[0] : target.obj;
+    
+    u.commandQueue = [{
+      type: "attack", 
+      target: physicalTarget || {x: target.x, y: target.y, type: target.type, owner: "player", health: target.hp * 100}
+    }];
   });
   
   this.registerAction(action, state, {type: "attack", targetId: target.obj?.id || "unknown", tactic: "focus_fire"}, actionIndex);
-      return true;
+  return true;
 }
 
     if (action === "retreat_regroup") {
@@ -3261,82 +3291,85 @@ if (action === "focus_fire") {
 
 if (action === "flank_attack") {
   // 1. Находим фланговые точки из виртуальных узлов
-  const flankNodes = state.nodes.filter(n => 
-    n.valid && n.isVirtual && n.virtualType === "flank"
-  );
+  const flankNodes = state.nodes.filter(n => n.valid && n.isVirtual && n.virtualType === "flank");
   
   if (flankNodes.length < 2) {
-    // Если фланговых точек нет, используем старую логику
+    // Фоллбэк: если фланговых точек нет, используем старую логику
+    const enemyUnits = gameState.units.filter(u => u.owner === "player" && u.health > 0);
+    if (enemyUnits.length === 0) return false;
+    
     const enemyCenter = {
-      x: gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((s, u) => s + u.x, 0) / Math.max(1, gameState.units.filter(u => u.owner === "player" && u.health > 0).length),
-      y: gameState.units.filter(u => u.owner === "player" && u.health > 0).reduce((s, u) => s + u.y, 0) / Math.max(1, gameState.units.filter(u => u.owner === "player" && u.health > 0).length)
+      x: enemyUnits.reduce((s, u) => s + u.x, 0) / enemyUnits.length,
+      y: enemyUnits.reduce((s, u) => s + u.y, 0) / enemyUnits.length
     };
     const flankAngle = Math.atan2(enemyCenter.y - aiBase.y, enemyCenter.x - aiBase.x) + Math.PI / 2;
-    const flankDist = 300;
     const flankPoint = {
-      x: enemyCenter.x + Math.cos(flankAngle) * flankDist,
-      y: enemyCenter.y + Math.sin(flankAngle) * flankDist
+      x: enemyCenter.x + Math.cos(flankAngle) * 300,
+      y: enemyCenter.y + Math.sin(flankAngle) * 300
     };
-    const freeUnits = gameState.units.filter(u => 
-      u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
-      u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
-    );
+    
+    const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0));
     if (freeUnits.length === 0) return false;
+    
+    const fallbackTarget = enemyUnits[0];
     freeUnits.forEach(u => {
       u.commandQueue = [
         {type: "move", x: flankPoint.x, y: flankPoint.y},
-        {type: "attack", target: gameState.units.filter(u => u.owner === "player" && u.health > 0)[0] || aiBase}
+        {type: "attack", target: fallbackTarget}
       ];
     });
     this.registerAction(action, state, {type: "attack", tactic: "flank"}, actionIndex);
     return true;
   }
   
-  // 2. Берём 2 фланговые точки (левую и правую)
+  // 2. Берём 2 фланговые точки
   const flank1 = flankNodes[0];
   const flank2 = flankNodes[Math.min(1, flankNodes.length - 1)];
   
   // 3. Находим свободных юнитов
-  const freeUnits = gameState.units.filter(u => 
-    u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && 
-    u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0)
-  );
-  
+  const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0 && (!u.commandQueue || u.commandQueue.length === 0));
   if (freeUnits.length < 2) return false;
   
   // 4. Разделяем армию на 2 группы
   const groups = this.splitArmyIntoGroups(freeUnits, 2);
   
-  // 5. Находим цель для атаки (вражеская база или ближайший враг)
-  const enemyBase = state.nodes.find(n => n.valid && n.owner === "player" && n.type.includes("base"));
-  const attackTarget = enemyBase ? enemyBase.obj : gameState.units.find(u => u.owner === "player" && u.health > 0);
+  // 5. 🔥 НАХОДИМ ЦЕЛЬ ИЗ ГРАФА (чтобы поддержать отряды/squads)
+  const targetNode = state.nodes.find(n => 
+    n.valid && n.owner === "player" && 
+    (n.type.includes("base") || ["fighter", "assault", "elite", "warehouse", "barracks"].includes(n.type))
+  );
   
+  // Фоллбэк, если граф вдруг пуст
+  const fallbackTarget = targetNode ? targetNode.obj : gameState.units.find(u => u.owner === "player" && u.health > 0);
+
   // 6. Отправляем каждую группу к своей фланговой точке
   groups.forEach((group, idx) => {
     const flankPoint = idx === 0 ? flank1 : flank2;
     group.forEach(u => {
+      // 🔥 ПРАВИЛЬНАЯ ПРОВЕРКА: если это отряд, берем первого юнита, иначе сам объект
+      const physicalTarget = (targetNode && targetNode.obj && targetNode.obj.units) 
+        ? targetNode.obj.units[0] 
+        : fallbackTarget;
+
       u.commandQueue = [
         {type: "move", x: flankPoint.x, y: flankPoint.y},
-        {type: "attack", target: attackTarget}
+        {type: "attack", target: physicalTarget}
       ];
     });
   });
   
   this.registerAction(action, state, {
-    type: "attack",
-    tactic: "flank",
-    group1Size: groups[0].length,
-    group2Size: groups[1].length,
-    flank1: {x: flank1.x, y: flank1.y},
-    flank2: {x: flank2.x, y: flank2.y}
+    type: "attack", tactic: "flank",
+    group1Size: groups[0].length, group2Size: groups[1].length,
+    flank1: {x: flank1.x, y: flank1.y}, flank2: {x: flank2.x, y: flank2.y}
   }, actionIndex);
   
-  console.log(`[GnnAI] ⚔️ Фланговая атака: Группа 1 (${groups[0].length} юнитов) → (${flank1.x.toFixed(0)}, ${flank1.y.toFixed(0)}), Группа 2 (${groups[1].length} юнитов) → (${flank2.x.toFixed(0)}, ${flank2.y.toFixed(0)})`);
+  console.log(`[GnnAI] ⚔️ Фланговая атака: Группа 1 (${groups[0].length}) → (${flank1.x.toFixed(0)}, ${flank1.y.toFixed(0)}), Группа 2 (${groups[1].length}) → (${flank2.x.toFixed(0)}, ${flank2.y.toFixed(0)})`);
   return true;
 }
 
 if (action === "harass_economy") {
-  // 1. Ищем экономические цели противника в памяти ИИ
+  // 1. Ищем экономические цели противника в памяти ИИ (state.nodes)
   const ecoTargets = state.nodes.filter(n => 
     n.valid && n.owner === "player" && 
     ["warehouse", "repairWorkshop", "worker"].includes(n.type) && n.hp > 0
@@ -3361,10 +3394,21 @@ if (action === "harass_economy") {
   if (fighters.length === 0) return false;
 
   fighters.forEach(u => {
-    u.commandQueue = [{type: "attack", target: target.obj || {x: target.x, y: target.y, type: target.type, owner: "player", health: target.hp * 100}}];
+    // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: если цель - это отряд (squad), берем первый юнит из него
+    const physicalTarget = (target.obj && target.obj.units) ? target.obj.units[0] : target.obj;
+    
+    u.commandQueue = [{
+      type: "attack", 
+      target: physicalTarget || {x: target.x, y: target.y, type: target.type, owner: "player", health: target.hp * 100}
+    }];
   });
   
-  this.registerAction(action, state, {type: "attack", tactic: "harass_economy", targetId: target.obj?.id || "unknown"}, actionIndex);
+  this.registerAction(action, state, {
+    type: "attack", 
+    tactic: "harass_economy", 
+    targetId: target.obj ? (target.obj.id || (target.obj.units ? target.obj.units[0].id : "unknown")) : "unknown"
+  }, actionIndex);
+  
   return true;
 }
   } catch (e) {
