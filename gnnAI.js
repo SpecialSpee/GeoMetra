@@ -60,8 +60,8 @@
     missionCache: [],
 
     // 🔥 СТРАТЕГИЧЕСКАЯ ПАМЯТЬ: кэш разведанных узлов
-    reconMemory: new Map(), // key: "type_x_y", value: {obj, type, owner, x, y, hp, lastSeen, isStale}
-    MAX_MEMORY_AGE: 120000,  // Забывать узлы старше 120 секунд
+reconMemory: new Map(), // key: "type_x_y", value: {obj, type, owner, x, y, hp, lastSeen, isStale}
+MAX_MEMORY_AGE: 60000,  // 🔥 Базовый TTL: 60 секунд (для зданий и турелей будет больше)
 
     lastStagnationCheck: 0,
     lastBuildingBuilt: {},
@@ -1923,14 +1923,14 @@ init: async function () {
 
 buildGraphState: function () {
   if (!gameState || !aiBase || !aiBase.maxHealth || aiBase.maxHealth <= 0 || aiBase.health < 0) return null;
-  
+
   const now = performance.now();
-  const raw = [{ obj: aiBase, type: "base", owner: "ai", x: aiBase.x, y: aiBase.y, hp: Math.min(1, aiBase.health / aiBase.maxHealth), valid: 1, freshness: 1.0 }];
+  const raw = [{ obj: aiBase, type: "base", owner: "ai", x: aiBase.x, y: aiBase.y, hp: Math.min(1, aiBase.health / aiBase.maxHealth), valid: 1, freshness: 1.0, isStale: false }];
   const candidates = [];
-  const newlySeen = new Set(); // Для награды за разведку
-  
+  const newlySeen = new Set();
+
   // ==========================================
-  // 🔥 ШАГ 1: Собираем "Источники Зрения"
+  // ШАГ 1: Собираем "Источники Зрения" (Туман войны)
   // ==========================================
   const visionSources = [];
   for (const b of gameState.buildings) {
@@ -1940,16 +1940,21 @@ buildGraphState: function () {
       else if (b.type.includes("base")) r = 400;
       else if (b.type === "beacon") r = 350;
       else if (b.type === "barracks") r = 320;
-      visionSources.push({x: b.x, y: b.y, r: r});
+      else if (b.type === "warehouse") r = 250;
+      visionSources.push({ x: b.x, y: b.y, r: r });
     }
   }
   for (const u of gameState.units) {
     if (u.owner === "ai" && u.health > 0) {
-      let r = u.type === "worker" ? 200 : (u.visionRadius || u.engagementRadius || 350);
-      visionSources.push({x: u.x, y: u.y, r: r});
+      let r = 350;
+      if (u.type === "worker") r = 200;
+      else if (u.type === "fighter") r = 300;
+      else if (u.type === "assault") r = 350;
+      else if (u.type === "elite") r = 400;
+      visionSources.push({ x: u.x, y: u.y, r: r });
     }
   }
-  
+
   const isVisible = (x, y) => {
     for (let i = 0; i < visionSources.length; i++) {
       const v = visionSources[i];
@@ -1959,54 +1964,53 @@ buildGraphState: function () {
     }
     return false;
   };
-  
+
   // ==========================================
-  // 🔥 ШАГ 2: Обновляем память и собираем кандидатов
+  // ШАГ 2: Фильтруем кандидатов через туман войны и обновляем память
   // ==========================================
   try {
     // 2A. Юниты
     for (const u of gameState.units) {
       if (!u || u.health <= 0 || !isFinite(u.x) || !isFinite(u.y)) continue;
-      
       const memKey = `unit_${u.type}_${u.id}`;
       const isVisibleNow = isVisible(u.x, u.y);
-      
-      // Своих боевых юнитов видим ВСЕГДА
-      if (u.owner === "ai" && ["fighter","assault","elite"].includes(u.type)) {
-        candidates.push({obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), valid: 1, freshness: 1.0});
-        this.reconMemory.set(memKey, {obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), lastSeen: now, isStale: false});
+
+      if (u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type)) {
+        candidates.push({ obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), valid: 1, freshness: 1.0, isStale: false });
+        this.reconMemory.set(memKey, { obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), lastSeen: now, isStale: false, isBuilding: false });
         continue;
       }
-      
-      // Вражеские юниты — обновляем память если видим, иначе берём из памяти
-      if (u.owner !== "ai" && ["fighter","assault","elite"].includes(u.type)) {
+      if (u.owner === "ai" && (u.type === "worker" || u.type === "repairman")) {
+        candidates.push({ obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), valid: 1, freshness: 1.0, isStale: false });
+        continue;
+      }
+      if (u.owner !== "ai" && ["fighter", "assault", "elite"].includes(u.type)) {
         if (isVisibleNow) {
           newlySeen.add(memKey);
-          this.reconMemory.set(memKey, {obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), lastSeen: now, isStale: false});
-          candidates.push({obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), valid: 1, freshness: 1.0});
+          this.reconMemory.set(memKey, { obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), lastSeen: now, isStale: false, isBuilding: false });
+          candidates.push({ obj: u, type: u.type, owner: u.owner, x: u.x, y: u.y, hp: u.health / (u.maxHealth || 1), valid: 1, freshness: 1.0, isStale: false });
         }
       }
     }
-    
+
     // 2B. Здания
     for (const b of gameState.buildings) {
       if (!b || b.health <= 0 || b === aiBase || !isFinite(b.x) || !isFinite(b.y)) continue;
-      
       const memKey = `building_${b.type}_${b.id}`;
       const isVisibleNow = isVisible(b.x, b.y);
-      
+
       if (b.owner === "ai") {
-        candidates.push({obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), valid: 1, freshness: 1.0});
-        this.reconMemory.set(memKey, {obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), lastSeen: now, isStale: false});
+        candidates.push({ obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), valid: 1, freshness: 1.0, isStale: false });
+        this.reconMemory.set(memKey, { obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), lastSeen: now, isStale: false, isBuilding: true });
       } else {
         if (isVisibleNow) {
           newlySeen.add(memKey);
-          this.reconMemory.set(memKey, {obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), lastSeen: now, isStale: false});
-          candidates.push({obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), valid: 1, freshness: 1.0});
+          this.reconMemory.set(memKey, { obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), lastSeen: now, isStale: false, isBuilding: true });
+          candidates.push({ obj: b, type: b.type, owner: b.owner, x: b.x, y: b.y, hp: b.health / (b.maxHealth || 1), valid: 1, freshness: 1.0, isStale: false });
         }
       }
     }
-    
+
     // 2C. Ресурсы
     for (const r of gameState.resources) {
       if (!r || r.amount <= 0) continue;
@@ -2014,135 +2018,217 @@ buildGraphState: function () {
       const isVisibleNow = isVisible(r.x, r.y);
       if (isVisibleNow) {
         newlySeen.add(memKey);
-        this.reconMemory.set(memKey, {obj: r, type: r.type, owner: "neutral", x: r.x, y: r.y, hp: r.amount / (r.max || 1), lastSeen: now, isStale: false});
-        candidates.push({obj: r, type: r.type, owner: "neutral", x: r.x, y: r.y, hp: r.amount / (r.max || 1), valid: 1, freshness: 1.0});
+        this.reconMemory.set(memKey, { obj: r, type: r.type, owner: "neutral", x: r.x, y: r.y, hp: r.amount / (r.max || 1), lastSeen: now, isStale: false, isBuilding: false });
+        candidates.push({ obj: r, type: r.type, owner: "neutral", x: r.x, y: r.y, hp: r.amount / (r.max || 1), valid: 1, freshness: 1.0, isStale: false });
       }
     }
   } catch (e) { return null; }
-  
+
   // ==========================================
-  // 🔥 ШАГ 3: Добавляем "stale" узлы из памяти (то что видели раньше, но не видим сейчас)
+  // ШАГ 3: Добавляем "stale" узлы из памяти
   // ==========================================
   const staleCandidates = [];
   for (const [key, mem] of this.reconMemory.entries()) {
-    // Пропускаем если уже добавили как свежий
     if (newlySeen.has(key)) continue;
-    
     const age = now - mem.lastSeen;
-    
-    // Удаляем слишком старые узлы из памяти
-    if (age > this.MAX_MEMORY_AGE) {
+
+    let maxAge = this.MAX_MEMORY_AGE || 60000;
+    if (mem.isBuilding) maxAge = 90000;
+    if (mem.type && mem.type.startsWith("turret")) maxAge = 120000;
+    if (mem.owner === "player" && ["fighter", "assault", "elite"].includes(mem.type)) maxAge = 25000;
+
+    if (age > maxAge) {
       this.reconMemory.delete(key);
       continue;
     }
-    
-    // Проверяем, не уничтожен ли объект (для зданий/юнитов с ID)
     if (mem.obj && mem.obj.health !== undefined && mem.obj.health <= 0) {
       this.reconMemory.delete(key);
       continue;
     }
-    
-    // Вычисляем "свежесть" (1.0 = только что видели, 0.0 = почти забыли)
-    const freshness = Math.max(0.1, 1.0 - (age / this.MAX_MEMORY_AGE));
-    
+
+    const freshness = Math.max(0.1, 1.0 - (age / maxAge));
     staleCandidates.push({
-      obj: mem.obj,
-      type: mem.type,
-      owner: mem.owner,
-      x: mem.x,
-      y: mem.y,
-      hp: mem.hp,
-      valid: 1,
-      freshness: freshness,
-      isStale: true,
-      lastSeen: mem.lastSeen
+      obj: mem.obj, type: mem.type, owner: mem.owner, x: mem.x, y: mem.y, hp: mem.hp,
+      valid: 1, freshness: freshness, isStale: true, lastSeen: mem.lastSeen, isBuilding: mem.isBuilding || false
     });
   }
-  
-  // Сортируем stale-кандидатов по важности (вражеские здания/юниты первыми)
+
   staleCandidates.sort((a, b) => {
-    const aPriority = (a.owner === "player" ? 1000 : 0) + (["fighter","assault","elite","base","barracks","warehouse"].includes(a.type) ? 500 : 0);
-    const bPriority = (b.owner === "player" ? 1000 : 0) + (["fighter","assault","elite","base","barracks","warehouse"].includes(b.type) ? 500 : 0);
-    return bPriority - aPriority;
+    let aP = 0, bP = 0;
+    if (a.owner === "player") aP += 1000;
+    if (b.owner === "player") bP += 1000;
+    if (a.type && a.type.startsWith("turret")) aP += 800;
+    if (b.type && b.type.startsWith("turret")) bP += 800;
+    if (a.isBuilding) aP += 400;
+    if (b.isBuilding) bP += 400;
+    if (["fighter", "assault", "elite", "base", "barracks", "warehouse"].includes(a.type)) aP += 300;
+    if (["fighter", "assault", "elite", "base", "barracks", "warehouse"].includes(b.type)) bP += 300;
+    aP += a.freshness * 100;
+    bP += b.freshness * 100;
+    return bP - aP;
   });
-  
-  // Добавляем top stale-узлы в candidates (не более 15, чтобы не забить граф)
-  candidates.push(...staleCandidates.slice(0, 15));
-  
+
+  candidates.push(...staleCandidates.slice(0, 20));
+
   // ==========================================
-  // 🔥 ШАГ 4: Скоринг и заполнение графа
+  // ШАГ 4: Скоринг и заполнение графа
   // ==========================================
   const scoreObj = (o) => {
     let s = 10000;
     if (o.owner === "player") s += 5000;
     if (o.owner === "ai") s += 2500;
-    if (["fighter","assault","elite"].includes(o.type)) {
+    if (["fighter", "assault", "elite"].includes(o.type)) {
       s += 3000;
       if (o.owner === "ai" && o.obj && o.obj.commandQueue && o.obj.commandQueue.length > 0) s += 2000;
     }
     if (o.type?.startsWith("turret")) s += 1600;
-    if (["base","base2","base3","barracks","barracks2","barracks3","warehouse","repairWorkshop","beacon"].includes(o.type)) s += 1200;
-    if (["gold","silicon","plasma"].includes(o.type)) s += 800 + (o.hp || 0) * 800;
-    // 🔥 Бонус за свежесть информации
+    if (["base", "base2", "base3", "barracks", "barracks2", "barracks3", "warehouse", "repairWorkshop", "beacon"].includes(o.type)) s += 1200;
+    if (["gold", "silicon", "plasma"].includes(o.type)) s += 800 + (o.hp || 0) * 800;
     if (o.freshness !== undefined) s += o.freshness * 500;
     return s;
   };
-  
+
   candidates.sort((a, b) => scoreObj(b) - scoreObj(a));
-  
+
   for (const o of candidates.slice(0, CFG.MAX_NODES - 1)) {
     raw.push({
-      obj: o.obj,
-      type: o.type || "unknown",
-      owner: o.owner || "none",
-      x: o.x,
-      y: o.y,
-      hp: o.hp || 0,
-      valid: 1,
-      freshness: o.freshness !== undefined ? o.freshness : 1.0,
-      isStale: o.isStale || false
+      obj: o.obj, type: o.type || "unknown", owner: o.owner || "none", x: o.x, y: o.y,
+      hp: o.hp || 0, valid: 1, freshness: o.freshness !== undefined ? o.freshness : 1.0, isStale: o.isStale || false
     });
   }
-  
-// 🔥 ВИРТУАЛЬНЫЕ УЗЛЫ: зоны угроз, фланги, разведка
-const virtualNodes = this.generateVirtualNodes(raw);
-for (let i = 0; i < virtualNodes.length && raw.length < CFG.MAX_NODES - 4; i++) {
-  raw.push(virtualNodes[i]);
-}
 
-// Паддинг до MAX_NODES
-while (raw.length < CFG.MAX_NODES) {
-  raw.push({ obj: null, type: "pad", owner:"none", x: 0, y: 0, hp: 0, valid: 0, isVirtual: false });
-}
-  
+  // 🔥 ВИРТУАЛЬНЫЕ УЗЛЫ: зоны угроз, фланги, разведка
+  if (typeof this.generateVirtualNodes === "function") {
+    const virtualNodes = this.generateVirtualNodes(raw);
+    for (let i = 0; i < virtualNodes.length && raw.length < CFG.MAX_NODES - 4; i++) {
+      raw.push(virtualNodes[i]);
+    }
+  }
+
+  while (raw.length < CFG.MAX_NODES) {
+    raw.push({ obj: null, type: "pad", owner: "none", x: 0, y: 0, hp: 0, valid: 0, freshness: 0, isStale: false });
+  }
+
   const X = raw.map(n => this.nodeFeatures(n));
   const A_distance = [];
   const A_threat = [];
-  
+
   for (let i = 0; i < CFG.MAX_NODES; i++) {
     const row_dist = [];
     const row_threat = [];
     const ni = raw[i];
-    
+
     for (let j = 0; j < CFG.MAX_NODES; j++) {
       const nj = raw[j];
       if (!ni.valid || !nj.valid) { row_dist.push(0); row_threat.push(0); continue; }
       if (i === j) { row_dist.push(1); row_threat.push(1); continue; }
-      
+
       const d = Math.hypot(ni.x - nj.x, ni.y - nj.y);
-      
+
       let geoConnection = 0;
       if (d <= CFG.INTERACTION_RADIUS) {
         geoConnection = Math.exp(-d / CFG.INTERACTION_RADIUS);
       }
-      
-      // Семантические связи (оставь как есть — они уже умные)
+
+      // === СЕМАНТИЧЕСКИЕ СВЯЗИ (логические) — ПОЛНЫЙ ОРИГИНАЛЬНЫЙ БЛОК БЕЗ СОКРАЩЕНИЙ ===
       let semanticConnection = 0;
-      // ... (весь блок семантических связей из твоего кода)
       
+      // 1. ЛОГИСТИЧЕСКИЕ СВЯЗИ (склады ↔ ресурсы)
+      if (ni.type === "warehouse" && ["gold", "silicon", "plasma"].includes(nj.type)) {
+        const maxResDist = 400;
+        if (d < maxResDist) semanticConnection = Math.max(semanticConnection, 0.9 * (1 - d / maxResDist));
+      }
+      if (nj.type === "warehouse" && ["gold", "silicon", "plasma"].includes(ni.type)) {
+        const maxResDist = 400;
+        if (d < maxResDist) semanticConnection = Math.max(semanticConnection, 0.9 * (1 - d / maxResDist));
+      }
+
+      // 2. РАБОЧИЕ ↔ СКЛАДЫ
+      if (ni.type === "warehouse" && nj.type === "worker") semanticConnection = Math.max(semanticConnection, 0.85);
+      if (nj.type === "warehouse" && ni.type === "worker") semanticConnection = Math.max(semanticConnection, 0.85);
+
+      // 3. РЕМОНТНЫЕ СВЯЗИ (мастерские ↔ поврежденные объекты < 90% HP)
+      if (ni.type === "repairWorkshop" && nj.obj && nj.hp < 0.9) {
+        const maxRepairDist = 350;
+        if (d < maxRepairDist) {
+          const damageFactor = 1 - nj.hp;
+          semanticConnection = Math.max(semanticConnection, 0.8 * damageFactor * (1 - d / maxRepairDist));
+        }
+      }
+      if (nj.type === "repairWorkshop" && ni.obj && ni.hp < 0.9) {
+        const maxRepairDist = 350;
+        if (d < maxRepairDist) {
+          const damageFactor = 1 - ni.hp;
+          semanticConnection = Math.max(semanticConnection, 0.8 * damageFactor * (1 - d / maxRepairDist));
+        }
+      }
+
+      // 4. РЕМОНТНИКИ ↔ МАСТЕРСКИЕ
+      if (ni.type === "repairWorkshop" && nj.type === "repairman") semanticConnection = Math.max(semanticConnection, 0.9);
+      if (nj.type === "repairWorkshop" && ni.type === "repairman") semanticConnection = Math.max(semanticConnection, 0.9);
+
+      // 5. ПРОИЗВОДСТВЕННЫЕ СВЯЗИ (казармы → юниты)
+      const productionLinks = {
+        "barracks": ["fighter"],
+        "barracks2": ["assault", "fighter"],
+        "barracks3": ["elite", "assault", "fighter"],
+        "warehouse": ["worker"],
+        "repairWorkshop": ["repairman"]
+      };
+      if (productionLinks[ni.type] && productionLinks[ni.type].includes(nj.type)) semanticConnection = Math.max(semanticConnection, 0.95);
+      if (productionLinks[nj.type] && productionLinks[nj.type].includes(ni.type)) semanticConnection = Math.max(semanticConnection, 0.95);
+
+      // 6. ОБОРОНИТЕЛЬНЫЕ СВЯЗИ (турели ↔ защищаемые объекты)
+      const turretRanges = { "turret": 250, "turret2": 500, "turret3": 450 };
+      if (turretRanges[ni.type]) {
+        const range = turretRanges[ni.type];
+        if (d < range && !nj.type.startsWith("turret")) {
+          let importance = 0.5;
+          if (nj.type.includes("base")) importance = 1.0;
+          else if (nj.type.includes("barracks")) importance = 0.8;
+          else if (nj.type === "warehouse") importance = 0.7;
+          semanticConnection = Math.max(semanticConnection, importance * (1 - d / range));
+        }
+      }
+      if (turretRanges[nj.type]) {
+        const range = turretRanges[nj.type];
+        if (d < range && !ni.type.startsWith("turret")) {
+          let importance = 0.5;
+          if (ni.type.includes("base")) importance = 1.0;
+          else if (ni.type.includes("barracks")) importance = 0.8;
+          else if (ni.type === "warehouse") importance = 0.7;
+          semanticConnection = Math.max(semanticConnection, importance * (1 - d / range));
+        }
+      }
+
+      // 7. СТРАТЕГИЧЕСКИЕ СВЯЗИ (маяки ↔ расширение)
+      if ((ni.type === "beacon" || nj.type === "beacon")) {
+        const beaconRange = 300;
+        if (d < beaconRange && (ni.type.includes("base") || nj.type.includes("base") || ni.type === "beacon" || nj.type === "beacon")) {
+          semanticConnection = Math.max(semanticConnection, 0.7 * (1 - d / beaconRange));
+        }
+      }
+
+      // 8. ИЕРАРХИЧЕСКИЕ СВЯЗИ (базы ↔ все здания)
+      if ((ni.type.includes("base") || nj.type.includes("base"))) {
+        if ((ni.type.includes("base") && !nj.type.includes("base")) || (nj.type.includes("base") && !ni.type.includes("base"))) {
+          const baseRange = 500;
+          if (d < baseRange) semanticConnection = Math.max(semanticConnection, 0.6 * (1 - d / baseRange));
+        }
+      }
+
+      // 9. БОЕВЫЕ ЮНИТЫ ↔ ИХ ЦЕЛИ (атака)
+      if ((ni.type === "fighter" || ni.type === "assault" || ni.type === "elite") && nj.owner !== ni.owner) {
+        if (nj.obj && nj.obj.commandQueue && nj.obj.commandQueue.length > 0) {
+          const targetCmd = nj.obj.commandQueue.find(cmd => cmd.type === "attack");
+          if (targetCmd && targetCmd.target === ni.obj) semanticConnection = Math.max(semanticConnection, 0.9);
+        }
+      }
+      // === КОНЕЦ БЛОКА СЕМАНТИЧЕСКИХ СВЯЗЕЙ ===
+
       const finalConnection = Math.max(geoConnection, semanticConnection);
       row_dist.push(finalConnection);
-      
+
       let threatValue = 0;
       if (ni.owner === "player" && nj.owner === "ai") {
         const enemyDps = this.getUnitDps(ni.type) || 0;
@@ -2155,17 +2241,15 @@ while (raw.length < CFG.MAX_NODES) {
       }
       row_threat.push(Math.min(1, threatValue));
     }
-    
+
     const sum_dist = row_dist.reduce((a, b) => a + b, 0) + 1e-9;
     const sum_threat = row_threat.reduce((a, b) => a + b, 0) + 1e-9;
     A_distance.push(row_dist.map(v => v / sum_dist));
     A_threat.push(row_threat.map(v => v / sum_threat));
   }
-  
+
   return { X, A_distance, A_threat, nodes: raw };
 },
-   
-
 
     assessThreats: function () {
       const enemyUnits = gameState.units.filter(u => u.owner === "player" && u.health > 0);
