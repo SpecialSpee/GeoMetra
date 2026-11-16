@@ -4281,15 +4281,14 @@ generateVirtualNodes: function(nodes) {
   const aiNodes = nodes.filter(n => n.valid && n.owner === "ai");
   if (enemyNodes.length === 0) return virtualNodes;
 
-  // 🔥 ТОЧНЫЕ РАДИУСЫ ПОРАЖЕНИЯ ТУРЕЛЕЙ
+  // 1. ЗОНЫ УГРОЗЫ: КАЖДАЯ ТУРЕЛЬ — СВОЙ ОТДЕЛЬНЫЙ КРУГ (даже если она всего 1!)
+  const enemyTurrets = enemyNodes.filter(n => n.type && n.type.startsWith("turret"));
   const TURRET_RANGE = { turret: 250, turret2: 500, turret3: 450 };
   
-  // 1. ЗОНЫ УГРОЗЫ: КАЖДАЯ ТУРЕЛЬ — СВОЙ ОТДЕЛЬНЫЙ КРУГ
-  const enemyTurrets = enemyNodes.filter(n => n.type && n.type.startsWith("turret"));
-  
+  // Создаем зону угрозы для КАЖДОЙ увиденной турели отдельно
   enemyTurrets.forEach(turret => {
     const range = TURRET_RANGE[turret.type] || 250;
-    const finalRadius = range + 0; // буфер 30px
+    const finalRadius = range + 30; // буфер 30px
     
     virtualNodes.push({
       obj: null,
@@ -4302,7 +4301,7 @@ generateVirtualNodes: function(nodes) {
       isVirtual: true,
       virtualType: "threat",
       threatRadius: finalRadius,
-      sourceTurret: turret.type,  // для отладки
+      sourceTurret: turret.type,
       freshness: 1.0,
       isStale: false
     });
