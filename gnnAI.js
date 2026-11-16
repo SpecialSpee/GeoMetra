@@ -76,6 +76,7 @@ MAX_MEMORY_AGE: 60000,  // 🔥 Базовый TTL: 60 секунд (для зд
     lastStrategicAction: null,
     bcActive: true,
     showWeightStats: false, // Переключатель для отрисовки
+    sessionStartL2: 0,
     lastWeightSnapshot: null, // "Тень" прошлых весов
     currentWeightStats: null, // Текущая статистика
     lastStatsUpdate: 0,       // Чтобы не считать каждый кадр (оптимизация)
@@ -3799,19 +3800,21 @@ findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 31
       console.groupEnd();
     },
 
-    calculateWeightStats: function() {
+calculateWeightStats: function() {
   if (!this.vars || this.vars.length === 0) return null;
   
   let totalWeights = 0;
-  let sum = 0, min = Infinity, max = -Infinity;
-  let l2Norm = 0; // Мера "размера" весов
+  let sum = 0, sumSq = 0;
+  let min = Infinity, max = -Infinity;
+  let l2Norm = 0;
 
   for (const v of this.vars) {
-    const data = v.dataSync(); // Читаем напрямую, это быстро для агрегации
+    const data = v.dataSync();
     for (let i = 0; i < data.length; i++) {
       const val = data[i];
-      if (!isFinite(val)) continue; // Игнорируем NaN при подсчете
+      if (!isFinite(val)) continue;
       sum += val;
+      sumSq += val * val;
       if (val < min) min = val;
       if (val > max) max = val;
       l2Norm += val * val;
@@ -3820,26 +3823,33 @@ findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 31
   }
 
   const avg = totalWeights > 0 ? sum / totalWeights : 0;
+  // 🔥 СТАНДАРТНОЕ ОТКЛОНЕНИЕ — главная новая метрика
+  const variance = totalWeights > 0 ? (sumSq / totalWeights) - (avg * avg) : 0;
+  const std = Math.sqrt(Math.max(0, variance));
   const currentL2 = Math.sqrt(l2Norm);
 
-  // 🔥 РАСЧЕТ "ТЕНИ" (ДЕЛЬТЫ)
-  let deltaPercent = 0;
+  // 🔥 ДЕЛЬТА ОТ НАЧАЛА ИГРЫ (sessionStartL2 фиксируется при старте матча)
+  let deltaSession = 0;
+  if (this.sessionStartL2 && this.sessionStartL2 > 0) {
+    deltaSession = ((currentL2 - this.sessionStartL2) / this.sessionStartL2) * 100;
+  }
+
+  // 🔥 ДЕЛЬТА ОТ ПОСЛЕДНЕГО СЕЙВА (старая, оставляем для справки)
+  let deltaSave = 0;
   if (this.lastWeightSnapshot) {
     const diff = Math.abs(currentL2 - this.lastWeightSnapshot.l2);
-    deltaPercent = Math.min(100, (diff / (this.lastWeightSnapshot.l2 + 1e-8)) * 100);
+    deltaSave = Math.min(100, (diff / (this.lastWeightSnapshot.l2 + 1e-8)) * 100);
   }
 
   return {
     count: totalWeights,
-    avg: avg,
-    min: min,
-    max: max,
+    avg, min, max, std,
     l2: currentL2,
-    delta: deltaPercent, // Насколько % изменились веса с прошлого сохранения
+    deltaSession,   // 🔥 НОВОЕ: рост с начала игры
+    deltaSave,      // старое, но переименовано
     timestamp: performance.now()
   };
 },
-
 checkEnd: async function () {
   if (gameState.gameEnded) return;
   const aiBaseAlive = gameState.buildings.some(b => b.owner === "ai" && b.type === "base" && b.health > 0);
@@ -4540,6 +4550,23 @@ generateVirtualNodes: function(nodes) {
         }
       });
     }, 300);
+    // 🔥 ФИКСИРУЕМ ТОЧКУ ОТСЧЁТА ДЛЯ ДЕЛЬТЫ СЕССИИ
+    try {
+      let l2Sum = 0;
+      // 🔥 ИСПРАВЛЕНО: используем GnnAI.vars вместо this.vars
+      for (const v of GnnAI.vars) {
+        const data = v.dataSync();
+        for (let i = 0; i < data.length; i++) {
+          if (isFinite(data[i])) l2Sum += data[i] * data[i];
+        }
+      }
+      // 🔥 ИСПРАВЛЕНО: сохраняем в GnnAI.sessionStartL2
+      GnnAI.sessionStartL2 = Math.sqrt(l2Sum);
+      console.log(`[GnnAI] 🎬 Старт матча. Точка отсчёта L2: ${GnnAI.sessionStartL2.toFixed(4)}`);
+    } catch (e) {
+      console.warn("[GnnAI] ⚠️ Не удалось зафиксировать точку отсчёта L2:", e);
+      GnnAI.sessionStartL2 = 0;
+    }
   }
 
   function addMenuButton() {

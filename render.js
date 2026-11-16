@@ -273,7 +273,7 @@ window.drawGnnOverlay = function() {
     // === 3. РИСУЕМ ПОЛНУЮ ПАНЕЛЬ ЛЕГЕНДЫ ===
     ctx.save();
     const legendW = 200;
-    const legendH = 275; // Увеличили высоту для второго флажка
+    const legendH = 130; // Увеличили высоту для 3 флажка
     
     ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
     ctx.fillRect(10, 10, legendW, legendH);
@@ -348,86 +348,88 @@ const legendItems = [
     }
     ctx.fillStyle = "#ffffff";
     ctx.font = "bold 11px monospace";
-    ctx.fillText("Пульс весов (Delta)", weightBtnX + btnSize + 8, weightBtnY + 11);
+    ctx.fillText("Пульс весов", weightBtnX + btnSize + 8, weightBtnY + 11);
 
 
     ctx.restore();
 
-        // === 4. ПАНЕЛЬ "ПУЛЬС ВЕСОВ" (Если включена) ===
-    if (window.showWeightStats) {
+    // === 4. ПАНЕЛЬ "ПУЛЬС ВЕСОВ" (Если включена) ===
+    if (window.showWeightStats && window.GnnAI) {
         // Обновляем статистику не чаще 1 раза в секунду для производительности
-        if (performance.now() - this.lastStatsUpdate > 1000) {
-            this.currentWeightStats = this.calculateWeightStats();
-            this.lastStatsUpdate = performance.now();
+        if (!window.GnnAI.lastStatsUpdate || (performance.now() - window.GnnAI.lastStatsUpdate > 1000)) {
+            if (typeof window.GnnAI.calculateWeightStats === "function") {
+                window.GnnAI.currentWeightStats = window.GnnAI.calculateWeightStats();
+            }
+            window.GnnAI.lastStatsUpdate = performance.now();
         }
 
-        const stats = this.currentWeightStats;
+        const stats = window.GnnAI.currentWeightStats;
         if (stats) {
-            const px = 220; // Сдвигаем вправо от основной легенды
-            const py = 10;
-            const pw = 180;
-            const ph = 100;
+          const px = 220, py = 10, pw = 210, ph = 130;
 
-            // Фон панели
-            ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
-            ctx.fillRect(px, py, pw, ph);
-            ctx.strokeStyle = "#00ff99";
-            ctx.lineWidth = 1.0;
-            ctx.strokeRect(px, py, pw, ph);
+          // Фон
+          ctx.fillStyle = "rgba(0, 0, 0, 0.88)";
+          ctx.fillRect(px, py, pw, ph);
+          ctx.strokeStyle = "#00ff99";
+          ctx.lineWidth = 1.0;
+          ctx.strokeRect(px, py, pw, ph);
 
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 11px monospace";
-            ctx.fillText("🧠 ПУЛЬС ВЕСОВ", px + 10, py + 15);
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 11px monospace";
+          ctx.fillText("🧠 ПУЛЬС ВЕСОВ", px + 10, py + 16);
 
-            // 1. Индикатор ДЕЛЬТЫ (Тень обучения)
-            ctx.fillStyle = "#888888";
-            ctx.font = "10px monospace";
-            ctx.fillText("Изменение с посл. сохранения:", px + 10, py + 35);
-            
-            // Полоса прогресса дельты
-            const barW = pw - 20;
-            const barH = 8;
-            ctx.fillStyle = "#333333";
-            ctx.fillRect(px + 10, py + 40, barW, barH);
-            
-            // Цвет зависит от величины изменений: 
-            // 0% = серый (не учится), 1-15% = зеленый (здоровое обучение), >20% = желтый/красный (резкие изменения)
-            let deltaColor = "#555555";
-            if (stats.delta > 0.1 && stats.delta <= 15) deltaColor = "#00ff99";
-            else if (stats.delta > 15) deltaColor = "#ffaa00";
-            
-            ctx.fillStyle = deltaColor;
-            ctx.fillRect(px + 10, py + 40, barW * (stats.delta / 100), barH);
-            
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 10px monospace";
-            ctx.fillText(`${stats.delta.toFixed(1)}%`, px + pw - 35, py + 47);
+          // === 1. ДЕЛЬТА СЕССИИ (главный индикатор обучения) ===
+          ctx.fillStyle = "#aaaaaa";
+          ctx.font = "10px monospace";
+          ctx.fillText("Рост с начала игры:", px + 10, py + 34);
 
-            // 2. Здоровье весов (Мин / Макс / Среднее)
-            ctx.fillStyle = "#aaaaaa";
-            ctx.font = "10px monospace";
-            ctx.fillText(`Параметров: ${(stats.count / 1000).toFixed(1)}K`, px + 10, py + 65);
-            
-            // Визуализация диапазона
-            const range = Math.max(Math.abs(stats.min), Math.abs(stats.max)) || 1;
-            const center = pw / 2;
-            
-            ctx.fillStyle = "#ff6b6b"; // Мин (отрицательные)
-            const minW = (Math.abs(stats.min) / range) * (center - 10);
-            ctx.fillRect(px + center - minW, py + 72, minW, 4);
-            
-            ctx.fillStyle = "#6bcb77"; // Макс (положительные)
-            const maxW = (Math.abs(stats.max) / range) * (center - 10);
-            ctx.fillRect(px + center, py + 72, maxW, 4);
-            
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "9px monospace";
-            ctx.fillText(`Min: ${stats.min.toFixed(3)}`, px + 10, py + 90);
-            ctx.fillText(`Avg: ${stats.avg.toFixed(4)}`, px + 65, py + 90);
-            ctx.fillText(`Max: ${stats.max.toFixed(3)}`, px + 120, py + 90);
-        }
+          const barW = pw - 20, barH = 9;
+          ctx.fillStyle = "#222222";
+          ctx.fillRect(px + 10, py + 40, barW, barH);
+
+          // Цвет: 0% серый, 0.1-5% зелёный (норма), >5% оранжевый (активное обучение)
+          let color = "#555555";
+          const ds = stats.deltaSession;
+          if (ds > 0.05 && ds <= 5) color = "#00ff99";
+          else if (ds > 5) color = "#ffaa00";
+          else if (ds < -0.05) color = "#ff4444"; // отрицательная дельта = деградация
+
+          ctx.fillStyle = color;
+          ctx.fillRect(px + 10, py + 40, barW * Math.min(1, Math.abs(ds) / 10), barH);
+
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 10px monospace";
+          ctx.textAlign = "right";
+          ctx.fillText(`${ds >= 0 ? "+" : ""}${ds.toFixed(2)}%`, px + pw - 10, py + 48);
+          ctx.textAlign = "left";
+
+          // === 2. СТАНДАРТНОЕ ОТКЛОНЕНИЕ (вместо Min/Max) ===
+          ctx.fillStyle = "#aaaaaa";
+          ctx.font = "10px monospace";
+          ctx.fillText("Std Dev (разброс весов):", px + 10, py + 64);
+
+          ctx.fillStyle = "#222222";
+          ctx.fillRect(px + 10, py + 70, barW, barH);
+
+          // Std dev нормализуем к эталону 0.5 (типичный диапазон для обученной сети)
+          const stdNorm = Math.min(1, stats.std / 0.5);
+          ctx.fillStyle = "#4488ff";
+          ctx.fillRect(px + 10, py + 70, barW * stdNorm, barH);
+
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 10px monospace";
+          ctx.textAlign = "right";
+          ctx.fillText(stats.std.toFixed(4), px + pw - 10, py + 78);
+          ctx.textAlign = "left";
+
+          // === 3. ТЕХНИЧЕСКИЕ ЦИФРЫ ===
+          ctx.fillStyle = "#888888";
+          ctx.font = "9px monospace";
+          ctx.fillText(`L2: ${stats.l2.toFixed(3)}  |  Δsave: ${stats.deltaSave.toFixed(2)}%`, px + 10, py + 96);
+          ctx.fillText(`Параметров: ${(stats.count / 1000).toFixed(1)}K  |  Avg: ${stats.avg.toFixed(4)}`, px + 10, py + 110);
+          ctx.fillText(`Min: ${stats.min.toFixed(3)}  Max: ${stats.max.toFixed(3)}`, px + 10, py + 124);        }
     }
-
+    
     // === 5. ОБРАБОТЧИК КЛИКОВ (добавляется только один раз) ===
     if (!window._gnnLegendClickListenerAdded) {
         canvas.addEventListener('click', (e) => {
@@ -448,8 +450,13 @@ const legendItems = [
                 else if (x >= 10 && x <= 210 && y >= 230 && y <= 250) {
                     window.showGnnGraph = !window.showGnnGraph;
                 }
-                else if (x >= 10 && x <= 210 && y >= 270 && y <= 290) { window.showWeightStats = !window.showWeightStats; }
-            }
+                // Клик по "Пульс весов"
+                else if (x >= 10 && x <= 210 && y >= 276 && y <= 296) { 
+                    window.showWeightStats = !window.showWeightStats;
+                    console.log("[GnnAI] Переключен пульс весов:", window.showWeightStats);
+                }           
+              
+              }
 
         });
         window._gnnLegendClickListenerAdded = true;
