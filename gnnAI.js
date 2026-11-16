@@ -4279,21 +4279,31 @@ validActionMask: function () {
   }
 
 // 🔥 УРОВЕНЬ 3: ТИР 3 (base3, barracks3, turret3, elite)
-if (this.curriculumTier >= 3) {
-  // 🔥 Проверка: curriculumTier уже требует наличие barracks2,
-  // поэтому просто проверяем наличие базы2 (для base3) и казармы2 (для barracks3)
-  if (hasBase2 && base3 === 0 && can(BASE3_COST)) {
+// 🔥 ИСПРАВЛЕНИЕ: Разрешаем Тир-3, если УЖЕ есть казарма2 и турель2, 
+// даже если curriculumTier застрял из-за задержки проверки.
+const hasBarracks2Built = has("barracks2");
+const hasTurret2Built = has("turret2");
+
+if (this.curriculumTier >= 3 || (hasBarracks2Built && hasTurret2Built)) {
+  // 1. Постройка Base3 (если есть barracks2)
+  if (hasBarracks2Built && base3 === 0 && can(BASE3_COST)) {
     mask[AIDX.build_base3] = 1;
   }
+  
   const hasBase3 = has("base3");
   if (hasBase3) {
+    // 2. Постройка Barracks3
     if (barracks3 === 0 && can(BARRACKS3_COST)) {
       mask[AIDX.build_barracks3] = 1;
     }
+    
+    // 3. Постройка Turret3
     const activeTurrets3 = getCount("turret3");
     if (activeTurrets3 < (beacons + 1) * 2 && can(TURRET3_COST)) {
       mask[AIDX.build_turret3] = 1;
     }
+    
+    // 4. Найм Elite (если есть barracks3)
     if (has("barracks3") && can(ELITE_COST)) {
       mask[AIDX.hireElite] = 1;
     }
