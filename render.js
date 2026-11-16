@@ -273,7 +273,7 @@ window.drawGnnOverlay = function() {
     // === 3. РИСУЕМ ПОЛНУЮ ПАНЕЛЬ ЛЕГЕНДЫ ===
     ctx.save();
     const legendW = 200;
-    const legendH = 130; // Увеличили высоту для 3 флажка
+    const legendH = 300; // Увеличили высоту для 3 флажка
     
     ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
     ctx.fillRect(10, 10, legendW, legendH);
