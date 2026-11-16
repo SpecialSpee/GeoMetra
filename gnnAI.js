@@ -61,7 +61,7 @@
 
     // 🔥 СТРАТЕГИЧЕСКАЯ ПАМЯТЬ: кэш разведанных узлов
     reconMemory: new Map(), // key: "type_x_y", value: {obj, type, owner, x, y, hp, lastSeen, isStale}
-    MAX_MEMORY_AGE: 30000,  // Забывать узлы старше 30 секунд
+    MAX_MEMORY_AGE: 120000,  // Забывать узлы старше 120 секунд
 
     lastStagnationCheck: 0,
     lastBuildingBuilt: {},
@@ -4049,77 +4049,42 @@ generateVirtualNodes: function(nodes) {
   // 🔥 ТОЧНЫЕ РАДИУСЫ ПОРАЖЕНИЯ ТУРЕЛЕЙ
   const TURRET_RANGE = { turret: 250, turret2: 500, turret3: 450 };
   
-  // 1. ЗОНЫ УГРОЗЫ: каждая турель — отдельный круг
+  // 1. ЗОНЫ УГРОЗЫ: КАЖДАЯ ТУРЕЛЬ — СВОЙ ОТДЕЛЬНЫЙ КРУГ
   const enemyTurrets = enemyNodes.filter(n => n.type && n.type.startsWith("turret"));
   
-  if (enemyTurrets.length >= 2) {
-    // Группируем турели по близости (кластеры в радиусе 350px)
-    const clusters = [];
-    const used = new Set();
+  enemyTurrets.forEach(turret => {
+    const range = TURRET_RANGE[turret.type] || 250;
+    const finalRadius = range + 0; // буфер 30px
     
-    for (let i = 0; i < enemyTurrets.length; i++) {
-      if (used.has(i)) continue;
-      const cluster = [enemyTurrets[i]];
-      used.add(i);
-      
-      for (let j = i + 1; j < enemyTurrets.length; j++) {
-        if (used.has(j)) continue;
-        const d = Math.hypot(enemyTurrets[i].x - enemyTurrets[j].x, enemyTurrets[i].y - enemyTurrets[j].y);
-        if (d < 350) {
-          cluster.push(enemyTurrets[j]);
-          used.add(j);
-        }
-      }
-      
-      if (cluster.length >= 2) {
-        clusters.push(cluster);
-      } else {
-        // Одиночная турель — тоже создаем зону
-        clusters.push([enemyTurrets[i]]);
-      }
-    }
-    
-    // Для каждого кластера создаем threat-узел
-    clusters.forEach(cluster => {
-      const centerX = cluster.reduce((s, n) => s + n.x, 0) / cluster.length;
-      const centerY = cluster.reduce((s, n) => s + n.y, 0) / cluster.length;
-      
-      // Радиус = максимальный range в кластере + 30px запас
-      const maxRange = Math.max(...cluster.map(t => TURRET_RANGE[t.type] || 250));
-      const finalRadius = maxRange + 30;
-      
-      virtualNodes.push({
-        obj: null,
-        type: "threat_zone",
-        owner: "player",
-        x: centerX,
-        y: centerY,
-        hp: 0,
-        valid: 1,
-        isVirtual: true,
-        virtualType: "threat",
-        threatRadius: finalRadius,
-        clusterSize: cluster.length,
-        clusterTypes: cluster.map(t => t.type),
-        turretPositions: cluster.map(t => ({x: t.x, y: t.y, type: t.type, range: TURRET_RANGE[t.type] || 250})),
-        freshness: 1.0,
-        isStale: false
-      });
+    virtualNodes.push({
+      obj: null,
+      type: "threat_zone",
+      owner: "player",
+      x: turret.x,
+      y: turret.y,
+      hp: 0,
+      valid: 1,
+      isVirtual: true,
+      virtualType: "threat",
+      threatRadius: finalRadius,
+      sourceTurret: turret.type,  // для отладки
+      freshness: 1.0,
+      isStale: false
     });
-  }
+  });
 
-  // 2. ФЛАНГОВЫЕ ТОЧКИ: ищем зазоры между зонами поражения
+  // 2. ФЛАНГОВЫЕ ТОЧКИ: ищем зазоры между ВСЕМИ зонами поражения
   const enemyBase = enemyNodes.find(n => n.type && n.type.includes("base"));
   if (enemyBase) {
     const flankDist = 280;
-    const numFlanks = 8; // 8 направлений вместо 4 для лучшего покрытия
+    const numFlanks = 8; // 8 направлений
     
     for (let i = 0; i < numFlanks; i++) {
       const angle = (i / numFlanks) * Math.PI * 2;
       const fx = enemyBase.x + Math.cos(angle) * flankDist;
       const fy = enemyBase.y + Math.sin(angle) * flankDist;
       
-      // Проверяем, что точка вне ВСЕХ зон угрозы
+      // Проверяем, что точка вне ВСЕХ зон угрозы (не только одной!)
       const inAnyThreat = virtualNodes.some(v => {
         if (v.virtualType !== "threat") return false;
         return Math.hypot(fx - v.x, fy - v.y) < v.threatRadius;
