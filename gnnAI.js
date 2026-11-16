@@ -980,7 +980,7 @@ if (aiBuildings.length > 5) {
     
     // Если среднее расстояние < 150px — здания слишком близко
     if (avgDist < 150) {
-        const clusteringPenalty = -15.0 * (1 - avgDist / 150);
+        const clusteringPenalty = -150.0 * (1 - avgDist / 150);
         penalty += clusteringPenalty;
         reasons.push(`CLUSTERING_PENALTY: Здания слишком близко друг к другу (среднее ${avgDist.toFixed(0)}px, штраф ${clusteringPenalty.toFixed(1)})`);
     }
@@ -2104,17 +2104,16 @@ buildGraphState: function () {
     });
   }
   
-  // 🔥 ДОБАВЛЯЕМ ВИРТУАЛЬНЫЕ УЗЛЫ
-  const virtualNodes = this.generateVirtualNodes({ nodes: raw });
-  const maxVirtualNodes = Math.min(virtualNodes.length, 8); // Максимум 8 виртуальных узлов
-  for (let i = 0; i < maxVirtualNodes && raw.length < CFG.MAX_NODES; i++) {
-    raw.push(virtualNodes[i]);
-  }
+// 🔥 ВИРТУАЛЬНЫЕ УЗЛЫ: зоны угроз, фланги, разведка
+const virtualNodes = this.generateVirtualNodes(raw);
+for (let i = 0; i < virtualNodes.length && raw.length < CFG.MAX_NODES - 4; i++) {
+  raw.push(virtualNodes[i]);
+}
 
-  // Паддинг до MAX_NODES
-  while (raw.length < CFG.MAX_NODES) {
-    raw.push({ obj: null, type: "pad", owner:"none", x: 0, y: 0, hp: 0, valid: 0, isVirtual: false });
-  }
+// Паддинг до MAX_NODES
+while (raw.length < CFG.MAX_NODES) {
+  raw.push({ obj: null, type: "pad", owner:"none", x: 0, y: 0, hp: 0, valid: 0, isVirtual: false });
+}
   
   const X = raw.map(n => this.nodeFeatures(n));
   const A_distance = [];
@@ -2166,105 +2165,7 @@ buildGraphState: function () {
   return { X, A_distance, A_threat, nodes: raw };
 },
    
-// 🔥 ГЕНЕРАЦИЯ ВИРТУАЛЬНЫХ УЗЛОВ (Threat Zones, Flank Waypoints, Recon Targets)
-generateVirtualNodes: function(state) {
-  const virtualNodes = [];
-  const enemyNodes = state.nodes.filter(n => n.valid && n.owner === "player");
-  const aiNodes = state.nodes.filter(n => n.valid && n.owner === "ai");
-  
-  if (enemyNodes.length === 0) return virtualNodes;
 
-  // 1. УЗЛЫ УГРОЗЫ: скопления вражеских турелей/зданий
-  const enemyTurrets = enemyNodes.filter(n => n.type.startsWith("turret"));
-  if (enemyTurrets.length >= 2) {
-    // Вычисляем центр скопления турелей
-    const centerX = enemyTurrets.reduce((s, n) => s + n.x, 0) / enemyTurrets.length;
-    const centerY = enemyTurrets.reduce((s, n) => s + n.y, 0) / enemyTurrets.length;
-    
-    virtualNodes.push({
-      obj: null,
-      type: "threat_zone",
-      owner: "player",
-      x: centerX,
-      y: centerY,
-      hp: 0,
-      valid: 1,
-      isVirtual: true,
-      virtualType: "threat",
-      threatRadius: 300, // Радиус опасной зоны
-      freshness: 1.0,
-      isStale: false
-    });
-  }
-
-  // 2. ФЛАНГОВЫЕ ТОЧКИ: безопасные позиции вокруг вражеской базы
-  const enemyBase = enemyNodes.find(n => n.type.includes("base"));
-  if (enemyBase) {
-    const baseX = enemyBase.x;
-    const baseY = enemyBase.y;
-    const flankDistance = 250; // Дистанция фланга от базы
-    
-    // Генерируем 4 фланговые точки (север, юг, восток, запад)
-    const flankAngles = [0, Math.PI / 2, Math.PI, Math.PI * 1.5];
-    flankAngles.forEach((angle, idx) => {
-      const flankX = baseX + Math.cos(angle) * flankDistance;
-      const flankY = baseY + Math.sin(angle) * flankDistance;
-      
-      // Проверяем, что точка не внутри threat zone
-      const inThreatZone = virtualNodes.some(v => 
-        v.virtualType === "threat" && 
-        Math.hypot(flankX - v.x, flankY - v.y) < v.threatRadius
-      );
-      
-      if (!inThreatZone) {
-        virtualNodes.push({
-          obj: null,
-          type: "flank_point",
-          owner: "neutral",
-          x: flankX,
-          y: flankY,
-          hp: 0,
-          valid: 1,
-          isVirtual: true,
-          virtualType: "flank",
-          flankIndex: idx,
-          freshness: 1.0,
-          isStale: false
-        });
-      }
-    });
-  }
-
-  // 3. ТОЧКИ РАЗВЕДКИ: направления, где мало информации
-  // (упрощённо: если вражеских узлов мало, добавляем точки вперёд)
-  if (enemyNodes.length < 5) {
-    const aiBaseNode = aiNodes.find(n => n.type === "base");
-    if (aiBaseNode) {
-      const reconDistance = 400;
-      const reconAngles = [Math.PI / 4, Math.PI * 0.75, Math.PI * 1.25, Math.PI * 1.75];
-      reconAngles.forEach((angle, idx) => {
-        const reconX = aiBaseNode.x + Math.cos(angle) * reconDistance;
-        const reconY = aiBaseNode.y + Math.sin(angle) * reconDistance;
-        
-        virtualNodes.push({
-          obj: null,
-          type: "recon_target",
-          owner: "neutral",
-          x: reconX,
-          y: reconY,
-          hp: 0,
-          valid: 1,
-          isVirtual: true,
-          virtualType: "recon",
-          freshness: 0.5,
-          isStale: false
-        });
-      });
-    }
-  }
-
-  return virtualNodes;
-},
 
     assessThreats: function () {
       const enemyUnits = gameState.units.filter(u => u.owner === "player" && u.health > 0);
@@ -4138,6 +4039,68 @@ loadWeights: async function () {
       req.onerror = () => { console.error("[GnnAI] ❌ Ошибка удаления БД, пробуем перезагрузку anyway"); WeightDB.isClosing = false; location.reload(); };
       req.onblocked = () => { console.warn("[GnnAI] ⚠️ Удаление заблокировано другой вкладкой? Перезагрузка..."); location.reload(); };
     },
+
+generateVirtualNodes: function(nodes) {
+  const virtualNodes = [];
+  const enemyNodes = nodes.filter(n => n.valid && n.owner === "player");
+  const aiNodes = nodes.filter(n => n.valid && n.owner === "ai");
+  if (enemyNodes.length === 0) return virtualNodes;
+
+  // 1. ЗОНЫ УГРОЗЫ: скопления вражеских турелей (2+ в радиусе 300px)
+  const enemyTurrets = enemyNodes.filter(n => n.type && n.type.startsWith("turret"));
+  if (enemyTurrets.length >= 2) {
+    const centerX = enemyTurrets.reduce((s, n) => s + n.x, 0) / enemyTurrets.length;
+    const centerY = enemyTurrets.reduce((s, n) => s + n.y, 0) / enemyTurrets.length;
+    const maxRange = Math.max(...enemyTurrets.map(n => (n.obj?.range || 250) + 50));
+    virtualNodes.push({
+      obj: null, type: "threat_zone", owner: "player",
+      x: centerX, y: centerY, hp: 0, valid: 1,
+      isVirtual: true, virtualType: "threat",
+      threatRadius: Math.max(250, maxRange),
+      freshness: 1.0, isStale: false
+    });
+  }
+
+  // 2. ФЛАНГОВЫЕ ТОЧКИ вокруг вражеской базы
+  const enemyBase = enemyNodes.find(n => n.type && n.type.includes("base"));
+  if (enemyBase) {
+    const flankDist = 250;
+    [0, Math.PI / 2, Math.PI, Math.PI * 1.5].forEach((angle, idx) => {
+      const fx = enemyBase.x + Math.cos(angle) * flankDist;
+      const fy = enemyBase.y + Math.sin(angle) * flankDist;
+      // Не ставим фланг внутрь зоны угрозы
+      const inThreat = virtualNodes.some(v =>
+        v.virtualType === "threat" && Math.hypot(fx - v.x, fy - v.y) < v.threatRadius);
+      if (!inThreat) {
+        virtualNodes.push({
+          obj: null, type: "flank_point", owner: "neutral",
+          x: fx, y: fy, hp: 0, valid: 1,
+          isVirtual: true, virtualType: "flank", flankIndex: idx,
+          freshness: 1.0, isStale: false
+        });
+      }
+    });
+  }
+
+  // 3. ТОЧКИ РАЗВЕДКИ если врагов в графе мало
+  if (enemyNodes.length < 5) {
+    const aiBaseNode = aiNodes.find(n => n.type === "base");
+    if (aiBaseNode) {
+      [Math.PI/4, Math.PI*0.75, Math.PI*1.25, Math.PI*1.75].forEach(angle => {
+        virtualNodes.push({
+          obj: null, type: "recon_target", owner: "neutral",
+          x: aiBaseNode.x + Math.cos(angle) * 400,
+          y: aiBaseNode.y + Math.sin(angle) * 400,
+          hp: 0, valid: 1,
+          isVirtual: true, virtualType: "recon",
+          freshness: 0.5, isStale: false
+        });
+      });
+    }
+  }
+
+  return virtualNodes;
+},    
 
     findBestResourceCluster: function () {
         const res = gameState.resources.filter(r => r.amount > 20);
