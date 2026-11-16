@@ -75,6 +75,10 @@ MAX_MEMORY_AGE: 60000,  // 🔥 Базовый TTL: 60 секунд (для зд
     lastStrategicChangeTime: 0,
     lastStrategicAction: null,
     bcActive: true,
+    showWeightStats: false, // Переключатель для отрисовки
+    lastWeightSnapshot: null, // "Тень" прошлых весов
+    currentWeightStats: null, // Текущая статистика
+    lastStatsUpdate: 0,       // Чтобы не считать каждый кадр (оптимизация)
     bcBatchCount: 0,
     db: null,
 
@@ -3795,6 +3799,47 @@ findBuildPos: function (anchor, type, minR = 80, maxR = 310) { // 🔥 maxR = 31
       console.groupEnd();
     },
 
+    calculateWeightStats: function() {
+  if (!this.vars || this.vars.length === 0) return null;
+  
+  let totalWeights = 0;
+  let sum = 0, min = Infinity, max = -Infinity;
+  let l2Norm = 0; // Мера "размера" весов
+
+  for (const v of this.vars) {
+    const data = v.dataSync(); // Читаем напрямую, это быстро для агрегации
+    for (let i = 0; i < data.length; i++) {
+      const val = data[i];
+      if (!isFinite(val)) continue; // Игнорируем NaN при подсчете
+      sum += val;
+      if (val < min) min = val;
+      if (val > max) max = val;
+      l2Norm += val * val;
+      totalWeights++;
+    }
+  }
+
+  const avg = totalWeights > 0 ? sum / totalWeights : 0;
+  const currentL2 = Math.sqrt(l2Norm);
+
+  // 🔥 РАСЧЕТ "ТЕНИ" (ДЕЛЬТЫ)
+  let deltaPercent = 0;
+  if (this.lastWeightSnapshot) {
+    const diff = Math.abs(currentL2 - this.lastWeightSnapshot.l2);
+    deltaPercent = Math.min(100, (diff / (this.lastWeightSnapshot.l2 + 1e-8)) * 100);
+  }
+
+  return {
+    count: totalWeights,
+    avg: avg,
+    min: min,
+    max: max,
+    l2: currentL2,
+    delta: deltaPercent, // Насколько % изменились веса с прошлого сохранения
+    timestamp: performance.now()
+  };
+},
+
 checkEnd: async function () {
   if (gameState.gameEnded) return;
   const aiBaseAlive = gameState.buildings.some(b => b.owner === "ai" && b.type === "base" && b.health > 0);
@@ -3933,6 +3978,26 @@ checkEnd: async function () {
         });
 
         console.log(`[GnnAI] ✅ Веса успешно сохранены в IndexedDB!`);
+        
+        // 🔥 СОХРАНЯЕМ "ТЕНЬ" ДЛЯ СЛЕДУЮЩЕГО СРАВНЕНИЯ
+        // Вычисляем L2-норму напрямую, а не берём из currentWeightStats,
+        // иначе при выключенной панели дельта будет врёт (сравнение с 0)
+        try {
+            let l2Sum = 0;
+            for (const v of this.vars) {
+                const data = v.dataSync();
+                for (let i = 0; i < data.length; i++) {
+                    if (isFinite(data[i])) l2Sum += data[i] * data[i];
+                }
+            }
+            this.lastWeightSnapshot = {
+                l2: Math.sqrt(l2Sum),
+                timestamp: Date.now(),
+                batches: this.trainBatches
+            };
+        } catch (e) {
+            console.warn("[GnnAI] ⚠️ Не удалось зафиксировать тень весов:", e);
+        }
     } catch (e) {
         console.error("[GnnAI] ❌ Критическая ошибка сохранения весов:", e);
         // Fallback в localStorage
@@ -4037,93 +4102,111 @@ _saveToIndexedDB: async function(payload) {
   });
 },
 
-loadWeights: async function () {
-  try {
-    let obj = null;
-    
-    // 1. Пытаемся через WeightDB
-    if (typeof WeightDB !== 'undefined' && WeightDB.load) {
-      obj = await WeightDB.load(CFG.STORAGE_KEY);
-    }
-    
-    // 2. Fallback: прямое чтение из IndexedDB
-    if (!obj) {
-      obj = await this._loadFromIndexedDB();
-    }
-    
-    // 3. Fallback: localStorage backup
-    if (!obj) {
-      const backup = localStorage.getItem(CFG.STORAGE_KEY + '_backup');
-      if (backup) {
-        try { obj = JSON.parse(backup); console.log("[GnnAI] ✅ Загружено из localStorage backup"); } 
-        catch (e) { console.warn("[GnnAI] ⚠️ backup повреждён"); }
-      }
-    }
-    
-    if (!obj) { 
-      console.log("[GnnAI] Записей не найдено. Инициализация с нуля."); 
-      return false; 
-    }
-    
-    const mainData = obj.data?.main || obj.data;
-    if (!Array.isArray(mainData)) { 
-      console.warn("[GnnAI] Ошибка формата данных"); 
-      return false; 
-    }
-    if (mainData.length !== this.vars.length) { 
-      console.warn(`[GnnAI] Несовпадение архитектуры: ${mainData.length} vs ${this.vars.length}`); 
-      return false; 
-    }
-    if (obj.actionsCount && obj.actionsCount !== G_ACTIONS.length) { 
-      console.warn(`[GnnAI] ⚠️ Старая архитектура (${obj.actionsCount} действий). Сброс.`); 
-      return false; 
-    }
-    if (obj.nodeFeatures && obj.nodeFeatures !== CFG.NODE_FEATURES) {
-      console.warn(`[GnnAI] ⚠️ Несовпадение NODE_FEATURES: в БД ${obj.nodeFeatures}, в коде ${CFG.NODE_FEATURES}. Веса сброшены.`);
-      return false;
-    }
-    if (obj.actionsCount && obj.actionsCount !== G_ACTIONS.length) {
-      console.warn(`[GnnAI] ⚠️ Несовпадение действий: в БД ${obj.actionsCount}, в коде ${G_ACTIONS.length}. Веса сброшены.`);
-      return false;
-    }
-    
-    const shapeMismatch = mainData.some((w, i) => {
-      if (!this.vars[i]) return true;
-      return w.shape.join(',') !== this.vars[i].shape.join(',');
-    });
-    if (shapeMismatch) {
-      console.warn("[GnnAI] ⚠️ Shapes не совпадают. Сброс.");
-      return false;
-    }
-    
-    const checkInvalid = (arr) => arr && arr.some(w => w.values.some(v => !isFinite(v)));
-    if (checkInvalid(mainData) || checkInvalid(obj.data?.target)) { 
-      console.warn("[GnnAI] ⚠️ Веса повреждены (NaN/Inf). Сброс."); 
-      return false; 
-    }
-    
-    tf.tidy(() => { 
-      mainData.forEach((w, i) => { 
-        if (this.vars[i]) this.vars[i].assign(tf.tensor(w.values, w.shape)); 
-      });
-      const targetData = obj.data?.target;
-      if (targetData && this.targetVars) {
-        targetData.forEach((w, i) => { 
-          if (this.targetVars[i]) this.targetVars[i].assign(tf.tensor(w.values, w.shape)); 
+    loadWeights: async function () {
+      try {
+        let obj = null;
+        
+        // 1. Пытаемся через WeightDB
+        if (typeof WeightDB !== 'undefined' && WeightDB.load) {
+          obj = await WeightDB.load(CFG.STORAGE_KEY);
+        }
+        
+        // 2. Fallback: прямое чтение из IndexedDB
+        if (!obj) {
+          obj = await this._loadFromIndexedDB();
+        }
+        
+        // 3. Fallback: localStorage backup
+        if (!obj) {
+          const backup = localStorage.getItem(CFG.STORAGE_KEY + '_backup');
+          if (backup) {
+            try { obj = JSON.parse(backup); console.log("[GnnAI] ✅ Загружено из localStorage backup"); } 
+            catch (e) { console.warn("[GnnAI] ⚠️ backup повреждён"); }
+          }
+        }
+        
+        if (!obj) { 
+          console.log("[GnnAI] Записей не найдено. Инициализация с нуля."); 
+          return false; 
+        }
+        
+        const mainData = obj.data?.main || obj.data;
+        if (!Array.isArray(mainData)) { 
+          console.warn("[GnnAI] Ошибка формата данных"); 
+          return false; 
+        }
+        if (mainData.length !== this.vars.length) { 
+          console.warn(`[GnnAI] Несовпадение архитектуры: ${mainData.length} vs ${this.vars.length}`); 
+          return false; 
+        }
+        if (obj.actionsCount && obj.actionsCount !== G_ACTIONS.length) { 
+          console.warn(`[GnnAI] ⚠️ Старая архитектура (${obj.actionsCount} действий). Сброс.`); 
+          return false; 
+        }
+        if (obj.nodeFeatures && obj.nodeFeatures !== CFG.NODE_FEATURES) {
+          console.warn(`[GnnAI] ⚠️ Несовпадение NODE_FEATURES: в БД ${obj.nodeFeatures}, в коде ${CFG.NODE_FEATURES}. Веса сброшены.`);
+          return false;
+        }
+        
+        const shapeMismatch = mainData.some((w, i) => {
+          if (!this.vars[i]) return true;
+          return w.shape.join(',') !== this.vars[i].shape.join(',');
         });
-      } else if (this.targetVars) {
-        this.vars.forEach((v, i) => this.targetVars[i].assign(v.clone()));
+        if (shapeMismatch) {
+          console.warn("[GnnAI] ⚠️ Shapes не совпадают. Сброс.");
+          return false;
+        }
+        
+        const checkInvalid = (arr) => arr && arr.some(w => w.values.some(v => !isFinite(v)));
+        if (checkInvalid(mainData) || checkInvalid(obj.data?.target)) { 
+          console.warn("[GnnAI] ⚠️ Веса повреждены (NaN/Inf). Сброс."); 
+          return false; 
+        }
+        
+        // 🔥 ПРИМЕНЯЕМ ВЕСА
+        tf.tidy(() => { 
+          mainData.forEach((w, i) => { 
+            if (this.vars[i]) this.vars[i].assign(tf.tensor(w.values, w.shape)); 
+          });
+          const targetData = obj.data?.target;
+          if (targetData && this.targetVars) {
+            targetData.forEach((w, i) => { 
+              if (this.targetVars[i]) this.targetVars[i].assign(tf.tensor(w.values, w.shape)); 
+            });
+          } else if (this.targetVars) {
+            this.vars.forEach((v, i) => this.targetVars[i].assign(v.clone()));
+          }
+        });
+        
+        this.trainBatches = obj.batches || 0;
+        
+        // 🔥 НОВОЕ: СОХРАНЯЕМ "ТЕНЬ" ВЕСОВ ПОСЛЕ УСПЕШНОЙ ЗАГРУЗКИ
+        try {
+            let l2Sum = 0;
+            for (const v of this.vars) {
+                const data = v.dataSync();
+                for (let i = 0; i < data.length; i++) {
+                    if (isFinite(data[i])) l2Sum += data[i] * data[i];
+                }
+            }
+            this.lastWeightSnapshot = {
+                l2: Math.sqrt(l2Sum),
+                timestamp: Date.now(),
+                batches: this.trainBatches
+            };
+            console.log(`[GnnAI] 🌑 Тень весов загружена и зафиксирована (L2=${Math.sqrt(l2Sum).toFixed(2)})`);
+        } catch (e) {
+            console.warn("[GnnAI] ⚠️ Не удалось зафиксировать тень весов при загрузке:", e);
+        }
+
+        console.log(`[GnnAI] ✅ Веса успешно загружены (batch: ${this.trainBatches})`);
+        return true;
+
+      } catch (e) { 
+        console.error("[GnnAI] Ошибка загрузки:", e); 
+        return false; 
       }
-    });
-    
-    this.trainBatches = obj.batches || 0;
-    console.log(`[GnnAI] ✅ Веса загружены (batch: ${this.trainBatches})`);
-    return true;
-  } catch (e) { 
-    console.error("[GnnAI] Ошибка загрузки:", e); 
-    return false; 
-  }
-},
+    },
 
     _loadFromIndexedDB: async function() {
       return new Promise((resolve) => {
@@ -4463,7 +4546,7 @@ generateVirtualNodes: function(nodes) {
     const loading = document.getElementById("loadingScreen");
     if (!loading || document.getElementById("gnnButton")) return;
     const btn = document.createElement("button");
-    btn.id = "gnnButton"; btn.innerText ="Граф ИИ v7.6";
+    btn.id = "gnnButton"; btn.innerText ="Графии v7.6";
     btn.style.cssText = "font-family: 'Orbitron', sans-serif; font-size: 18px; padding: 12px 28px; border: 2px solid #00ff99; color: #00ff99; background: rgba(0,255,120,0.08); border-radius: 50px; box-shadow: 0 0 15px rgba(0,255,120,0.5); cursor: pointer; transition: all 0.3s ease; z-index: 10; margin-top: 10px;";
     btn.onmouseenter = () => { btn.style.background = "rgba(0,255,120,0.2)"; btn.style.transform ="scale(1.05)"; };
     btn.onmouseleave = () => { btn.style.background = "rgba(0,255,120,0.08)"; btn.style.transform ="scale(1)"; };

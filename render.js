@@ -337,9 +337,98 @@ const legendItems = [
     ctx.fillStyle = "#ffffff";
     ctx.font = "bold 11px monospace";
     ctx.fillText("Скрыть панель", panelBtnX + btnSize + 8, panelBtnY + 11);
+    // --- ФЛАЖОК 3: Статистика весов ---
+    const weightBtnX = 20, weightBtnY = 276;
+    ctx.strokeStyle = window.showWeightStats ? "#00ff99" : "#666666";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(weightBtnX, weightBtnY, btnSize, btnSize);
+    if (window.showWeightStats) {
+        ctx.fillStyle = "#00ff99";
+        ctx.fillRect(weightBtnX + 2, weightBtnY + 2, btnSize - 4, btnSize - 4);
+    }
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 11px monospace";
+    ctx.fillText("Пульс весов (Delta)", weightBtnX + btnSize + 8, weightBtnY + 11);
+
 
     ctx.restore();
-    // === 4. ОБРАБОТЧИК КЛИКОВ (добавляется только один раз) ===
+
+        // === 4. ПАНЕЛЬ "ПУЛЬС ВЕСОВ" (Если включена) ===
+    if (window.showWeightStats) {
+        // Обновляем статистику не чаще 1 раза в секунду для производительности
+        if (performance.now() - this.lastStatsUpdate > 1000) {
+            this.currentWeightStats = this.calculateWeightStats();
+            this.lastStatsUpdate = performance.now();
+        }
+
+        const stats = this.currentWeightStats;
+        if (stats) {
+            const px = 220; // Сдвигаем вправо от основной легенды
+            const py = 10;
+            const pw = 180;
+            const ph = 100;
+
+            // Фон панели
+            ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+            ctx.fillRect(px, py, pw, ph);
+            ctx.strokeStyle = "#00ff99";
+            ctx.lineWidth = 1.0;
+            ctx.strokeRect(px, py, pw, ph);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 11px monospace";
+            ctx.fillText("🧠 ПУЛЬС ВЕСОВ", px + 10, py + 15);
+
+            // 1. Индикатор ДЕЛЬТЫ (Тень обучения)
+            ctx.fillStyle = "#888888";
+            ctx.font = "10px monospace";
+            ctx.fillText("Изменение с посл. сохранения:", px + 10, py + 35);
+            
+            // Полоса прогресса дельты
+            const barW = pw - 20;
+            const barH = 8;
+            ctx.fillStyle = "#333333";
+            ctx.fillRect(px + 10, py + 40, barW, barH);
+            
+            // Цвет зависит от величины изменений: 
+            // 0% = серый (не учится), 1-15% = зеленый (здоровое обучение), >20% = желтый/красный (резкие изменения)
+            let deltaColor = "#555555";
+            if (stats.delta > 0.1 && stats.delta <= 15) deltaColor = "#00ff99";
+            else if (stats.delta > 15) deltaColor = "#ffaa00";
+            
+            ctx.fillStyle = deltaColor;
+            ctx.fillRect(px + 10, py + 40, barW * (stats.delta / 100), barH);
+            
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 10px monospace";
+            ctx.fillText(`${stats.delta.toFixed(1)}%`, px + pw - 35, py + 47);
+
+            // 2. Здоровье весов (Мин / Макс / Среднее)
+            ctx.fillStyle = "#aaaaaa";
+            ctx.font = "10px monospace";
+            ctx.fillText(`Параметров: ${(stats.count / 1000).toFixed(1)}K`, px + 10, py + 65);
+            
+            // Визуализация диапазона
+            const range = Math.max(Math.abs(stats.min), Math.abs(stats.max)) || 1;
+            const center = pw / 2;
+            
+            ctx.fillStyle = "#ff6b6b"; // Мин (отрицательные)
+            const minW = (Math.abs(stats.min) / range) * (center - 10);
+            ctx.fillRect(px + center - minW, py + 72, minW, 4);
+            
+            ctx.fillStyle = "#6bcb77"; // Макс (положительные)
+            const maxW = (Math.abs(stats.max) / range) * (center - 10);
+            ctx.fillRect(px + center, py + 72, maxW, 4);
+            
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "9px monospace";
+            ctx.fillText(`Min: ${stats.min.toFixed(3)}`, px + 10, py + 90);
+            ctx.fillText(`Avg: ${stats.avg.toFixed(4)}`, px + 65, py + 90);
+            ctx.fillText(`Max: ${stats.max.toFixed(3)}`, px + 120, py + 90);
+        }
+    }
+
+    // === 5. ОБРАБОТЧИК КЛИКОВ (добавляется только один раз) ===
     if (!window._gnnLegendClickListenerAdded) {
         canvas.addEventListener('click', (e) => {
             const x = e.offsetX;
@@ -359,7 +448,9 @@ const legendItems = [
                 else if (x >= 10 && x <= 210 && y >= 230 && y <= 250) {
                     window.showGnnGraph = !window.showGnnGraph;
                 }
+                else if (x >= 10 && x <= 210 && y >= 270 && y <= 290) { window.showWeightStats = !window.showWeightStats; }
             }
+
         });
         window._gnnLegendClickListenerAdded = true;
     }
