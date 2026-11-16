@@ -2809,26 +2809,40 @@ trainBatch: function () {
 
     const freshness = n.freshness !== undefined ? n.freshness : 1.0;
     const isStale = n.isStale ? 1 : 0;
+    
+    // 🔥 НОВЫЕ ПРИЗНАКИ ДЛЯ ВИРТУАЛЬНЫХ УЗЛОВ (Фланги и точки сбора)
+    // Нормализуем threatDensity: делим на 4 (максимум ~4 турели могут простреливать точку)
+    const threatDensity = n.threatDensity !== undefined ? (n.threatDensity / 4) : 0;
+    const isStagingArea = n.isStagingArea ? 1 : 0;
 
-      return [
-        n.valid ? 1 : 0, n.owner === "ai" ? 1 : 0, n.owner ==="player" ? 1 : 0, n.hp || 0,
-        (n.count !== undefined ? (n.count / 10) : 0),
-        relX, relY, dist, isCombat ? 1 : 0, isBuilding ? 1 : 0, t === "worker" ? 1 : 0,
-        t === "fighter" ? 1 : 0, t ==="assault" ? 1 : 0, t ==="elite" ? 1 : 0, t.startsWith("base") ? 1 : 0,
-        isTurret ? 1 : 0, t === "warehouse" ? 1 : 0, t ==="beacon" ? 1 : 0, isResource ? 1 : 0,
-        isBuilding && (t === "warehouse" || t ==="repairWorkshop") ? 1 : 0, t ==="repairWorkshop" ? 1 : 0,
-        threat, n.obj?.range ? Math.min(1, n.obj.range / 500) : 0, n.obj?.fireRate ? Math.min(1, 1000 / (n.obj.fireRate || 1)) : 0,
-        this.strategicMemory.threatLevel / 30, isActive, isUnderConstruction, isKeyBuilding, isMilitary,
-        isEconomic, isExpansion, techLevel / 3, isUnderAttack, isIdle, logisticsScore,
-        (n.obj && n.obj.commandQueue && n.obj.commandQueue.length > 0) ? 1 : 0, 
-        (n.obj && n.obj.attackCooldown !== undefined && n.obj.attackCooldownMax && n.obj.attackCooldownMax > 0) 
+    return [
+      n.valid ? 1 : 0, 
+      n.owner === "ai" ? 1 : 0, 
+      n.owner === "player" ? 1 : 0, 
+      n.hp || 0,
+      (n.count !== undefined ? (n.count / 10) : 0), // Кластеризация: количество юнитов в отряде
+      relX, relY, dist, 
+      isCombat ? 1 : 0, isBuilding ? 1 : 0, t === "worker" ? 1 : 0,
+      t === "fighter" ? 1 : 0, t === "assault" ? 1 : 0, t === "elite" ? 1 : 0, t.startsWith("base") ? 1 : 0,
+      isTurret ? 1 : 0, t === "warehouse" ? 1 : 0, t === "beacon" ? 1 : 0, isResource ? 1 : 0,
+      isBuilding && (t === "warehouse" || t === "repairWorkshop") ? 1 : 0, t === "repairWorkshop" ? 1 : 0,
+      threat, 
+      n.obj?.range ? Math.min(1, n.obj.range / 500) : 0, 
+      n.obj?.fireRate ? Math.min(1, 1000 / (n.obj.fireRate || 1)) : 0,
+      this.strategicMemory.threatLevel / 30, isActive, isUnderConstruction, isKeyBuilding, isMilitary,
+      isEconomic, isExpansion, techLevel / 3, isUnderAttack, isIdle, logisticsScore,
+      (n.obj && n.obj.commandQueue && n.obj.commandQueue.length > 0) ? 1 : 0, 
+      (n.obj && n.obj.attackCooldown !== undefined && n.obj.attackCooldownMax && n.obj.attackCooldownMax > 0) 
         ? 1.0 - (n.obj.attackCooldown / n.obj.attackCooldownMax) : 1.0, 
-        workersOnBuilding, nearestEnemyDist, enemyClusterNear, ourClusterStrength, hpRatio,
-		    cooldownProgress, hasTarget, targetIsBuilding, targetHP,
-		    surrounded, targetPriority, surrounded, targetPriority,
-		    missionProgress, missionStuck, missionHitByTurret, missionEfficiency, freshness, isStale
-      ].map(v => isFinite(v) ? v : 0);
-    },
+      workersOnBuilding, nearestEnemyDist, enemyClusterNear, ourClusterStrength, hpRatio,
+      cooldownProgress, hasTarget, targetIsBuilding, targetHP,
+      surrounded, targetPriority, // ✅ ДУБЛИКАТЫ УДАЛЕНЫ (было 2 раза)
+      missionProgress, missionStuck, missionHitByTurret, missionEfficiency, 
+      freshness, isStale, // ✅ Память разведки
+      threatDensity,      // 🔥 НОВОЕ: плотность огня в этой точке (0 = безопасно, 1 = смертельно)
+      isStagingArea       // 🔥 НОВОЕ: 1 если это точка сбора позади зоны поражения, 0 если путь обхода
+    ].map(v => isFinite(v) ? v : 0);
+  },
 
 validActionMask: function () {
   const mask = new Array(G_ACTIONS.length).fill(0);
