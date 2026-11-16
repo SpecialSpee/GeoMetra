@@ -453,7 +453,7 @@ const legendItems = [
                 // Клик по "Пульс весов"
                 else if (x >= 10 && x <= 210 && y >= 276 && y <= 296) { 
                     window.showWeightStats = !window.showWeightStats;
-                    console.log("[GnnAI] Переключен пульс весов:", window.showWeightStats);
+                    //console.log("[GnnAI] Переключен пульс весов:", window.showWeightStats);
                 }           
               
               }
