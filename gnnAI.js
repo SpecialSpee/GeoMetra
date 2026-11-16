@@ -2584,36 +2584,21 @@ const hasBarracks2Now = gameState.buildings.some(b => b.owner === "ai" && b.type
 const hasTurret2Now = gameState.buildings.some(b => b.owner === "ai" && b.type === "turret2" && b.active);
 const hasBarracksNow = gameState.buildings.some(b => b.owner === "ai" && b.type === "barracks" && b.active);
 
-// 🔥 ПРИНУДИТЕЛЬНЫЙ Tier 0 → 1: если есть 2+ склада и 4+ рабочих
-if (this.curriculumTier === 0 && warehouses >= 2 && workers >= 4) {
+// ==========================================
+// 🔥 CURRICULUM КАК "ТРЕКЕР ДОСТИЖЕНИЙ" (Больше не блокирует действия!)
+const currentTier = this.curriculumTier;
+
+if (currentTier === 0 && warehouses >= 2 && workers >= 4) {
     this.curriculumTier = 1;
-    console.log(`[Curriculum] 🎓 Переход на Tier 1: экономика стабильна`);
+    console.log(`[Curriculum] 🎓 Milestone: Tier 1 (Экономика стабильна)`);
 }
-
-// 🔥 ПРИНУДИТЕЛЬНЫЙ Tier 1 → 2: если УЖЕ построена база2 (не ждём армию!)
-if (this.curriculumTier < 2 && hasBase2Now) {
+else if (currentTier === 1 && hasBarracks && armySize >= 2) {
     this.curriculumTier = 2;
-    console.log(`[Curriculum] 🎓 ПРИНУДИТЕЛЬНЫЙ переход на Tier 2: база2 уже построена!`);
+    console.log(`[Curriculum] 🎓 Milestone: Tier 2 (Есть казарма и армия)`);
 }
-// Обычный переход Tier 1 → 2 (если база2 ещё нет, но условия выполнены)
-else if (this.curriculumTier === 1 && hasBarracksNow && armySize >= 3 && m.resTotal > 0.15) {
-    this.curriculumTier = 2;
-    console.log(`[Curriculum] 🎓 Переход на Tier 2: армия ${armySize}, есть казарма`);
-}
-
-// 🔥 Tier 2 → 3: база2 + казарма2 + турель2 (УБРАН hasBase1, он всегда true)
-if (this.curriculumTier === 2 && hasBarracks2Now && hasTurret2Now) {
+else if (currentTier === 2 && hasBarracks2 && hasTurret2) {
     this.curriculumTier = 3;
-    console.log(`[Curriculum] 🎓🎓🎓 Переход на Tier 3: казарма2 ✅ + турель2 ✅`);
-}
-// 🔥 АВАРИЙНЫЙ: если curriculumTier < 3, но ВСЕ здания Тир-3 уже есть
-else if (this.curriculumTier < 3) {
-    const hasBase3Now = gameState.buildings.some(b => b.owner === "ai" && b.type === "base3" && b.active);
-    const hasBarracks3Now = gameState.buildings.some(b => b.owner === "ai" && b.type === "barracks3" && b.active);
-    if (hasBase3Now || hasBarracks3Now) {
-        this.curriculumTier = 3;
-        console.log(`[Curriculum] 🎓 АВАРИЙНЫЙ переход на Tier 3: здания Тир-3 уже существуют!`);
-    }
+    console.log(`[Curriculum] 🎓 Milestone: Tier 3 (Технологии Тир-2 освоены)`);
 }
 // ==========================================
 // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: НАГРАДА ЗА МОМЕНТ ПЕРЕХОДА НА ТИР
