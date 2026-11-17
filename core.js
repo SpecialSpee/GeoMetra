@@ -523,8 +523,13 @@ function processCommandQueue(unit) {
   } else if (command.type === "attack") {
     const target = command.target;
     if (!target || typeof target.x !== "number" || typeof target.y !== "number" || target.health <= 0 || (!gameState.buildings.includes(target) && !gameState.units.includes(target))) {
-      unit.commandQueue = []; unit.target = null; return;
+      // ИСПРАВЛЕНО: Не просто обнуляем, а даем "иммунитет" на 6 секунд, чтобы GNN не перехватил юнита
+      unit.target = null;
+      unit.lastAutonomousActionTime = performance.now(); 
+      // Не очищаем queue полностью, пусть startFighterCycle сам найдет новую цель
+      return;
     }
+
     unit.target = target;
     
     // 🔥 ХУК ДОСТИЖЕНИЯ ЦЕЛИ (начало атаки)
@@ -799,7 +804,47 @@ function processResourceDepletion() {
   });
 }
 
+// === МИКРО-РЕФЛЕКСЫ ЮНИТОВ (Спинной мозг) ===
+function applyUnitMicroReflexes(unit, now) {
+  if (unit.health <= 0 || unit.type === "worker" || unit.type === "repairman") return;
 
+  // 1. АВТО-ПЕРЕНАЦЕЛИВАНИЕ (Не бить по трупам)
+  if (unit.target && unit.target.health <= 0) {
+    unit.target = null;
+    unit.lastAutonomousActionTime = now; // Даем 6 сек на поиск новой цели без вмешательства GNN
+  }
+
+  // 2. ПАНИЧЕСКОЕ ОТСТУПЛЕНИЕ (Крайний случай < 15% HP)
+  if (unit.health < unit.maxHealth * 0.15 && !unit.isRetreating) {
+    const nearWorkshop = gameState.buildings.some(b => 
+      b.owner === unit.owner && b.type === 'repairWorkshop' && 
+      Math.hypot(b.x - unit.x, b.y - unit.y) < 300 && b.active
+    );
+    
+    if (!nearWorkshop) {
+      unit.isRetreating = true;
+      unit.commandQueue = []; 
+      unit.target = null;
+      unit.lastAutonomousActionTime = now;
+      
+      // Принудительно двигаем к базе
+      const dx = (unit.owner === "ai" ? aiBase.x : playerBase.x) - unit.x;
+      const dy = (unit.owner === "ai" ? aiBase.y : playerBase.y) - unit.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 5) {
+        unit.angle = Math.atan2(dy, dx);
+        const speed = (unit.speed || 100) * 1.5; // Ускорение при панике
+        unit.x += (dx / dist) * speed * 0.016; 
+        unit.y += (dy / dist) * speed * 0.016;
+      } else {
+        unit.isRetreating = false; // Дополз, снимаем флаг
+      }
+      return; // Прерываем обработку атаки в этом кадре
+    }
+  } else if (unit.health >= unit.maxHealth * 0.25) {
+    unit.isRetreating = false; // Здоровье восстановилось
+  }
+}
 
 function updateUnits(deltaTime) {
   const now = performance.now();
@@ -816,6 +861,7 @@ function updateUnits(deltaTime) {
     return false;
   });
   gameState.units.forEach(unit => {
+    applyUnitMicroReflexes(unit, now);
     const isShocked = unit.shockedUntil && now < unit.shockedUntil;
     if (unit.burning) {
       const elapsed = now - unit.burnTime;
@@ -824,13 +870,28 @@ function updateUnits(deltaTime) {
       } else { unit.burning = false; }
     }
     if (isShocked && unit.owner === "ai") {
-      if (!unit.lastShockEffect || now - unit.lastShockEffect > 500) { spawnShockEffect(unit.x, unit.y); unit.lastShockEffect = now; }
-      unit.shocked = true; unit.commandQueue = []; unit.target = null; return;
-    } else { unit.shocked = false; }
-    if (unit.type === "elite" && unit.target && unit.health > 0 && !unit.shocked) { dynamicAttackElite(unit, unit.target, deltaTime); } 
-    else if (unit.type === "assault" && unit.target && unit.health > 0 && !unit.shocked) { dynamicAttackAssault(unit, unit.target, deltaTime); } 
-    else if (unit.type === "fighter" && unit.target && unit.health > 0 && !unit.shocked) { dynamicAttack(unit, unit.target, deltaTime); } 
-    else { unit.idleTimer += deltaTime; }
+      if (!unit.lastShockEffect || now - unit.lastShockEffect > 500) { 
+        spawnShockEffect(unit.x, unit.y); 
+        unit.lastShockEffect = now; 
+      }
+      unit.shocked = true; 
+      unit.commandQueue = []; 
+      unit.target = null;
+      // ИСПРАВЛЕНО: Даем 3 секунды "неприкосновенности" после оглушения, чтобы GNN не шлем его обратно в мясорубку
+      unit.lastAutonomousActionTime = now + 3000; 
+      return;
+    } else { 
+      unit.shocked = false; 
+    }
+    if (unit.type === "elite" && unit.target && unit.health > 0 && !unit.shocked && !unit.isRetreating) { 
+      dynamicAttackElite(unit, unit.target, deltaTime); 
+    } else if (unit.type === "assault" && unit.target && unit.health > 0 && !unit.shocked && !unit.isRetreating) { 
+      dynamicAttackAssault(unit, unit.target, deltaTime); 
+    } else if (unit.type === "fighter" && unit.target && unit.health > 0 && !unit.shocked && !unit.isRetreating) { 
+      dynamicAttack(unit, unit.target, deltaTime); 
+    } else { 
+      unit.idleTimer += deltaTime; 
+    }
   });
   gameState.units = gameState.units.filter(unit => {
     if (unit.health <= 0) { removeUnit(unit); return false; }
@@ -2187,7 +2248,11 @@ function applyBombDamage(x, y) {
       const dist = Math.hypot(unit.x - x, unit.y - y);
       if (dist <= bombRadius) {
         const damage = bombMaxDamage * (1 - dist / bombRadius);
-        unit.health -= damage;
+        if (typeof window.onDamage === "function") {
+          window.onDamage(unit, damage);
+        } else {
+          unit.health -= damage;
+        }
         if (unit.health <= 0) removeUnit(unit);
         else { unit.burning = true; unit.burnTime = performance.now(); unit.burnDuration = 5000; }
       }
@@ -2249,34 +2314,50 @@ function applyShockEffect(x, y) {
     if (unit.owner !== playerId) {
       const dist = Math.hypot(unit.x - x, unit.y - y);
       if (dist <= 180) {
-        unit.health -= 30 * (1 - dist / 180);
+        const damage = 30 * (1 - dist / 180);
+        
+        // ИСПРАВЛЕНО: Вызываем onDamage, чтобы сработал GnnEventHooks.onUnitDamaged
+        if (typeof window.onDamage === "function") {
+          window.onDamage(unit, damage);
+        } else {
+          unit.health -= damage; // Fallback
+        }
+        
         unit.shockedUntil = Math.max(unit.shockedUntil || 0, performance.now() + 3000);
-        unit.commandQueue = []; unit.target = null;
+        unit.commandQueue = []; 
+        unit.target = null;
+        // ИСПРАВЛЕНО: используем performance.now() вместо несуществующей переменной now
+        unit.lastAutonomousActionTime = performance.now(); 
       }
     }
   });
 }
 
-function applyBombEffect(x, y) {
-  bombZones.push({ x, y, start: performance.now(), exploded: false, radius: 0, maxRadius: 140, warningTime: 2000 });
-  setTimeout(() => {
-    const zone = bombZones.find(z => Math.hypot(z.x - x, z.y - y) < 5);
-    if (zone && !zone.exploded) {
-      zone.exploded = true;
-      gameState.units.forEach(unit => {
-        if (unit.owner !== playerId) {
-          const dist = Math.hypot(unit.x - x, unit.y - y);
-          if (dist <= 140) {
-            unit.health -= 200 * Math.pow(1 - dist / 140, 1.5);
-            if (unit.health > 0) { unit.burning = true; unit.burnTime = performance.now(); unit.burnDuration = 4000; }
-          }
+function applyBombDamage(x, y) {
+  gameState.units.forEach(unit => {
+    if (unit.owner !== playerId) {
+      const dist = Math.hypot(unit.x - x, unit.y - y);
+      if (dist <= bombRadius) {
+        const damage = bombMaxDamage * (1 - dist / bombRadius);
+        
+        if (typeof window.onDamage === "function") {
+          window.onDamage(unit, damage);
+        } else {
+          unit.health -= damage;
         }
-      });
-      // Здесь вызывается spawnExplosionEffect, который уже есть в твоем коде
-      if (typeof spawnExplosionEffect === "function") spawnExplosionEffect(x, y);
-      setTimeout(() => { const idx = bombZones.indexOf(zone); if (idx !== -1) bombZones.splice(idx, 1); }, 1000);
+        
+        if (unit.health <= 0) {
+          removeUnit(unit);
+        } else { 
+          unit.burning = true; 
+          unit.burnTime = performance.now(); 
+          unit.burnDuration = 5000; 
+          // ДОБАВЛЕНО: защита от перехвата GNN, пока юнит горит
+          unit.lastAutonomousActionTime = performance.now();
+        }
+      }
     }
-  }, 2000);
+  });
 }
 
 function activateShockPerk(slotIndex) {

@@ -471,7 +471,7 @@ Object.assign(window.GnnAI, {
         const clippedDelta = Math.max(-200.0, Math.min(200.0, rewardDelta));
         mission.replayEntry.reward += clippedDelta;
         if (Math.abs(clippedDelta) > 1.0 || reason.includes("OUTCOME") || reason.includes("penalty")) {
-          //console.log(`[GnnAI Cache] 🎯 '${mission.action}' → ${clippedDelta >= 0 ? '+' : ''}${clippedDelta.toFixed(2)} (${reason})`);
+          console.log(`[GnnAI Cache] 🎯 '${mission.action}' → ${clippedDelta >= 0 ? '+' : ''}${clippedDelta.toFixed(2)} (${reason})`);
         }
         if (isResolved) mission.resolved = true;
       }
@@ -614,9 +614,9 @@ Object.assign(window.GnnAI, {
           reward: penalty
         });
         if (penalty < 0) {
-          //console.warn(`[GnnAI] ⚠️ Обнаружен тупик: ${penalty.toFixed(1)} (${reasons.join(', ')})`);
+          console.warn(`[GnnAI] ⚠️ Обнаружен тупик: ${penalty.toFixed(1)} (${reasons.join(', ')})`);
         } else {
-          //console.log(`[GnnAI] ✅ Стагнация: +${penalty.toFixed(1)} (${reasons.join(', ')})`);
+          console.log(`[GnnAI] ✅ Стагнация: +${penalty.toFixed(1)} (${reasons.join(', ')})`);
         }
       }
     }
@@ -938,6 +938,14 @@ Object.assign(window.GnnAI, {
       reward += stuckPenalty;
       reasons.push(`ARMY_STUCK: ${stuckUnits}/${combatUnits.length} бойцов стоят на месте (${stuckPenalty})`);
     }
+    // === НАКАЗАНИЕ ЗА ПАНИКУ ДВИЖКА (Обучаем GNN превентивному отступлению) ===
+    const panicRetreatUnits = combatUnits.filter(u => u.isRetreating === true).length;
+    if (panicRetreatUnits > 0) {
+      const panicPenalty = -15.0 * panicRetreatUnits;
+      reward += panicPenalty;
+      reasons.push(`ENGINE_PANIC_PENALTY: Движок спас ${panicRetreatUnits} юнитов в панике! GNN должен был отвести их сам. (${panicPenalty.toFixed(1)})`);
+    }
+
     if (reward !== 0) {
       const currentState = this.buildGraphState();
       if (currentState) {
@@ -1609,13 +1617,13 @@ Object.assign(window.GnnAI, {
     const currentTier = this.curriculumTier;
     if (currentTier === 0 && warehouses >= 2 && workers >= 4) {
       this.curriculumTier = 1;
-      //console.log(`[Curriculum] 🎓 Milestone: Tier 1 (Экономика стабильна)`);
+      console.log(`[Curriculum] 🎓 Milestone: Tier 1 (Экономика стабильна)`);
     } else if (currentTier === 1 && hasBarracks && armySize >= 2) {
       this.curriculumTier = 2;
-      //console.log(`[Curriculum] 🎓 Milestone: Tier 2 (Есть казарма и армия)`);
+      console.log(`[Curriculum] 🎓 Milestone: Tier 2 (Есть казарма и армия)`);
     } else if (currentTier === 2 && hasBarracks2 && gameState.buildings.some(b => b.owner === "ai" && b.type === "turret2" && b.active)) {
       this.curriculumTier = 3;
-      //console.log(`[Curriculum] 🎓 Milestone: Tier 3 (Технологии Тир-2 освоены)`);
+      console.log(`[Curriculum] 🎓 Milestone: Tier 3 (Технологии Тир-2 освоены)`);
     }
 
     const currentTechLevel = m.techLevel;
@@ -1713,9 +1721,9 @@ Object.assign(window.GnnAI, {
       if (currentState) {
         this.replay.push({ X: currentState.X, A_distance: currentState.A_distance, A_threat: currentState.A_threat, actionIndex: this._AIDX.idle, reward: phaseReward });
         if (reasons.some(r => r.includes("TIER2_TRANSITION") || r.includes("TIER3_TRANSITION"))) {
-          //console.log(`[GnnAI] 🎯 ФАЗА: +${phaseReward.toFixed(1)} (${reasons.join(', ')})`);
+          console.log(`[GnnAI] 🎯 ФАЗА: +${phaseReward.toFixed(1)} (${reasons.join(', ')})`);
         } else if (phaseReward < -10) {
-          //console.warn(`[GnnAI] ⚠️ ФАЗА: ${phaseReward.toFixed(1)} (${reasons.join(', ')})`);
+          console.warn(`[GnnAI] ⚠️ ФАЗА: ${phaseReward.toFixed(1)} (${reasons.join(', ')})`);
         }
       }
     }

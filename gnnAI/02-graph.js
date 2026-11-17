@@ -410,7 +410,7 @@ Object.assign(window.GnnAI, {
     return { X, A_distance, A_threat, nodes: raw };
   },
 
-  // === Признаки узла (56 штук) ===
+  // === Признаки узла (58 штук) ===
   nodeFeatures: function (n) {
     if (!n || !n.valid) return new Array(CFG.NODE_FEATURES).fill(0);
     const t = n.type || "";
@@ -473,10 +473,27 @@ Object.assign(window.GnnAI, {
     let targetIsBuilding = 0;
     let targetHP = 0;
     let surrounded = 0;
+    
+    // === ИСПРАВЛЕНИЕ: ОБЪЯВЛЯЕМ ПЕРЕМЕННЫЕ ЗДЕСЬ, ДО ЛЮБЫХ IF ===
+    let isRetreating = 0;
+    let overkillRisk = 0;
+
     if (isCombat && n.obj) {
       const u = n.obj;
       hpRatio = u.health / (u.maxHealth || 1);
       cooldownProgress = u.attackCooldownMax > 0 ? 1.0 - (u.attackCooldown || 0) / u.attackCooldownMax : 1.0;
+
+      // 1. Видит ли GNN, что движок включил панику?
+      if (n.obj.isRetreating) isRetreating = 1;
+
+      // 2. Оценивает ли GNN риск оверкилла по этой цели? (Если это враг)
+      if (n.owner === "player" && n.obj) {
+        const alliesAttacking = gameState.units.filter(u => 
+          u.owner === "ai" && u.health > 0 && u.target === n.obj
+        ).length;
+        overkillRisk = Math.min(1, alliesAttacking / 3); // Нормализация 0..1
+      }
+
       let minED = 9999, enemiesNear = 0, alliesNear = 0, allyPower = 0, enemyPower = 0;
       for (const other of gameState.units) {
         if (other === u || other.health <= 0) continue;
@@ -551,8 +568,7 @@ Object.assign(window.GnnAI, {
       cooldownProgress, hasTarget, targetIsBuilding, targetHP,
       surrounded, targetPriority,
       missionProgress, missionStuck, missionHitByTurret, missionEfficiency,
-      freshness, isStale,
-      threatDensity, isStagingArea
+      freshness, isStale, threatDensity, isStagingArea, isRetreating, overkillRisk
     ].map(v => isFinite(v) ? v : 0);
   },
 

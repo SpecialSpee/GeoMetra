@@ -190,6 +190,11 @@ window.mobilizeDefendersAround = function (pos, radius = 250) {
   );
   
   window.getFreeReserveUnits().forEach(unit => {
+    // ИСПРАВЛЕНО: Не прерывать юнита, если он недавно получил автономную задачу или атакует
+    const now = performance.now();
+    if (now - unit.lastAutonomousActionTime < 6000) return;
+    if (unit.target && unit.target.health > 0) return;
+
     if (Math.hypot(unit.x - pos.x, unit.y - pos.y) > radius * 2) return;
     
     if (enemies.length) {

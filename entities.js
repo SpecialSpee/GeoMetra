@@ -237,6 +237,10 @@ class Unit {
       this.artilleryCooldown = 10000;
       this.laserCooldown = 5000;
     }
+
+        // === МИКРО-АВТОНОМИЯ (Спинной мозг для GNN) ===
+    this.isRetreating = false;          // Флаг панического отступления
+    this.lastAutonomousActionTime = 0;  // Время последнего автономного действия (защита от перехвата GNN)
   }
 }
 

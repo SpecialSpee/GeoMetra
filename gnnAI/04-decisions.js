@@ -264,9 +264,10 @@ Object.assign(window.GnnAI, {
 
     const isUnitAvailable = (u) => {
       if (!u || u.health <= 0) return false;
-      if (u.health < u.maxHealth * 0.2) return true;
+      if (u.isRetreating) return false; // 🔥 ЗАПРЕТ: не прерывать паническое отступление
+      if (u.target && u.target.health > 0) return false; // 🔥 ЗАПРЕТ: не прерывать активный бой
       if (!u.missionLog) return true;
-      return (now - u.missionLog.startTime) > 6000;
+      return (now - u.missionLog.startTime) > 6000; // 6 секунд неприкосновенности
     };
 
     const tacticalActions = [
