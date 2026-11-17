@@ -82,6 +82,12 @@ async function startGnnGame() {
 
   gameStarted = true;
   gameMode = "gnn";
+  // 🔥 ИСПРАВЛЕНИЕ: Создаем панель при каждом запуске, а не только при авто-рестарте
+  if (typeof createTrainingOverlay === "function") {
+    createTrainingOverlay();
+  }
+    // 🔥 ФИКС: точка отсчёта времени МАТЧА (а не загрузки страницы)
+  if (window.GnnAI) window.GnnAI.matchStartTime = performance.now();
   if (typeof window.neuralAIActive !== "undefined") window.neuralAIActive = false;
   isPaused = false;
   playerId = "player";
@@ -229,7 +235,9 @@ function createTrainingOverlay() {
 
 window.updateTrainingOverlay = function() {
   const overlay = document.getElementById('gnn-training-overlay');
-  if (!overlay || !window.gameState || !window.GnnAI) return;
+  // 🔥 ИСПРАВЛЕНО: проверяем gameState БЕЗ window., так как он объявлен через let
+  if (!overlay || typeof gameState === 'undefined' || !gameState || !window.GnnAI) return;
+  
   const m = GnnAI.metrics();
   const stats = GnnAI.readStats();
   const gnnStats = stats.filter(s => s.mode === 'gnn');
@@ -258,22 +266,22 @@ window.updateTrainingOverlay = function() {
   document.getElementById('ov-workers').innerText = workers;
 };
 
-// Патч requestAnimationFrame для обновления оверлея раз в 500мс
-const _origRAF = window.requestAnimationFrame;
-let lastOverlayUpdate = 0;
-const OVERLAY_UPDATE_INTERVAL = 500;
-
-window.requestAnimationFrame = function(callback) {
-  return _origRAF(function(ts) {
-    if (window.gameStarted && !gameState.gameEnded) {
-      if (ts - lastOverlayUpdate > OVERLAY_UPDATE_INTERVAL) {
-        window.updateTrainingOverlay();
-        lastOverlayUpdate = ts;
+// 🔥 ИСПРАВЛЕНИЕ: Надежное обновление UI через setInterval
+if (!window._gnnUiInterval) {
+  window._gnnUiInterval = setInterval(() => {
+    // 🔥 ИСПРАВЛЕНО: проверяем gameStarted и gameState БЕЗ window.
+    if (typeof gameStarted !== 'undefined' && gameStarted && 
+        typeof gameState !== 'undefined' && gameState && !gameState.gameEnded) {
+      if (typeof window.updateTrainingOverlay === 'function') {
+        try {
+          window.updateTrainingOverlay();
+        } catch (e) {
+          // Тихо игнорируем ошибки, чтобы не ломать игру во время переходных состояний
+        }
       }
     }
-    callback(ts);
-  });
-};
+  }, 500); // Обновляем каждые 500 мс
+}
 
 // === Автостарт при загрузке ===
 window.addEventListener("load", () => {

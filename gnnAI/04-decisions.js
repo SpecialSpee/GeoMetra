@@ -15,6 +15,36 @@ Object.assign(window.GnnAI, {
     return groups;
   },
 
+  // === ХЕЛПЕР: время МАТЧА в минутах (не страницы!) ===
+  gameTimeMin: function () {
+    const start = this.matchStartTime || performance.now();
+    return (performance.now() - start) / 60000;
+  },
+
+  // === ДИНАМИЧЕСКАЯ ЭНТРОПИЯ ===
+  getEntropyCoef: function () {
+    const m = this.metrics();
+    const gameTimeMin = this.gameTimeMin(); // 🔥 ВРЕМЯ МАТЧА
+
+    // ФАЗА 1: Ранняя игра — минимальная энтропия, учим экономику
+    if (gameTimeMin < 2.5 || m.aiWarehouses < 2) {
+      return 0.01; // 🎯 Exploit
+    }
+
+    // ФАЗА 2: Середина игры — есть армия, исследуем тактики
+    if (gameTimeMin < 7.0 && m.aiArmy >= 2) {
+      return CFG.ENTROPY_COEF || 0.08; // 🔍 Explore
+    }
+
+    // ФАЗА 3: Поздняя игра — точность
+    if (gameTimeMin >= 7.0 || m.techLevel >= 3) {
+      return 0.02; // 🎯 Exploit
+    }
+
+    // Переходная зона: склады есть, армии ещё нет — мягкий режим
+    return 0.03;
+  },
+
   // === Принятие решения ===
   decide: function () {
     const now = performance.now(); // <-- ПЕРЕНЕСЕНО НАВЕРХ
@@ -38,9 +68,16 @@ Object.assign(window.GnnAI, {
     if (!pred) return;
     const logitsData = pred.logits;
     const mask = this.validActionMask();
-    const temperature = this.bcActive ? 1.5 : 1.0;
+    
+    // 🔥 ДИНАМИЧЕСКАЯ ЭНТРОПИЯ: заменяем жесткую температуру
+    const dynamicEntropy = this.getEntropyCoef();
+    
+    // Преобразуем энтропию в температуру для sampleMasked.
+    // 1.0 = точно, >1.0 = хаотично. 
+    // 0.01 -> 1.06 (почти точно), 0.08 -> 1.48 (хаотично), 0.02 -> 1.12 (точно)
+    const temperature = 1.0 + (dynamicEntropy * 6.0);
+    
     let chosenIndex = this.sampleMasked(logitsData, mask, temperature);
-
     let proposedAction = G_ACTIONS[chosenIndex];
     let finalActionIndex = chosenIndex;
     let finalAction = proposedAction;

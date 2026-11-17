@@ -250,7 +250,7 @@ function moveUnit(unit, targetX, targetY, callback, spreadDone = false) {
     const currentTime = performance.now();
     const elapsed = (currentTime - startTime) / 1000;
     const progress = Math.min(elapsed / duration, 1);
-    if (unit.owner === "ai" && unit.type !== "worker" && unit.type !== "repairman") {
+    if (unit.owner === "ai" && unit.type !== "worker" && unit.type !== "repairman" && !unit.isRetreating) {
       const enemies = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range || 150).filter(e => e.owner !== unit.owner);
       if (enemies.length > 0) {
         unit.commandQueue = [];
@@ -579,25 +579,24 @@ function processCommandQueue(unit) {
 function checkForEnemiesAndAttack(unit) {
   if (!unit || !unit.range) return;
   
-  // 🔥 ФИКС: getEnemiesInRange уже фильтрует по owner, но проверим еще раз для надежности
+  // 🔥 ИСПРАВЛЕНИЕ: Если юнит в панике или целенаправленно отходит, не перехватываем управление!
+  if (unit.isRetreating) return;
+
   const enemiesInRange = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
     .filter(e => e.owner !== unit.owner && e.health > 0);
     
   if (enemiesInRange.length > 0) {
-    // Если цель уже найдена и жива, не меняем её постоянно
     if (unit.target && unit.target.health > 0 && enemiesInRange.includes(unit.target)) {
       return; 
     }
     
     unit.commandQueue = [];
-    // Сортируем по расстоянию и берем самого ближнего
     unit.target = enemiesInRange.sort((a, b) => 
       Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
     )[0];
     
     unit.commandQueue.push({ type: "attack", target: unit.target });
   } else {
-    // Если врагов нет, сбрасываем цель, чтобы юнит не стоял тупо
     if (unit.target) unit.target = null;
   }
 }
@@ -757,7 +756,12 @@ function startFighterCycle(fighter) {
   function cycle() {
     if (fighter.health <= 0) return;
     
-    // Если есть приказ — исполняем
+    // 🔥 ИСПРАВЛЕНИЕ: Если юнит отступает, пропускаем фазу атаки и даем ему двигаться
+    if (fighter.isRetreating) {
+      requestAnimationFrame(cycle);
+      return;
+    }
+
     if (fighter.commandQueue.length > 0) { 
       processCommandQueue(fighter); 
       requestAnimationFrame(cycle); 
@@ -1872,13 +1876,17 @@ function startAssaultEliteCycle(unit) {
   function cycle() {
     if (unit.health <= 0) return;
     
-    // Если есть команды – обрабатываем их и продолжаем цикл
+    // 🔥 ИСПРАВЛЕНИЕ: Уважение к режиму отступления
+    if (unit.isRetreating) {
+      requestAnimationFrame(cycle);
+      return;
+    }
+
     if (unit.commandQueue && unit.commandQueue.length > 0) {
       processCommandQueue(unit);
       requestAnimationFrame(cycle);
       return;
     }
-    
     // Если у юнита есть цель, и она жива, вызываем динамическую атаку
     if (unit.target && unit.target.health > 0) {
       if (unit.type === "assault") {
