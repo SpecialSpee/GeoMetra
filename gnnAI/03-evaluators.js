@@ -106,9 +106,16 @@ Object.assign(window.GnnAI, {
             tacticReward = baseReward - lossRatio * 15.0 + totalDamageDealt * 0.15;
             eventReason = `TARGET_KILLED_LOSS_${Math.round(lossRatio*100)}%: потери ${dead.length}/${logs.length}, ${targetType} (важность: ${targetImportance})`;
           } else if (reached.length > 0 && alive.length > 0) {
-            tacticReward = totalDamageDealt * 0.05;
-            eventReason = "IN_PROGRESS: бой идёт";
-          } else if (alive.length === logs.length && reached.length === 0) {
+            // ИСПРАВЛЕНО: Поощряем юнитов за то, что они держат позицию и наносят урон, а не дергаются
+            const elapsed = (performance.now() - mission.snapshot.time) / 1000;
+            if (elapsed > 5 && totalDamageDealt > 20) {
+              tacticReward = 2.0 + (totalDamageDealt * 0.05); // Мягкий положительный дрейф
+              eventReason = "HOLDING_POSITION_AND_DEALING_DAMAGE";
+            } else {
+              tacticReward = totalDamageDealt * 0.05;
+              eventReason = "IN_PROGRESS: бой идёт";
+            }
+          }  else if (alive.length === logs.length && reached.length === 0) {
             const stuckTime = (performance.now() - mission.snapshot.time) / 1000;
             if (stuckTime > 20) {
               resolved = true;

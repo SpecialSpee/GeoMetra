@@ -236,20 +236,37 @@ Object.assign(window.GnnAI, {
     }
   },
 
-  // === Оценка угроз ===
+  // === Оценка угроз (ИСПРАВЛЕНО: учет угрозы для экспансий) ===
   assessThreats: function () {
     const enemyUnits = gameState.units.filter(u => u.owner === "player" && u.health > 0);
     const enemyBuildings = gameState.buildings.filter(b => b.owner === "player" && b.health > 0);
     const composition = {};
     enemyUnits.forEach(u => { composition[u.type] = (composition[u.type] || 0) + 1; });
+    
     let threatLevel = 0;
     enemyUnits.forEach(u => { threatLevel += this._THREAT_ASSESSMENT[u.type] || 1; });
+    
+    // Угроза главной базе
     enemyBuildings.filter(b => b.type?.startsWith("turret")).forEach(t => {
       const dist = Math.hypot(t.x - aiBase.x, t.y - aiBase.y);
       if (dist < 600) threatLevel += (this._THREAT_ASSESSMENT[t.type] || 2) * 2;
     });
+
+    // ИСПРАВЛЕНО: Угроза экспансиям (складам и маякам)
+    const aiExpansions = gameState.buildings.filter(b => 
+      b.owner === "ai" && ["warehouse", "beacon", "barracks", "barracks2", "barracks3"].includes(b.type) && b.health > 0
+    );
+    
+    aiExpansions.forEach(exp => {
+      const enemiesNear = enemyUnits.filter(u => Math.hypot(u.x - exp.x, u.y - exp.y) < 400).length;
+      const turretsNear = enemyBuildings.filter(b => b.type?.startsWith("turret") && Math.hypot(b.x - exp.x, b.y - exp.y) < 500).length;
+      
+      if (enemiesNear > 0 || turretsNear > 0) {
+        threatLevel += (enemiesNear * 3) + (turretsNear * 5); // Повышаем общий уровень угрозы, если экспанция под давлением
+      }
+    });
+
     this.strategicMemory.enemyComposition = composition;
     this.strategicMemory.threatLevel = threatLevel;
   }
-
 });
