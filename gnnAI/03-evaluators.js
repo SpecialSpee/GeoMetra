@@ -391,13 +391,17 @@ Object.assign(window.GnnAI, {
               const builtObj = gameState.buildings.find(b => b.owner === "ai" && b.type === bt && b.active);
               if (builtObj) {
                 const distFromBase = Math.hypot(builtObj.x - aiBase.x, builtObj.y - aiBase.y);
-                if (distFromBase > 400) {
+                
+                // 🔥 АДАПТАЦИЯ: порог экспансии зависит от размера мира
+                const scale = typeof window.getWorldScale === 'function' ? window.getWorldScale() : 1.0;
+                const expansionThreshold = 400 * scale; 
+
+                if (distFromBase > expansionThreshold) {
                   rewardDelta += 5.0;
-                  reason = `BUILDING_BUILT_EXPANSION: ${bt} на расстоянии ${distFromBase.toFixed(0)}px`;
+                  reason = `BUILDING_BUILT_EXPANSION: ${bt} на расстоянии ${distFromBase.toFixed(0)}px (порог: ${expansionThreshold.toFixed(0)})`;
                 } else {
                   reason = `BUILDING_BUILT: ${bt}`;
                 }
-                
                 // Бонус за маяк с постройками
                 if (bt === "beacon") {
                   const nearby = gameState.buildings.filter(b => 
@@ -708,7 +712,7 @@ Object.assign(window.GnnAI, {
       reward -= 8.0;  // Было 15.0
       reasons.push("NO_OUTPOSTS: нет форпостов после 4 минут");
     }
-    
+
     // Проверка распределения зданий
     if (aiBuildings.length >= 5) {
       let totalDist = 0;
@@ -721,12 +725,17 @@ Object.assign(window.GnnAI, {
       }
       const avgDist = pairCount > 0 ? totalDist / pairCount : 0;
       
-      if (avgDist < 150) {
-        reward -= 8.0;  // Было 15.0
-        reasons.push(`BUILDING_CLUSTER: здания слишком близко (среднее ${avgDist.toFixed(0)}px)`);
-      } else if (avgDist > 400) {
-        reward += 5.0;  // Было 10.0
-        reasons.push(`GOOD_SPREAD: здания хорошо распределены (среднее ${avgDist.toFixed(0)}px)`);
+      // 🔥 АДАПТАЦИЯ: пороги кластеризации зависят от размера мира
+      const scale = typeof window.getWorldScale === 'function' ? window.getWorldScale() : 1.0;
+      const clusterThreshold = 150 * scale;
+      const spreadThreshold = 400 * scale;
+      
+      if (avgDist < clusterThreshold) {
+        reward -= 8.0;
+        reasons.push(`BUILDING_CLUSTER: здания слишком близко (среднее ${avgDist.toFixed(0)}px, порог: ${clusterThreshold.toFixed(0)})`);
+      } else if (avgDist > spreadThreshold) {
+        reward += 5.0;
+        reasons.push(`GOOD_SPREAD: здания хорошо распределены (среднее ${avgDist.toFixed(0)}px, порог: ${spreadThreshold.toFixed(0)})`);
       }
     }
     

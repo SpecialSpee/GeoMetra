@@ -1,7 +1,6 @@
 // ============================================================
 // render.js — Отрисовка и Canvas (v7.4 Fixed)
 // ============================================================
-
 // Массив с путями к фоновым изображениям
 const backgroundImages = [
   '/src/images/background0.png',
@@ -17,9 +16,34 @@ const backgroundImages = [
 // Выбор случайного изображения из массива
 const randomIndex = Math.floor(Math.random() * backgroundImages.length);
 const selectedImage = backgroundImages[randomIndex];
-
 // Создание объекта изображения и установка источника
 const backgroundImage = new Image();
+
+// ============================================================
+// GNN OVERLAY CANVAS (Глобальная инициализация)
+// ============================================================
+const gnnOverlayCanvas = document.getElementById("gnnOverlayCanvas");
+let gnnCtx = null;
+
+window.initGnnOverlay = function() {
+    if (gnnOverlayCanvas && typeof canvas !== 'undefined' && canvas) {
+        gnnOverlayCanvas.width = canvas.width;
+        gnnOverlayCanvas.height = canvas.height;
+        gnnCtx = gnnOverlayCanvas.getContext("2d");
+    }
+};
+
+// Инициализируем с небольшой задержкой, чтобы canvas точно был готов
+setTimeout(window.initGnnOverlay, 100);
+
+// Обновляем размер при изменении окна
+window.addEventListener("resize", () => {
+    if (gnnOverlayCanvas && typeof canvas !== 'undefined') {
+        gnnOverlayCanvas.width = canvas.width;
+        gnnOverlayCanvas.height = canvas.height;
+    }
+});
+
 backgroundImage.src = selectedImage;
 
 const OWNER_COLORS = {
@@ -85,37 +109,43 @@ const starField = {
 starField.init();
 
 window.drawGnnOverlay = function() {
+    // 1. ЗАЩИТА И ОЧИСТКА (Главный фикс "хвостов" и артефактов)
+    if (!gnnCtx || !gnnOverlayCanvas) return;
+    gnnCtx.clearRect(0, 0, gnnOverlayCanvas.width, gnnOverlayCanvas.height);
+
     const canvas = document.getElementById("gameCanvas");
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
     if (typeof window.worldToScreen !== 'function') return;
     if (!window.GnnAI || !window.GnnAI.lastState || gameMode !== "gnn") return; 
+    
     const state = window.GnnAI.lastState;
     if (!state.nodes || state.nodes.length === 0) return;
+    
     const nodes = state.nodes;
-    const INTERACTION_RADIUS = window.GnnAI.cfg.INTERACTION_RADIUS || 320;
+    const INTERACTION_RADIUS = window.GnnAI.cfg.INTERACTION_RADIUS || 120;
+
     // === 1. ЕСЛИ ПАНЕЛЬ СКРЫТА, РИСУЕМ ТОЛЬКО МАЛЕНЬКУЮ ИКОНКУ ===
     if (!window.showGnnLegend) {
-        ctx.save();
-        ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
-        ctx.fillRect(10, 10, 26, 26);
-        ctx.strokeStyle = "#00ff99";
-        ctx.lineWidth = 1.0;
-        ctx.strokeRect(10, 10, 26, 26);
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "16px monospace";
-        ctx.fillText("🧠", 15, 29);
-        ctx.restore();
-        return; // Выходим, ничего больше не рисуем
+        gnnCtx.save();
+        gnnCtx.fillStyle = "rgba(0, 0, 0, 0.75)";
+        gnnCtx.fillRect(10, 10, 26, 26);
+        gnnCtx.strokeStyle = "#00ff99";
+        gnnCtx.lineWidth = 1.0;
+        gnnCtx.strokeRect(10, 10, 26, 26);
+        gnnCtx.fillStyle = "#ffffff";
+        gnnCtx.font = "16px monospace";
+        gnnCtx.fillText("🧠", 15, 29);
+        gnnCtx.restore();
+        return; 
     }
+
     // === 2. РИСУЕМ ГРАФ (СВЯЗИ + УЗЛЫ), ЕСЛИ ВКЛЮЧЕНО ===
     if (window.showGnnGraph) {
-        ctx.save();
-        ctx.lineCap = 'round';
+        gnnCtx.save();
+        gnnCtx.lineCap = 'round';
         
         function getConnectionStyle(ni, nj, d) {
-            const isThreat = (ni.owner === "player" && nj.owner ==="ai") || (nj.owner ==="player" && ni.owner ==="ai");
+            const isThreat = (ni.owner === "player" && nj.owner === "ai") || (nj.owner === "player" && ni.owner === "ai");
             if (isThreat) {
                 const urgency = 1 - (d / INTERACTION_RADIUS);
                 return { color: `rgba(255, 0, 0, ${0.6 + urgency * 0.4})`, width: 1.0, dash: false, priority: 10 };
@@ -123,21 +153,36 @@ window.drawGnnOverlay = function() {
             const isProd = (ni.type.includes("barracks") && ["fighter","assault","elite"].includes(nj.type)) ||
                            (nj.type.includes("barracks") && ["fighter","assault","elite"].includes(ni.type));
             if (isProd) return { color: "rgba(0, 200, 255, 0.5)", width: 1.0, dash: false, priority: 5 };
-            const isLogistics = (ni.type === "warehouse" && ["gold","silicon","plasma"].includes(nj.type)) ||
-                                (nj.type === "warehouse" && ["gold","silicon","plasma"].includes(ni.type));
+            
+            const isLogistics = (ni.type === "warehouse" && nj.resourceType) || 
+                                (nj.type === "warehouse" && ni.resourceType);
             if (isLogistics) return { color: "rgba(255, 215, 0, 0.3)", width: 1.0, dash: false, priority: 5 };
+            
             const isDefense = (ni.type.startsWith("turret") && !nj.type.startsWith("turret")) ||
                               (nj.type.startsWith("turret") && !ni.type.startsWith("turret"));
             if (isDefense) return { color: "rgba(255, 100, 50, 0.3)", width: 1.0, dash: false, priority: 5 };
-            const isRepair = (ni.type === "repairWorkshop" && nj.hp < 0.9) || (nj.type ==="repairWorkshop" && ni.hp < 0.9);
-            if (isRepair) return { color: "rgba(0, 255, 100, 0.3)", width: 1.0, dash: true, priority: 5 };
+            
+            const repairableTypes = ["worker", "fighter", "assault", "elite", "repairman", "base", "base2", "base3", "warehouse", "repairWorkshop", "barracks", "barracks2", "barracks3", "turret", "turret2", "turret3", "beacon"];
+            const isRepairable = (node) => node.type && repairableTypes.includes(node.type) && !node.isVirtual;
 
-            const isStrategy = (ni.type === "beacon" && (nj.type.includes("base") || nj.type ==="beacon")) ||
-                               (nj.type === "beacon" && (ni.type.includes("base") || ni.type ==="beacon"));
+            const unitTypes = ["worker", "fighter", "assault", "elite", "repairman"];
+            const isRepairUnit = (ni.type === "repairWorkshop" && unitTypes.includes(nj.type) && nj.hp < 0.9) || 
+                                 (nj.type === "repairWorkshop" && unitTypes.includes(ni.type) && ni.hp < 0.9);
+            if (isRepairUnit) return { color: "rgba(0, 255, 100, 0.6)", width: 1.2, dash: [4,4], priority: 5 };
+
+            const buildingTypes = ["base", "base2", "base3", "warehouse", "repairWorkshop", "barracks", "barracks2", "barracks3", "turret", "turret2", "turret3", "beacon"];
+            const isRepairBuilding = (ni.type === "repairWorkshop" && buildingTypes.includes(nj.type) && nj.hp < 0.9) || 
+                                     (nj.type === "repairWorkshop" && buildingTypes.includes(ni.type) && ni.hp < 0.9);
+            if (isRepairBuilding) return { color: "rgba(150, 255, 0, 0.5)", width: 1.2, dash: [2,2], priority: 5 };
+            
+            const isStrategy = (ni.type === "beacon" && (nj.type.includes("base") || nj.type === "beacon")) ||
+                               (nj.type === "beacon" && (ni.type.includes("base") || ni.type === "beacon"));
             if (isStrategy) return { color: "rgba(180, 0, 255, 0.3)", width: 1.0, dash: true, priority: 5 };
+            
             const alpha = Math.max(0.1, 0.3 * (1 - d / INTERACTION_RADIUS));
             return { color: `rgba(150, 150, 150, ${alpha})`, width: 1.0, dash: false, priority: 1 };
         }
+
         const connections = [];
         for (let i = 0; i < nodes.length; i++) {
             const ni = nodes[i];
@@ -156,121 +201,175 @@ window.drawGnnOverlay = function() {
             const { ni, nj, style } = conn;
             const p1 = window.worldToScreen(ni.x, ni.y);
             const p2 = window.worldToScreen(nj.x, nj.y);
-            ctx.strokeStyle = style.color;
-            ctx.lineWidth = style.width;
-            ctx.setLineDash(style.dash ? [4, 4] : []);
-            ctx.beginPath();
-            ctx.moveTo(p1.x, p1.y);
-            ctx.lineTo(p2.x, p2.y);
-            ctx.stroke();
+            gnnCtx.strokeStyle = style.color;
+            gnnCtx.lineWidth = style.width;
+            gnnCtx.setLineDash(style.dash ? [4, 4] : []);
+            gnnCtx.beginPath();
+            gnnCtx.moveTo(p1.x, p1.y);
+            gnnCtx.lineTo(p2.x, p2.y);
+            gnnCtx.stroke();
         }
-        ctx.setLineDash([]);
-        // Узлы
+        gnnCtx.setLineDash([]);
+
+        // --- КЛАСТЕРИЗАЦИЯ УЗЛОВ ---
+        const CLUSTER_RADIUS = 40;
+        const clusters = [];
+        const used = new Set();
+
         for (let i = 0; i < nodes.length; i++) {
             const ni = nodes[i];
-            if (!ni.valid) continue;
-            let r = 2.5;
-            if (ni.type.includes("base")) r = 5;
-            else if (ni.type.includes("barracks") || ni.type.includes("warehouse") || ni.type.includes("turret")) r = 3.5;
-            const pos = window.worldToScreen(ni.x, ni.y);
-            ctx.fillStyle = ni.owner === "ai" ?"#00ff99" :"#ff4444";
-            ctx.shadowColor = (ni.type.includes("base") || ni.type.includes("elite")) ? ctx.fillStyle :"transparent";
-            ctx.shadowBlur = (ni.type.includes("base") || ni.type.includes("elite")) ? 8 : 0;
-            ctx.beginPath();
-            ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-            // 🔥 ОТРИСОВКА ВИРТУАЛЬНЫХ УЗЛОВ
-            // Рисуются только когда включено "Показывать граф"
-            for (let i = 0; i < nodes.length; i++) {
-                const ni = nodes[i];
-                if (!ni.valid || !ni.isVirtual) continue;
+            if (!ni.valid || used.has(i)) continue;
+            
+            const cluster = [ni];
+            used.add(i);
+            
+            for (let j = i + 1; j < nodes.length; j++) {
+                const nj = nodes[j];
+                if (!nj.valid || used.has(j)) continue;
+                if (ni.owner !== nj.owner) continue;
+                if (ni.type !== nj.type) continue;
                 
-                const pos = window.worldToScreen(ni.x, ni.y);
+                const p1 = window.worldToScreen(ni.x, ni.y);
+                const p2 = window.worldToScreen(nj.x, nj.y);
+                const d = Math.hypot(p1.x - p2.x, p1.y - p2.y);
                 
-                if (ni.virtualType === "threat") {
-                    // Зона угрозы: красный круг радиуса опасности
-                    const radiusPx = (ni.threatRadius || 300) * camera.scale;
-                    ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, radiusPx, 0, Math.PI * 2);
-                    ctx.fillStyle = "rgba(255, 0, 0, 0.08)";
-                    ctx.fill();
-                    ctx.strokeStyle = "rgba(255, 0, 0, 0.4)";
-                    ctx.lineWidth = 1;
-                    ctx.setLineDash([4, 4]);
-                    ctx.stroke();
-                    ctx.setLineDash([]);
-                    // Маркер центра
-                    ctx.fillStyle = "rgba(255, 60, 60, 0.9)";
-                    ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, 6, 0, Math.PI * 2);
-                    ctx.fill();
-                    ctx.fillStyle = "#ffffff";
-                    ctx.font = "bold 9px monospace";
-                    ctx.fillText("⚠", pos.x - 4, pos.y + 3);
-                } 
-                else if (ni.virtualType === "flank") {
-                    // 🔥 РАЗНАЯ ВИЗУАЛИЗАЦИЯ: Ромб для обхода, Квадрат для точки сбора
-                    const s = 7; // Размер маркера (фиксированный, не зависит от зума)
-                    
-                    if (ni.isStagingArea) {
-                        // 🔷 ТОЧКА СБОРА (Квадрат): "Накопись здесь, здесь безопасно, но впереди опасно"
-                        ctx.fillStyle = "rgba(0, 255, 255, 0.6)";
-                        ctx.fillRect(pos.x - s, pos.y - s, s * 2, s * 2);
-                        ctx.strokeStyle = "#ffffff";
-                        ctx.lineWidth = 1.5;
-                        ctx.strokeRect(pos.x - s, pos.y - s, s * 2, s * 2);
-                        
-                        // Подпись "S" (Staging)
-                        ctx.fillStyle = "#ffffff";
-                        ctx.font = "bold 8px monospace";
-                        ctx.textAlign = "center";
-                        ctx.textBaseline = "middle";
-                        ctx.fillText("S", pos.x, pos.y);
-                    } else {
-                        // 🔷 ПУТЬ ОБХОДА (Ромб): "Иди здесь, это самое тонкое место в обороне"
-                        ctx.fillStyle = "rgba(0, 255, 255, 0.85)";
-                        ctx.beginPath();
-                        ctx.moveTo(pos.x, pos.y - s);
-                        ctx.lineTo(pos.x + s, pos.y);
-                        ctx.lineTo(pos.x, pos.y + s);
-                        ctx.lineTo(pos.x - s, pos.y);
-                        ctx.closePath();
-                        ctx.fill();
-                        ctx.strokeStyle = "#00ffff";
-                        ctx.lineWidth = 1.5;
-                        ctx.stroke();
-                        
-                        // Индекс фланга
-                        ctx.fillStyle = "#000000";
-                        ctx.font = "bold 8px monospace";
-                        ctx.textAlign = "center";
-                        ctx.textBaseline = "middle";
-                        ctx.fillText(String(ni.flankIndex !== undefined ? ni.flankIndex : "?"), pos.x, pos.y);
-                    }
-                    ctx.textAlign = "left";
-                    ctx.textBaseline = "alphabetic";
-                }
-                else if (ni.virtualType === "recon") {
-                    // Точка разведки: жёлтый круг с буквой R
-                    ctx.fillStyle = "rgba(255, 255, 0, 0.7)";
-                    ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2);
-                    ctx.fill();
-                    ctx.strokeStyle = "#ffff00";
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-                    ctx.fillStyle = "#ffffff";
-                    ctx.font = "bold 8px monospace";
-                    ctx.fillText("R", pos.x + 6, pos.y + 3);
+                if (d < CLUSTER_RADIUS) {
+                    cluster.push(nj);
+                    used.add(j);
                 }
             }
+            
+            let cx = 0, cy = 0, totalHp = 0, count = 0;
+            cluster.forEach(n => {
+                const p = window.worldToScreen(n.x, n.y);
+                cx += p.x; cy += p.y;
+                totalHp += (n.hp || 0);
+                count++;
+            });
+            
+            clusters.push({
+                x: cx / count, y: cy / count, avgHp: totalHp / count, count: count,
+                type: ni.type, owner: ni.owner, isVirtual: ni.isVirtual,
+                threatDensity: Math.max(...cluster.map(n => n.threatDensity || 0)),
+                isActive: cluster.some(n => n.isActiveDecision),
+                actionMask: cluster.find(n => n.actionMask)?.actionMask || null
+            });
+        }
 
-        ctx.restore();
+        // --- ОТРИСОВКА КЛАСТЕРОВ ---
+        for (const cluster of clusters) {
+            let r = 2.5;
+            if (cluster.type.includes("base")) r = 5;
+            else if (cluster.type.includes("barracks") || cluster.type.includes("warehouse") || cluster.type.includes("turret")) r = 3.5;
+            
+            if (cluster.avgHp !== undefined) r = Math.max(r, 3 + (cluster.avgHp * 5));
+            if (cluster.count > 1) r += Math.log(cluster.count) * 1.5;
+
+            if (cluster.threatDensity > 0.3) {
+                const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 200);
+                gnnCtx.shadowColor = `rgba(255, 0, 0, ${pulse})`;
+                gnnCtx.shadowBlur = 12;
+            } else {
+                gnnCtx.shadowColor = (cluster.type.includes("base") || cluster.type.includes("elite")) 
+                    ? (cluster.owner === "ai" ? "#00ff99" : "#ff4444") : "transparent";
+                gnnCtx.shadowBlur = (cluster.type.includes("base") || cluster.type.includes("elite")) ? 8 : 0;
+            }
+
+            gnnCtx.fillStyle = cluster.owner === "ai" ? "#00ff99" : "#ff4444";
+            if (cluster.isVirtual) gnnCtx.fillStyle = "#00ffff";
+            
+            gnnCtx.beginPath();
+            gnnCtx.arc(cluster.x, cluster.y, r, 0, Math.PI * 2);
+            gnnCtx.fill();
+            
+            if (cluster.count > 1) {
+                gnnCtx.fillStyle = "#FFF";
+                gnnCtx.font = "bold 8px monospace";
+                gnnCtx.textAlign = "center";
+                gnnCtx.textBaseline = "middle";
+                gnnCtx.fillText(String(cluster.count), cluster.x, cluster.y);
+                gnnCtx.textAlign = "left";
+                gnnCtx.textBaseline = "alphabetic";
+            }
+            
+            if (cluster.isActive) {
+                gnnCtx.shadowBlur = 0;
+                gnnCtx.strokeStyle = "#FFFFFF";
+                gnnCtx.lineWidth = 1.5;
+                gnnCtx.beginPath();
+                gnnCtx.arc(cluster.x, cluster.y, r + 6, 0, Math.PI * 2);
+                gnnCtx.stroke();
+
+                if (cluster.actionMask && Array.isArray(cluster.actionMask)) {
+                    const mask = cluster.actionMask;
+                    const maskRadius = r + 14;
+                    const totalActions = mask.length;
+                    for (let a = 0; a < totalActions; a++) {
+                        if (mask[a] === 1) {
+                            const angle = (a / totalActions) * Math.PI * 2 - Math.PI / 2;
+                            const mx = cluster.x + Math.cos(angle) * maskRadius;
+                            const my = cluster.y + Math.sin(angle) * maskRadius;
+                            gnnCtx.fillStyle = "#00FF00";
+                            gnnCtx.beginPath();
+                            gnnCtx.arc(mx, my, 3, 0, Math.PI * 2);
+                            gnnCtx.fill();
+                        }
+                    }
+                }
+                gnnCtx.fillStyle = "#FFF";
+                gnnCtx.font = "bold 10px monospace";
+                gnnCtx.fillText(cluster.type + (cluster.count > 1 ? ` x${cluster.count}` : ""), cluster.x + r + 8, cluster.y + 4);
+            }
+            gnnCtx.shadowBlur = 0;
+        }
+
+        // --- ВИРТУАЛЬНЫЕ УЗЛЫ ---
+        for (let i = 0; i < nodes.length; i++) {
+            const ni = nodes[i];
+            if (!ni.valid || !ni.isVirtual) continue;
+            const pos = window.worldToScreen(ni.x, ni.y);
+            
+            if (ni.virtualType === "threat") {
+                const radiusPx = (ni.threatRadius || 300) * camera.scale;
+                gnnCtx.beginPath();
+                gnnCtx.arc(pos.x, pos.y, radiusPx, 0, Math.PI * 2);
+                gnnCtx.fillStyle = "rgba(255, 0, 0, 0.08)";
+                gnnCtx.fill();
+                gnnCtx.strokeStyle = "rgba(255, 0, 0, 0.4)";
+                gnnCtx.lineWidth = 1;
+                gnnCtx.setLineDash([4, 4]);
+                gnnCtx.stroke();
+                gnnCtx.setLineDash([]);
+                gnnCtx.fillStyle = "rgba(255, 60, 60, 0.9)";
+                gnnCtx.beginPath(); gnnCtx.arc(pos.x, pos.y, 6, 0, Math.PI * 2); gnnCtx.fill();
+                gnnCtx.fillStyle = "#ffffff"; gnnCtx.font = "bold 9px monospace"; gnnCtx.fillText("⚠", pos.x - 4, pos.y + 3);
+            } else if (ni.virtualType === "flank") {
+                const s = 7;
+                if (ni.isStagingArea) {
+                    gnnCtx.fillStyle = "rgba(0, 255, 255, 0.6)";
+                    gnnCtx.fillRect(pos.x - s, pos.y - s, s * 2, s * 2);
+                    gnnCtx.strokeStyle = "#ffffff"; gnnCtx.lineWidth = 1.5; gnnCtx.strokeRect(pos.x - s, pos.y - s, s * 2, s * 2);
+                    gnnCtx.fillStyle = "#ffffff"; gnnCtx.font = "bold 8px monospace"; gnnCtx.textAlign = "center"; gnnCtx.textBaseline = "middle";
+                    gnnCtx.fillText("S", pos.x, pos.y);
+                } else {
+                    gnnCtx.fillStyle = "rgba(0, 255, 255, 0.85)";
+                    gnnCtx.beginPath(); gnnCtx.moveTo(pos.x, pos.y - s); gnnCtx.lineTo(pos.x + s, pos.y); gnnCtx.lineTo(pos.x, pos.y + s); gnnCtx.lineTo(pos.x - s, pos.y); gnnCtx.closePath(); gnnCtx.fill();
+                    gnnCtx.strokeStyle = "#00ffff"; gnnCtx.lineWidth = 1.5; gnnCtx.stroke();
+                    gnnCtx.fillStyle = "#000000"; gnnCtx.font = "bold 8px monospace"; gnnCtx.textAlign = "center"; gnnCtx.textBaseline = "middle";
+                    gnnCtx.fillText(String(ni.flankIndex !== undefined ? ni.flankIndex : "?"), pos.x, pos.y);
+                }
+                gnnCtx.textAlign = "left"; gnnCtx.textBaseline = "alphabetic";
+            } else if (ni.virtualType === "recon") {
+                gnnCtx.fillStyle = "rgba(255, 255, 0, 0.7)";
+                gnnCtx.beginPath(); gnnCtx.arc(pos.x, pos.y, 4, 0, Math.PI * 2); gnnCtx.fill();
+                gnnCtx.strokeStyle = "#ffff00"; gnnCtx.lineWidth = 1; gnnCtx.stroke();
+                gnnCtx.fillStyle = "#ffffff"; gnnCtx.font = "bold 8px monospace"; gnnCtx.fillText("R", pos.x + 6, pos.y + 3);
+            }
+        }
+        gnnCtx.restore();
     }
 
-    // === 3. РИСУЕМ ПОЛНУЮ ПАНЕЛЬ ЛЕГЕНДЫ ===
+   // === 3. РИСУЕМ ПОЛНУЮ ПАНЕЛЬ ЛЕГЕНДЫ ===
     ctx.save();
     const legendW = 200;
     const legendH = 300; // Увеличили высоту для 3 флажка
@@ -286,16 +385,16 @@ window.drawGnnOverlay = function() {
     ctx.fillText("🧠 GNN ТАКТИКА:", 20, 30);  
 	
 const legendItems = [
-    { color: "rgba(255, 0, 0, 0.5)", text: "⚠️ УГРОЗА", dash: false },
-    { color: "rgba(0, 200, 255, 0.5)", text: "🏭 Производство", dash: false },
-    { color: "rgba(255, 215, 0, 0.5)", text: "💰 Логистика", dash: false },
-    { color: "rgba(255, 100, 50, 0.3)", text: "🛡️ Оборона", dash: false },
-    { color: "rgba(0, 255, 100, 0.5)", text: "🔧 Ремонт", dash: true },
-    { color: "rgba(180, 0, 255, 0.5)", text: "📡 Стратегия", dash: true },
-    { color: "rgba(150, 150, 150, 0.5)", text: "📍 География", dash: false },
-    { color: "rgba(255, 0, 0, 0.6)", text: "🔴 Зона угрозы", dash: true },
-    { color: "rgba(0, 255, 255, 0.8)", text: "🔷 Фланг", dash: false },
-    { color: "rgba(255, 255, 0, 0.8)", text: "🟡 Разведка", dash: false }
+    //{ color: "rgba(255, 0, 0, 0.5)", text: "⚠️ УГРОЗА", dash: false },
+    //{ color: "rgba(0, 200, 255, 0.5)", text: "🏭 Производство", dash: false },
+    //{ color: "rgba(255, 215, 0, 0.5)", text: "💰 Логистика", dash: false },
+    //{ color: "rgba(255, 100, 50, 0.3)", text: "🛡️ Оборона", dash: false },
+    //{ color: "rgba(0, 255, 100, 0.5)", text: "🔧 Ремонт", dash: true },
+    //{ color: "rgba(180, 0, 255, 0.5)", text: "📡 Стратегия", dash: true },
+    //{ color: "rgba(150, 150, 150, 0.5)", text: "📍 География", dash: false },
+    //{ color: "rgba(255, 0, 0, 0.6)", text: "🔴 Зона угрозы", dash: true },
+    //{ color: "rgba(0, 255, 255, 0.8)", text: "🔷 Фланг", dash: false },
+    //{ color: "rgba(255, 255, 0, 0.8)", text: "🟡 Разведка", dash: false }
 ];
 	
     legendItems.forEach((item, idx) => {
@@ -472,6 +571,7 @@ function createSaleIndicator() {
     document.body.appendChild(indicator);
   }
 }
+
 function clearSaleIndicator() {
   const indicator = document.getElementById("saleIndicator");
   if (indicator) indicator.remove();
@@ -1468,27 +1568,6 @@ function renderGame() {
   checkVictoryConditions();
   updateBaseNavButton(); updateBase2NavButton(); updateBase3NavButton();
   updateSaleIndicator();
-}
-
-function resizeCanvas() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-  const worldMultiplier = isMobile ? 4.5 : 3;
-  worldWidth = canvas.width * worldMultiplier;
-  worldHeight = canvas.height * worldMultiplier;
-  starField.init();
-  if (typeof initFogOfWar === "function") initFogOfWar();
-  if (typeof playerBase !== 'undefined' && playerBase) {
-    camera.offsetX = canvas.width / 2 - playerBase.x * camera.scale;
-    camera.offsetY = canvas.height / 2 - playerBase.y * camera.scale;
-  } else {
-    camera.offsetX = canvas.width / 2 - (worldWidth / 2) * camera.scale;
-    camera.offsetY = canvas.height / 2 - (worldHeight / 2) * camera.scale;
-  }
-  const margin = 0.2 * worldWidth;
-  if (typeof Quadtree !== 'undefined') {
-    quadtree = new Quadtree({ x: -margin, y: -margin, width: worldWidth + 2 * margin, height: worldHeight + 2 * margin });
-  }
 }
 
 function updateResourceUI() {

@@ -3,7 +3,6 @@
 // Подключается ПОСЛЕДНИМ (defer), поэтому перекрывает дубликаты
 // функций из aiLogic.js и neuralAI.js.
 // ============================================================
-
 const AI_TICK_MS = 250;
 const NEURAL_AUTO_WORKERS = true; // микро-экономика: в сети нет действия hireWorker
 const AI_BUILD_RADIUS = 300;      // правило: только от базы/маяков
@@ -137,14 +136,11 @@ const AIScheduler = {
 };
 window.AIScheduler = AIScheduler;
 
-// ---------- КАНОНИЧЕСКИЕ ВЕРСИИ КОНФЛИКТНЫХ ФУНКЦИЙ ----------
-
 // Полиморфная distance: поддерживает (a,b) и (x1,y1,x2,y2)
 window.distance = function (a, b, c, d) {
   if (a && typeof a === "object") return Math.hypot(a.x - b.x, a.y - b.y);
   return Math.hypot(c - a, d - b);
 };
-
 // Правило радиуса: только от якорных зданий (база/маяк)
 window.isValidAiBuildLocation = function (x, y) {
   if (!isFinite(x) || !isFinite(y)) return false;
@@ -156,7 +152,6 @@ window.isValidAiBuildLocation = function (x, y) {
     Math.hypot(b.x - x, b.y - y) <= AI_BUILD_RADIUS
   );
 };
-
 // Единая очередь построек для обоих режимов
 window.scheduleAIBuilding = function (type, x, y, delay = 500) {
   if (typeof cleanupFailedClusters === "function") cleanupFailedClusters();
@@ -224,7 +219,6 @@ window.aiEnqueueMilitaryUnit = function (unitType, building) {
   building.productionQueue.push({ unitType, timeStart, productionTime: pt });
   return true;
 };
-
 // Оплата при постановке заказа; спавн — единый processProductionQueue в gameLoop
 window.attemptToEnqueueMilitaryOrders = function () {
   if (gameMode !== "single") return;
@@ -255,11 +249,10 @@ window.attemptToEnqueueMilitaryOrders = function () {
     if (typeof updateResourceUI === "function") updateResourceUI();
   }
 };
-
 // Отключены: спавн и оплата больше не дублируются
 window.processAIMilitaryProductionQueue = function () {};
-window.updateAIProductionQueues = function () {};
 
+window.updateAIProductionQueues = function () {};
 // Микро-экономика нейро-режима (решения о зданиях/бое остаются за сетью)
 window.aiNeuralEcoTick = function () {
   if (!NEURAL_AUTO_WORKERS) return;
@@ -283,15 +276,14 @@ window.aiNeuralEcoTick = function () {
     }
   });
 };
-
 // Обертка для GNN экономики, если она не встроена в tick
 window.gnnAutoEconomyWrapper = function() {
     if (window.GnnAI && window.GnnAI.cfg.AUTO_ECONOMY) {
         window.GnnAI.autoEconomy();
     }
 };
-
 window.initAILogic = function () { window.initAILogic._inited = true; };
+
 window.gameLoopAI = function () {};
 
 window.stopAllIntervals = function () {

@@ -5,7 +5,6 @@
 "use strict";
 
 Object.assign(window.GnnAI, {
-
   // === Разделение армии на группы для фланговой атаки ===
   splitArmyIntoGroups: function(freeUnits, numGroups = 2) {
     if (freeUnits.length <= numGroups) return freeUnits.map(u => [u]);
@@ -14,8 +13,6 @@ Object.assign(window.GnnAI, {
     sorted.forEach((unit, idx) => groups[idx % numGroups].push(unit));
     return groups;
   },
-
-
   // === Принятие решения ===
   decide: function () {
     const now = performance.now(); // <-- ПЕРЕНЕСЕНО НАВЕРХ
@@ -107,10 +104,80 @@ Object.assign(window.GnnAI, {
       value: 0
     });
     if (this.pending.length > 30) this.pending.shift();
+
+    // 🔥 ПОДГОТОВКА ДАННЫХ ДЛЯ ВИЗУАЛИЗАЦИИ ГРАФА
+    // 🔥 УМНЫЙ ВЫБОР АКТИВНОГО УЗЛА на основе последнего действия
+    if (window.showGnnGraph && state && state.nodes) {
+      state.nodes.forEach(n => {
+        n.isActiveDecision = false;
+        n.actionMask = null;
+      });
+
+      let activeNode = null;
+      const action = this.lastAction;
+
+      if (action === "hireWorker" || action === "build_warehouse") {
+        // Активный узел = ближайший склад ИИ
+        activeNode = state.nodes.find(n => 
+          n.owner === "ai" && n.type === "warehouse"
+        );
+      } 
+      else if (action === "build_barracks" || action === "build_barracks2" || action === "build_barracks3") {
+        // Активный узел = место будущей постройки (ближайший beacon или aiBase)
+        activeNode = state.nodes.find(n => 
+          n.owner === "ai" && (n.type === "beacon" || n.type === "base")
+        );
+      }
+      else if (action === "hireFighter" || action === "hireAssault" || action === "hireElite") {
+        // Активный узел = казарма ИИ
+        activeNode = state.nodes.find(n => 
+          n.owner === "ai" && n.type.includes("barracks")
+        );
+      }
+      else if (["strike_weak", "focus_fire", "flank_attack", "harass_economy", "all_in_base", 
+                "tactic_all_in", "tactic_harass", "tactic_push", "tactic_defend"].includes(action)) {
+        // Активный узел = ближайший враг (player)
+        activeNode = state.nodes.find(n => n.owner === "player");
+      }
+      else if (action === "retreat_regroup") {
+        // Активный узел = самый раненый юнит ИИ
+        activeNode = state.nodes
+          .filter(n => n.owner === "ai" && ["fighter","assault","elite"].includes(n.type))
+          .sort((a, b) => (a.hp || 1) - (b.hp || 1))[0];
+      }
+      else if (action === "defend") {
+        // Активный узел = база ИИ
+        activeNode = state.nodes.find(n => 
+          n.owner === "ai" && n.type.includes("base")
+        );
+      }
+      else if (action === "build_turret1" || action === "build_turret2" || action === "build_turret3") {
+        activeNode = state.nodes.find(n => 
+          n.owner === "ai" && n.type.startsWith("turret")
+        );
+      }
+      else if (action === "build_beacon") {
+        activeNode = state.nodes.find(n => 
+          n.owner === "ai" && n.type === "beacon"
+        );
+      }
+
+      // Fallback: если не нашли — берём первый боевой юнит ИИ
+      if (!activeNode) {
+        activeNode = state.nodes.find(n => 
+          n.owner === "ai" && ["fighter","assault","elite"].includes(n.type)
+        );
+      }
+
+      if (activeNode) {
+        activeNode.isActiveDecision = true;
+        activeNode.actionMask = this.validActionMask();
+      }
+    }
+
     this.lastState = state;
     this.lastAction = finalAction;
   },
-
   // === Обработка pending-действий ===
   evaluatePending: function (now) {
     if (!this.pending.length) return;
@@ -129,7 +196,6 @@ Object.assign(window.GnnAI, {
     }
     this.pending = keep;
   },
-
   // === Награда за HP базы ===
   reward: function (p, after) {
     if (!after.playerAlive) return 500.0;
@@ -139,7 +205,6 @@ Object.assign(window.GnnAI, {
     const delta = (currentHp - beforeHp) * 20.0;
     return isFinite(delta) ? delta : 0.0;
   },
-
   // === Маска доступных действий ===
   validActionMask: function () {
     const mask = new Array(G_ACTIONS.length).fill(0);
@@ -250,7 +315,6 @@ Object.assign(window.GnnAI, {
     mask[this._AIDX.idle] = hasAnyAffordableAction ? 0 : 1;
     return mask;
   },
-
   // === Сэмплирование с маской ===
   sampleMasked: function (logits, mask, temperature = 1.0) {
     const maskedLogits = logits.map((v, i) => mask[i] === 1 ? v / temperature : -1e9);
@@ -265,7 +329,6 @@ Object.assign(window.GnnAI, {
     }
     return probs.length - 1;
   },
-
   // === Выполнение действия ===
   execute: function (action, actionIndex, state) {
     const now = performance.now();
@@ -581,10 +644,10 @@ Object.assign(window.GnnAI, {
               ? targetNode.obj.units[0]
               : fallbackTarget;
             
-            // АНАЛИЗ: Даем команду двигаться к точке фланга, но как только враг в радиусе атаки, движок игры сам должен переключить на атаку.
-            // Мы добавляем "умный" вейпоинт: если цель близко, идем прямо на неё.
+            // АНАЛИЗ: Даем команду двигаться  точке фланга, но как только враг в радиусе атаки, движок игры сам должен переключить на атаку.
+            const scale = typeof window.getWorldScale === 'function' ? window.getWorldScale() : 1.0;
             const distToTarget = Math.hypot(u.x - fallbackTarget.x, u.y - fallbackTarget.y);
-            if (distToTarget < 300) {
+            if (distToTarget < (300 * scale)) { // 🔥 АДАПТАЦИЯ
               u.commandQueue = [{type: "attack", target: physicalTarget}];
             } else {
               u.commandQueue = [
@@ -647,7 +710,6 @@ Object.assign(window.GnnAI, {
     }
     return false;
   },
-
   // === Постройка конкретного здания ===
   tryBuildSpecific: function(buildingType, cost, action, actionIndex, state) {
     const res = gameState.aiResources;
@@ -741,7 +803,6 @@ Object.assign(window.GnnAI, {
     }
     return false;
   },
-
   // === Постановка юнита в очередь ===
   enqueueUnit: function (type, buildingType, cost) {
     const b = gameState.buildings.find(x => x.owner === "ai" && x.type === buildingType && x.active && (!x.productionQueue || x.productionQueue.length < (x.productionLimit || 3)));
@@ -753,7 +814,6 @@ Object.assign(window.GnnAI, {
     if (typeof updateResourceUI === "function") updateResourceUI();
     return true;
   },
-
   // === Авто-экономика (отключена в GNN) ===
   autoEconomy: function () {
     if (gameMode === "gnn") return;
@@ -786,7 +846,6 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
   // === Якорь угрозы ===
   threatAnchor: function () {
     const anchors = gameState.buildings.filter(b => b.owner === "ai" && ["base","base2","base3","beacon","warehouse","repairWorkshop","barracks","barracks2","barracks3"].includes(b.type) && b.health > 0);
@@ -805,7 +864,6 @@ Object.assign(window.GnnAI, {
     }
     return best;
   },
-
   // === Якорь экспансии (ИСПРАВЛЕНО: учет ресурсов) ===
   findExpansionAnchor: function () {
     const beacons = gameState.buildings.filter(b =>
@@ -813,28 +871,28 @@ Object.assign(window.GnnAI, {
     );
     if (beacons.length === 0) return aiBase;
     
-    // Находим все ценные ресурсы
     const valuableResources = gameState.resources.filter(r => r.amount > 30);
+    
+    // 🔥 АДАПТАЦИЯ: получаем масштаб
+    const scale = typeof window.getWorldScale === 'function' ? window.getWorldScale() : 1.0;
     
     const scored = beacons.map(bc => {
       const nearbyUseful = gameState.buildings.filter(b =>
         b.owner === "ai" && b !== bc &&
         ["warehouse","repairWorkshop","barracks","barracks2","barracks3","turret","turret2","turret3"].includes(b.type) &&
-        Math.hypot(b.x - bc.x, b.y - bc.y) < 220
+        Math.hypot(b.x - bc.x, b.y - bc.y) < (220 * scale) // 🔥 БЫЛО: 220
       ).length;
       
-      // ОЦЕНКА ЛОГИСТИКИ: насколько близко этот маяк к свободным ресурсам
       let resourceScore = 0;
       let minResourceDist = 9999;
       valuableResources.forEach(r => {
         const dist = Math.hypot(r.x - bc.x, r.y - bc.y);
-        if (dist < 400) {
-          // Проверяем, не покрыт ли ресурс другим складом
+        if (dist < (400 * scale)) { // 🔥 БЫЛО: 400
           const isCovered = gameState.buildings.some(w => 
-            w.owner === "ai" && w.type === "warehouse" && Math.hypot(w.x - r.x, w.y - r.y) < 320
+            w.owner === "ai" && w.type === "warehouse" && Math.hypot(w.x - r.x, w.y - r.y) < (320 * scale) // 🔥 БЫЛО: 320
           );
           if (!isCovered) {
-            resourceScore += (400 - dist) * (r.amount / 100); // Чем ближе и богаче, тем лучше
+            resourceScore += ((400 * scale) - dist) * (r.amount / 100); // 🔥 БЫЛО: 400
             if (dist < minResourceDist) minResourceDist = dist;
           }
         }
@@ -849,56 +907,71 @@ Object.assign(window.GnnAI, {
       };
     });
     
-    // Сортировка: сначала те, где есть ресурсы, потом те, где меньше всего построек (чтобы развивать слабые), потом дальние
     scored.sort((a, b) => {
-      if (a.resourceScore !== b.resourceScore) return b.resourceScore - a.resourceScore; // Максимум ресурсов
-      if (a.useful !== b.useful) return a.useful - b.useful; // Минимум построек (нуждается в развитии)
-      return b.distToBase - a.distToBase; // Дальние приоритетнее для экспансии
+      if (a.resourceScore !== b.resourceScore) return b.resourceScore - a.resourceScore;
+      if (a.useful !== b.useful) return a.useful - b.useful;
+      return b.distToBase - a.distToBase;
     });
     
     const target = scored[0];
-    // Если у лучшего маяка уже 3+ полезных здания, считаем его развитым, возвращаем null (или ищем следующий)
     if (target.useful >= 3 && target.resourceScore < 50) return null;
     return target.beacon;
   },
-
-  // === Поиск позиции для постройки ===
+  // === Поиск позиции для постройки (АДАПТИВНЫЙ) ===
   findBuildPos: function (anchor, type, minR = 80, maxR = 310) {
     if (!anchor) anchor = aiBase;
+    
+    // 🔥 АДАПТАЦИЯ: получаем текущий масштаб мира
+    const scale = typeof window.getWorldScale === 'function' ? window.getWorldScale() : 1.0;
+    
     const wW = typeof worldWidth !== 'undefined' ? worldWidth : 2000;
     const wH = typeof worldHeight !== 'undefined' ? worldHeight : 2000;
-    const safeMargin = 60;
+    
+    // Умножаем отступы от краев карты на масштаб
+    const safeMargin = 60 * scale; 
+    
     for (let i = 0; i < 200; i++) {
       const a = Math.random() * Math.PI * 2;
-      const r = minR + Math.random() * (maxR - minR);
+      // Умножаем минимальный и максимальный радиус поиска на масштаб
+      const scaledMinR = minR * scale;
+      const scaledMaxR = maxR * scale;
+      const r = scaledMinR + Math.random() * (scaledMaxR - scaledMinR);
+      
       const x = anchor.x + Math.cos(a) * r;
       const y = anchor.y + Math.sin(a) * r;
+      
       if (x < safeMargin || y < safeMargin || x > wW - safeMargin || y > wH - safeMargin) continue;
       if (typeof isValidAiBuildLocation === "function" && !isValidAiBuildLocation(x, y)) continue;
+      
       const dims = {
         warehouse: [10, 10], repairWorkshop: [10, 10],
         barracks: [15, 15], barracks2: [15, 15], barracks3: [15, 15],
         turret: [12, 12], turret2: [15, 17], turret3: [14, 15],
         beacon: [7, 20], base2: [25, 30], base3: [30, 30]
       }[type] || [20, 20];
+      
       const rect = { left: x - dims[0] / 2, top: y - dims[1] / 2, right: x + dims[0] / 2, bottom: y + dims[1] / 2 };
       let bad = false;
       for (const b of gameState.buildings) {
         const br = { left: b.x - b.width / 2 - 5, top: b.y - b.height / 2 - 5, right: b.x + b.width / 2 + 5, bottom: b.y + b.height / 2 + 5 };
         if (typeof rectsOverlap === "function" && rectsOverlap(rect, br)) { bad = true; break; }
       }
-      if (!bad) {
-        //console.log(`[GnnAI] ✅ Найдено место: ${type} на (${x.toFixed(0)}, ${y.toFixed(0)})`);
-        return { x, y };
-      }
+      if (!bad) return { x, y };
     }
+    
+    // Запасной вариант: поиск по сторонам света (тоже умножаем на масштаб!)
+    const offsetDist = 200 * scale;
     const offsets = [
-      { x: anchor.x + 200, y: anchor.y }, { x: anchor.x - 200, y: anchor.y },
-      { x: anchor.x, y: anchor.y + 200 }, { x: anchor.x, y: anchor.y - 200 }
+      { x: anchor.x + offsetDist, y: anchor.y }, 
+      { x: anchor.x - offsetDist, y: anchor.y },
+      { x: anchor.x, y: anchor.y + offsetDist }, 
+      { x: anchor.x, y: anchor.y - offsetDist }
     ];
+    
     for (const pos of offsets) {
       if (pos.x < safeMargin || pos.y < safeMargin || pos.x > wW - safeMargin || pos.y > wH - safeMargin) continue;
       if (typeof isValidAiBuildLocation === "function" && !isValidAiBuildLocation(pos.x, pos.y)) continue;
+      
       const dims = { warehouse: [10, 10], repairWorkshop: [10, 10], barracks: [15, 15], turret: [12, 12], beacon: [7, 20] }[type] || [20, 20];
       const rect = { left: pos.x - dims[0] / 2, top: pos.y - dims[1] / 2, right: pos.x + dims[0] / 2, bottom: pos.y + dims[1] / 2 };
       let bad = false;

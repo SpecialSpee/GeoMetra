@@ -27,26 +27,20 @@ function savePlayerScore() {
 
 window.addEventListener("beforeunload", () => { savePlayerScore(); });
 
-
-
 let fogMap = [], persistentFogMap = [];
 const margin = 200, minBaseDistancePercent = 60;
-
 // ============================================================
 // ОРИГИНАЛЬНЫЕ ФУНКЦИИ МЕНЮ СТРОИТЕЛЬСТВА (С КАРТИНКАМИ)
 // ============================================================
-
 function canAfford(cost, owner) {
   const res = owner === "ai" ? gameState.aiResources : gameState.playerResources;
   return res.gold >= (cost.gold || 0) &&
          res.silicon >= (cost.silicon || 0) &&
          res.plasma >= (cost.plasma || 0);
 }
-
 // ============================================================
 // ПРОВЕРКИ ДОСТУПНОСТИ СТРОИТЕЛЬСТВА
 // ============================================================
-
 const playerBuildingPrerequisites = {
   "barracks": ["warehouse", "repairWorkshop"],
   "turret": ["warehouse", "repairWorkshop"],
@@ -259,7 +253,6 @@ function showBuildingMenu(building) {
   }, 0);
 }
 
-
 function clamp(value, min, max) { return Math.max(min, Math.min(value, max)); }
 
 if (typeof playerBase !== 'undefined' && typeof aiBase !== 'undefined' && playerBase && aiBase && !gameState.capturePoints) {
@@ -344,7 +337,7 @@ if (resetBtn) {
   aiBase = new Building("base", "ai", worldWidth - m, worldHeight - m);
   playerBase.active = true; aiBase.active = true;
   gameState.buildings.push(playerBase, aiBase);
-  generateResources(100);
+  generateResources(50);
   camera.offsetX = canvas.width / 2 - playerBase.x * camera.scale;
   camera.offsetY = canvas.height / 2 - playerBase.y * camera.scale;
   document.getElementById("controlsWrapper").style.display = "block";
@@ -413,7 +406,7 @@ function startMatrixEffect() {
   const mCtx = mCanvas.getContext("2d");
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
-  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*()/\\";
+  const letters = "*-+/\.!@#$%^<>:;&()-_=`~']}{[?|";
   const fontSize = 16, columns = mCanvas.width / fontSize;
   const drops = Array.from({ length: Math.floor(columns) }, () => 1);
   function drawMatrix() {
@@ -430,8 +423,6 @@ function startMatrixEffect() {
   setInterval(drawMatrix, 50);
 }
 startMatrixEffect();
-
-
 
 function animateLogoLetters() {
   const letters = document.querySelectorAll("#logoText .logo-letter");
@@ -486,13 +477,10 @@ document.addEventListener("DOMContentLoaded", () => {
     letters.forEach(letter => { letter.style.transform = "translate(0, 0)"; letter.style.opacity = 1; });
   }, 50);
 });
-
 // ============================================================
 // ПЕРКИ: АКТИВАЦИЯ С СОВРЕМЕННЫМ ВИЗУАЛОМ
 // ============================================================
-
 // Глобальные переменные состояния перков
-
 let activeReconTarget = null;
 let reconConfirmCallback = null;
 let reconCancelCallback = null;
@@ -509,10 +497,8 @@ const BOMB_MAX_DAMAGE = 200;
 const RECON_RADIUS = 250;
 const RECON_DURATION = 12000;
 
-
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 // ============================================================
-
 const availablePerks = [
   { id: "shock", name: "ЭМИ-удар", icon: "⚡", cooldown: 25000 },
   { id: "bomb", name: "Плазменная бомба", icon: "💣", cooldown: 45000 },
@@ -594,7 +580,6 @@ function updatePerkSlots() {
     };
   });
 }
-
 // 🔥 ВЫЗЫВАЕМ ПРИ ЗАГРУЗКЕ
 window.addEventListener("load", () => {
   updatePerkSlots();
@@ -622,7 +607,6 @@ window.addEventListener("load", () => {
     });
   }
 });
-
 // ============================================================
 // Принудительное отключение проверки ориентации на ПК
 // ============================================================
@@ -639,8 +623,7 @@ window.addEventListener("load", () => {
 
 // ============================================================
 // ФУНКЦИИ НАЙМА ЮНИТОВ (ПОЛНЫЙ ОРИГИНАЛЬНЫЙ КОД)
-// ============================================================
-
+// ========================================================
 // ✅ Показывает реальный дефицит, без искусственного резерва
 function getMissingResources(cost, owner) {
   const resources = getResourcesByOwner(owner);
@@ -912,12 +895,9 @@ function hireEliteForPlayer(barracks3) {
   barracks3.productionQueue.push(order);
 }
 
-
-
 // ============================================================
 // ФУНКЦИЯ ПОКАЗА ПРЕДУПРЕЖДЕНИЙ
 // ============================================================
-
 function showWarning(message) {
   const warningDiv = document.createElement("div");
   warningDiv.innerText = message;

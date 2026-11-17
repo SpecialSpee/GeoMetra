@@ -45,7 +45,6 @@ window.processBuildQueue = function () {
     }
   }
 };
-
 // === Запуск GNN-игры ===
 async function startGnnGame() {
   if (typeof stopAllIntervals === "function") stopAllIntervals();
@@ -176,7 +175,6 @@ async function startGnnGame() {
     GnnAI.sessionStartL2 = 0;
   }
 }
-
 // === Кнопка в меню ===
 function addMenuButton() {
   const loading = document.getElementById("loadingScreen");
@@ -194,7 +192,6 @@ function addMenuButton() {
   if (neural && neural.parentNode === loading) neural.insertAdjacentElement("afterend", btn);
   else loading.appendChild(btn);
 }
-
 // === Патч планировщика ===
 function patchScheduler() {
   if (!window.AIScheduler || AIScheduler.__gnnPatched) return;
@@ -212,7 +209,6 @@ function patchScheduler() {
     return origTick();
   };
 }
-
 // === Оверлей обучения ===
 function createTrainingOverlay() {
   if (document.getElementById('gnn-training-overlay')) return;
@@ -232,7 +228,6 @@ function createTrainingOverlay() {
   `;
   document.body.appendChild(overlay);
 }
-
 window.updateTrainingOverlay = function() {
   const overlay = document.getElementById('gnn-training-overlay');
   // 🔥 ИСПРАВЛЕНО: проверяем gameState БЕЗ window., так как он объявлен через let
@@ -265,7 +260,6 @@ window.updateTrainingOverlay = function() {
   document.getElementById('ov-army').innerText = m.aiArmy;
   document.getElementById('ov-workers').innerText = workers;
 };
-
 // 🔥 ИСПРАВЛЕНИЕ: Надежное обновление UI через setInterval
 if (!window._gnnUiInterval) {
   window._gnnUiInterval = setInterval(() => {
@@ -282,7 +276,6 @@ if (!window._gnnUiInterval) {
     }
   }, 500); // Обновляем каждые 500 мс
 }
-
 // === Автостарт при загрузке ===
 window.addEventListener("load", () => {
   if (typeof addMenuButton === "function") addMenuButton();
@@ -301,14 +294,11 @@ window.addEventListener("load", () => {
     }, 1500);
   }
 });
-
 // === Флаги визуализации ===
 if (typeof window.showGnnGraph === 'undefined') window.showGnnGraph = false;
 if (typeof window.showGnnLegend === 'undefined') window.showGnnLegend = false;
-
 // === Экспорт в глобал ===
 window.startGnnGame = startGnnGame;
-
 // === СОБЫТИЙНЫЕ ХУКИ ДЛЯ GNN ===
 window.GnnEventHooks = {
   onUnitDamaged: function(unit, damage, source) {

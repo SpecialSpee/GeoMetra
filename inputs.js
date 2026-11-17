@@ -1,32 +1,25 @@
 // ============================================================
 // inputs.js — Обработка ввода, клики и меню строительства
 // ============================================================
-
 // Глобальные переменные для отслеживания состояний
 let isDragging = false;
 let dragStart = { x: 0, y: 0 };
 let cameraStart = { offsetX: 0, offsetY: 0 };
 let hasDragged = false; // <-- НОВОЕ: флаг, чтобы отличать клик от перетаскивания
-
 let longTapTimeout = null;
 let longTapFired = false;
 const longTapDelay = 600;
-
 let isSelecting = false;
 let selectionStart = null;
 let selectionBox = null;
-
 let suppressMouseClick = false;
 let suppressTouchClick = false;
 let lastTouchDistance = null;
-
 let currentBuildingForMenu = null;
 let buildingMenuOpened = false;
-
 // ============================================================
 // ОСНОВНАЯ ЛОГИКА КЛИКА (ОРИГИНАЛЬНАЯ, ВОССТАНОВЛЕННАЯ)
 // ============================================================
-
 function processCanvasClick(pos) {
   clearBuildZones();
 

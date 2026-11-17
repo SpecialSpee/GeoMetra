@@ -1,18 +1,13 @@
 let gameStarted = false;
 let buildQueue = [];
-
 let playerId = null;
 let opponentId = null;
-
 let shockAvailable = true;
 let shockActive = false;
 let shockCooldown = 25000; // 60 секунд
 let shockRadius = 120;
 let activeShockTarget = null;
 let shockZones = [];
-
-
-
 let bombCooldown = 45000; // 60 секунд
 let bombRadius = 100;
 let activeBombTarget = null;
@@ -21,16 +16,11 @@ let bombMaxDamage = 160;
 let bombActive = false;
 let bombAvailable = true;
 let bombAwaitingTarget = false;
-
 let playerBase = null;
 let aiBase = null;
-
-
-
 let aiLogicInterval;
+
 window.gameMode = "single"; // или просто: gameMode = "single";
-
-
 
   const CFG = {
     MAX_NODES: 160,
@@ -40,8 +30,8 @@ window.gameMode = "single"; // или просто: gameMode = "single";
     LR: 0.00005,
     DECISION_MS: 2000,
     MIN_COMMIT_MS: 30000,
-    WORLD_WIDTH: 2000,
-    WORLD_HEIGHT: 2000,
+    WORLD_WIDTH: 2500,
+    WORLD_HEIGHT: 2500,
     BUILD_QUEUE_MS: 500,
     ECO_MS: 1500,
     TRAIN_MS: 6000,
@@ -59,6 +49,17 @@ window.gameMode = "single"; // или просто: gameMode = "single";
     CLIP_EPSILON: 0.2,
     ENTROPY_COEF: 0.08,
     GRADIENT_CLIP_NORM: 5.0
+  };
+    // === 🔥 АДАПТАЦИЯ РАЗМЕРА МИРА ===
+  const BASE_WORLD_SIZE = 2000; // Размер мира, на котором обучалась и настраивалась модель
+  // Функция возвращает множитель масштаба. 
+  // Для мира 2000x2000 вернет 1.0. Для мира 3000x3000 вернет 1.5.
+  window.getWorldScale = function() {
+    const currentMaxSize = Math.max(
+      (typeof CFG !== 'undefined' && CFG.WORLD_WIDTH) ? CFG.WORLD_WIDTH : 2000,
+      (typeof CFG !== 'undefined' && CFG.WORLD_HEIGHT) ? CFG.WORLD_HEIGHT : 2000
+    );
+    return currentMaxSize / BASE_WORLD_SIZE;
   };
 
   const WeightDB = {
@@ -114,7 +115,6 @@ window.gameMode = "single"; // или просто: gameMode = "single";
     fighter: 2, assault: 4, elite: 6
   };
 
-
 const G_ACTIONS = [
   "defend",
   "build_warehouse","build_repair","build_barracks", 
@@ -132,8 +132,6 @@ const G_ACTIONS = [
   "idle"
 ];
 
-
-
 const BUILDING_ACTIVATION_DELAYS = {
   base: 5000,            // 5 секунд
   base2: 8000,           // 8 секунд
@@ -148,15 +146,12 @@ const BUILDING_ACTIVATION_DELAYS = {
   turret3: 11000,        // 11 секунд
   beacon: 5000           // 5 секунд
 };
-
    // Глобальные флаги состояния интерфейса
    let wasOrientationWarningShownAtStart = false;
    let orientationPauseActive = false;
    let perkAwaitingTarget = false;
-
 const queryCache = new Map();
 const CACHE_DURATION = 100; // время кэширования в мс
-
 // Глобальное состояние игры
 let gameState = {
   buildings: [],
@@ -178,8 +173,6 @@ let gameState = {
   defenders: []
 };
 
-
-
 const iconPaths = [
   "src/icons/base.png",
   "src/icons/base2.png",
@@ -192,15 +185,11 @@ const iconPaths = [
   "src/icons/turret.png",
   "src/icons/turret2.png",
   "src/icons/turret3.png",
-	
-	
-    "src/models/worker.png",
-    "src/models/repairman.png",
+  "src/models/worker.png",
+  "src/models/repairman.png",
 	"src/models/fighter.png",
-	"src/models/elite.png",
-    "src/models/assault.png"
-
-	
+  "src/models/elite.png",
+  "src/models/assault.png"
 ];
 
 const preloadedIcons = {};
@@ -209,7 +198,6 @@ iconPaths.forEach(path => {
   img.src = path;
   preloadedIcons[path] = img;
 });
-
 
 const bulletPools = {
   regular: [],
@@ -225,7 +213,6 @@ const unitPools = {
 };
 
 const fragmentPool = [];
-
 
 const SCORE_VALUES = {
   fighter: 0.01,
@@ -256,7 +243,6 @@ const fragmentColors = {
   elite: "#808080",       // серый для элитных
   building: "#FFFF00"     // например, жёлтый для зданий (можно расширить для разных типов зданий)
 };
-
 // Пересмотр баланса цен – увеличены затраты для повышения стоимости юнитов и построек
 // Базовые постройки и инфраструктура
 const BASE_COST = { gold:67, silicon: 73, plasma: 32 };
@@ -279,19 +265,14 @@ const TURRET2_COST = { gold: 21, silicon: 36, plasma: 14 };
 const BASE3_COST = { gold: 92, silicon: 108, plasma: 52 };
 const BARRACKS3_COST = { gold: 73, silicon: 84, plasma: 24 };
 const TURRET3_COST = { gold: 27, silicon: 46, plasma: 19 };
-
-
 // === Константы и глобальные переменные для тумана войны ===
 const FOG_CELL_SIZE = 45;   // размер ячейки тумана (в мировых единицах)
-
 const VISION_RADIUS = 250;     // радиус видимости юнита игрока (в мировых единицах)
-
 const WORKER_SPEED = 50;
 const FIGHTER_BULLET_CONFIG = { speed: 200, lifetime: 0.8, damage: 10 };
 const TURRET_BULLET_CONFIG = { speed: 300, lifetime: 1.3, damage: 29 };
 const TURRET_LASER_CONFIG = { lifetime: 0.3, damage: 61 };
 const AUTO_COLLECT_ENABLED = true;
-
 const ASSAULT_VISION_RANGE = 310;
 const FIGHTER_VISION_RANGE = 210;
 const ELITE_VISION_RANGE =  530;
@@ -309,29 +290,22 @@ const MELEE_BULLET_CONFIG = {
   lifetime: 0.8,  // время жизни пули (короткое, так как это ближний бой)
   damage: 8       // урон одной пули
 };
-
-
 // Дополнительная константа для артиллерии
 const ARTILLERY_BULLET_CONFIG = {
-  speed: 120,          // скорость снаряда
+  speed: 150,          // скорость снаряда
   lifetime: 6,       // время жизни (секунд)
   damage: 40,          // базовый урон
   splashRadius: 40,    // радиус splash-урона
   splashDamage: 10     // урон по объектам в области
 };
-
 // Дополнительные константы для динамичного поведения fighter
-const BASE_SPEED = 60;
-const TURN_SPEED = 40;
-const WANDER_STRENGTH = 70;
+const BASE_SPEED = 70;
+const TURN_SPEED = 50;
+const WANDER_STRENGTH = 90;
 const MIN_TURN_ANGLE = 200 * Math.PI / 180;
 const MAX_TURN_ANGLE = 300 * Math.PI / 180;
 
-
-
 let selectedUnits = [];
-
-
 
 function randomFarPosition(building, minDistance = 200) {
   if (!building || building.x == null || building.y == null) {
@@ -347,7 +321,6 @@ function randomFarPosition(building, minDistance = 200) {
   };
 }
 
-
 function countBuildings(buildingType, owner) {
   return gameState.buildings.filter(b => b.owner === owner && b.type === buildingType).length;
 }
@@ -361,8 +334,6 @@ function canAfford(cost, owner) {
        res.silicon >= (cost.silicon || 0) &&
        res.plasma >= (cost.plasma || 0);
 }
-
-
 // Функция оценки плотности ресурсов в заданной области
 function evaluateResourceDensity(x, y, radius) {
   let density = 0;
@@ -394,11 +365,6 @@ function randomNearbyPosition(building, distance) {
   return { x: building.x + distance * Math.cos(angle), y: building.y + distance * Math.sin(angle) };
 }
 
-/**
- * Проверяет, находится ли точка (x, y) в зоне строительства любого здания.
- * Для расчёта зоны используется getBuildZoneRect(building), который берёт
- * buildZoneMultiplier или подставляет 20.
- */
 function isPositionInBuildingZone(x, y) {
   for (let b of gameState.buildings) {
     // Если нужно только для игрока, можно раскомментировать:
@@ -513,41 +479,46 @@ function requestRepair(target, workshop) {
     processCommandQueue(repairman);
   }
 }
-
-// Функция автоматического ремонта повреждённых объектов
+// Функция автоматического ремонта повреждённых объектов (ИСПРАВЛЕНА)
 function autoRepairDamagedObjects() {
-  // Собираем все объекты, у которых здоровье значительно ниже максимального
+  // Собираем юнитов И здания ИИ с HP < 90%
   const repairables = [].concat(
-    gameState.units.filter(u => u.health < u.maxHealth * 0.9),
-    gameState.buildings.filter(b => b.health < b.maxHealth * 0.9)
+    gameState.units.filter(u => u.owner === "ai" && u.health > 0 && u.health < u.maxHealth * 0.9),
+    gameState.buildings.filter(b => b.owner === "ai" && b.health > 0 && b.health < b.maxHealth * 0.9)
   );
   
   repairables.forEach(target => {
-    // Если объект уже ремонтируется или с момента последней попытки прошло меньше 5 секунд – пропускаем
-    if (target.isRepairing && target.repairAttemptedAt && performance.now() - target.repairAttemptedAt < 5000) {
-      return;
-    }
-    if (target.isRepairing && performance.now() - target.repairAttemptedAt >= 5000) {
-      target.isRepairing = false;
+    const now = performance.now();
+    
+    // 🔥 ИСПРАВЛЕНИЕ: Пуленепробиваемая проверка кулдауна (убирает баг с NaN)
+    if (target.isRepairing) {
+      if (!target.repairAttemptedAt) target.repairAttemptedAt = now;
+      if (now - target.repairAttemptedAt < 5000) return; // Ещё действует кулдаун 5 сек
+      target.isRepairing = false; // Кулдаун истек, сбрасываем флаг
     }
     
-    // Находим ближайшую ремонтную мастерскую
-    let workshops = gameState.buildings.filter(b => b.owner === target.owner && b.type === "repairWorkshop");
+    // Находим ближайшие ремонтные мастерские ИИ
+    let workshops = gameState.buildings.filter(b => 
+      b.owner === "ai" && b.type === "repairWorkshop" && b.active
+    );
     if (workshops.length === 0) return;
     
-    // Сортируем мастерские по расстоянию до объекта
+    // Сортируем по расстоянию
     workshops.sort((a, b) =>
       Math.hypot(target.x - a.x, target.y - a.y) - Math.hypot(target.x - b.x, target.y - b.y)
     );
     const nearestWorkshop = workshops[0];
     
-    // Если объект находится в зоне контроля мастерской, инициируем ремонт
-    if (Math.hypot(target.x - nearestWorkshop.x, target.y - nearestWorkshop.y) <= nearestWorkshop.controlRadius) {
+    // 🔥 ИСПРАВЛЕНИЕ: Для юнитов радиус чуть больше, так как они двигаются
+    const checkRadius = nearestWorkshop.controlRadius || 350; 
+    
+    if (Math.hypot(target.x - nearestWorkshop.x, target.y - nearestWorkshop.y) <= checkRadius) {
       requestRepair(target, nearestWorkshop);
+      target.isRepairing = true;
+      target.repairAttemptedAt = now; // Фиксируем время попытки
     }
   });
 }
-
 // Функция, возвращающая прямоугольник зоны строительства для здания
 function getBuildZoneRect(building) {
   const zoneMargin = building.buildZoneMultiplier || 20;
@@ -558,7 +529,6 @@ function getBuildZoneRect(building) {
     bottom: building.y + building.height / 2 + zoneMargin
   };
 }
-
 // Функция проверки, находится ли точка (x, y) в зоне строительства какого-либо здания
 function isInAnyBuildZone(x, y) {
   // Ищем объекты в радиусе 100, которые являются Building
@@ -589,7 +559,6 @@ function isInAnyBuildZone(x, y) {
   return false;
 }
 // Функция проверки, находится ли точка в пределах зоны союзных построек.
-// Здесь в качестве зоны используется радиус от каждой союзной постройки.
 function isWithinAlliedZone(x, y) {
   const zoneRadius = 100; // можно настроить радиус зоны
   // Считаем, что база ИИ тоже является союзной постройкой

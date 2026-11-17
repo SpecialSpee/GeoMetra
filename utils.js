@@ -1,16 +1,12 @@
 let saleTimeout = null;
 let saleBuilding = null;
 let saleStartTime = 0;
-
 const saleDuration = 2000;
 const saleMoveThreshold = 5;
-
 let worldWidth, worldHeight;
-
 // Инициализация Canvas и контекста (ЕДИНСТВЕННОЕ МЕСТО!)
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
-
 // Определяем, является ли устройство мобильным
 const isMobile = /Mobi|Android/i.test(navigator.userAgent);
 
@@ -81,7 +77,9 @@ function isInFogOfWar(x, y) {
 
 // Пулы объектов
 const particlePool = [];
+
 function getParticle() { return particlePool.pop() || {}; }
+
 function releaseParticle(particle) {
   particle.x = 0; particle.y = 0; particle.vx = 0; particle.vy = 0;
   particle.life = 0; particle.maxLife = 0; particle.radius = 0;
@@ -245,12 +243,14 @@ function drawCircularHP(x, y, radius, health, maxHealth) {
 // Глобальная функция изменения размера (добавить в конец utils.js)
 // ============================================================
 function resizeCanvas() {
+  // 1. Размер самого холста (canvas) всегда подстраивается под окно браузера
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
 
-  const worldMultiplier = isMobile ? 4.5 : 3;
-  worldWidth = canvas.width * worldMultiplier;
-  worldHeight = canvas.height * worldMultiplier;
+  // 2. 🔥 ИСПРАВЛЕНИЕ: Размер ИГРОВОГО МИРА берем строго из CFG, а не от экрана!
+  // Если в CFG не задано, используем запасной вариант 2000
+  worldWidth = (typeof CFG !== 'undefined' && CFG.WORLD_WIDTH) ? CFG.WORLD_WIDTH : 2000;
+  worldHeight = (typeof CFG !== 'undefined' && CFG.WORLD_HEIGHT) ? CFG.WORLD_HEIGHT : 2000;
 
   if (typeof starField !== 'undefined' && starField.init) {
     starField.init();
@@ -260,6 +260,7 @@ function resizeCanvas() {
     initFogOfWar();
   }
 
+  // Центрируем камеру
   if (typeof playerBase !== 'undefined' && playerBase) {
     camera.offsetX = canvas.width / 2 - playerBase.x * camera.scale;
     camera.offsetY = canvas.height / 2 - playerBase.y * camera.scale;
@@ -268,6 +269,7 @@ function resizeCanvas() {
     camera.offsetY = canvas.height / 2 - (worldHeight / 2) * camera.scale;
   }
 
+  // Обновляем Quadtree под новый размер мира
   const margin = 0.2 * worldWidth;
   if (typeof Quadtree !== 'undefined') {
     quadtree = new Quadtree({ 
@@ -275,6 +277,10 @@ function resizeCanvas() {
       width: worldWidth + 2 * margin, 
       height: worldHeight + 2 * margin 
     });
+  }
+  // 🔥 Синхронизируем размер оверлея
+  if (typeof window.initGnnOverlay === 'function') {
+      window.initGnnOverlay();
   }
 }
 

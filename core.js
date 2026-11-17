@@ -5,7 +5,6 @@ let frameCounter = 0;
 const frameSkipMobile = 2;
 let swarmFrameCounter = 0;
 let particleUpdateAccumulator = 0;
-// 🔥 ОТЛАДКА: отслеживание коллизий ID
 let idCollisionCount = 0;
 const PARTICLE_UPDATE_INTERVAL = 0.033;
 
@@ -66,8 +65,6 @@ window.GnnEventHooks = {
     }
   }
 };
-
-
 
 function addUnit(unit) {
   // 🔥 АВТОМАТИЧЕСКОЕ ПРИСВАИВАНИЕ ID, если его нет
@@ -807,7 +804,6 @@ function processResourceDepletion() {
     }
   });
 }
-
 // === МИКРО-РЕФЛЕКСЫ ЮНИТОВ (Спинной мозг) ===
 function applyUnitMicroReflexes(unit, now) {
   if (unit.health <= 0 || unit.type === "worker" || unit.type === "repairman") return;
@@ -905,8 +901,7 @@ function updateUnits(deltaTime) {
   if (swarmFrameCounter % 5 === 0) updateSwarmBehavior(deltaTime);
   if (swarmFrameCounter > 1000) swarmFrameCounter = 0;
 }
-
-// === ШАГ 2: ОПТИМИЗИРОВАННЫЙ ГОРЯЧИЙ ЦИКЛ ПУЛЬ ===
+// ОПТИМИЗИРОВАННЫЙ ГОРЯЧИЙ ЦИКЛ ПУЛЬ ===
 function updateBullets(deltaTime) {
   // Обратный цикл позволяет безопасно удалять элементы через splice
   for (let i = gameState.bullets.length - 1; i >= 0; i--) {
@@ -1002,7 +997,6 @@ function applySplashDamage(bullet) {
     }
   }
 }
-// ==================================================
 
 function updateParticles(deltaTime) {
   gameState.units.forEach(unit => { if (unit.burning && performance.now() - unit.burnStartTime > unit.burnDuration) unit.burning = false; });
@@ -1288,9 +1282,6 @@ function updateShockZones(deltaTime) {
     }
   });
 }
-
-
-
 // ============================================================
 // Токены ресурсов (визуальное отображение переносимого ресурса)
 // ============================================================
@@ -1523,11 +1514,9 @@ function releaseUnusedMemory() {
   }
   if (quadtree) quadtree.clear();
 }
-
 // ============================================================
 // Продажа зданий / очередь продаж ИИ
 // ============================================================
-
 window.aiSaleQueue = window.aiSaleQueue || [];
 window.aiSaleCooldown = window.aiSaleCooldown || false;
 window.soldBuildings = window.soldBuildings || [];
@@ -1634,12 +1623,9 @@ function processAISaleQueue() {
   }, 6000);
 }
 
-// Очередь продаж обрабатывает AIScheduler
-
 // ============================================================
 // Обработка очереди производства юнитов
 // ============================================================
-
 let unitIdCounter = 0;
 function generateUniqueUnitId() {
   // 🔥 Используем комбинацию счётчика, времени и случайного числа
@@ -1691,7 +1677,6 @@ function processProductionQueue(building) {
     }
   }
 }
-
 // Пример: при уничтожении здания (или продаже) вызываем функцию для маркировки зоны
 function onBuildingDestroyed(building) {
 	if (gameMode === "neural" && building.owner === "ai") {
@@ -1736,8 +1721,8 @@ function onBuildingDestroyed(building) {
   cleanUpBuildingReferences();
   
   // Дополнительные действия: реакция на атаку и мобилизация защитников
-  reactToAttack();
-  mobilizeDefendersAround(building);
+  //reactToAttack();
+  //mobilizeDefendersAround(building);
 }
 
 
@@ -2038,7 +2023,7 @@ function seededRandom(seed) {
   return function () { state = state * 16807 % 2147483647; return (state - 1) / 2147483646; };
 }
 
-function generateResources(countPerType = 100, seed = 777) {
+function generateResources(countPerType = 50, seed = 777) {
   const rand = seededRandom(seed);
   const resourceTypes = ["gold", "silicon", "plasma"];
   
