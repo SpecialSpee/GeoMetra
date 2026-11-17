@@ -38,7 +38,7 @@ window.gameMode = "single"; // или просто: gameMode = "single";
     GLOBAL_FEATURES: 36,
     HIDDEN: 128,
     LR: 0.00005,
-    DECISION_MS: 500,
+    DECISION_MS: 5000,
     MIN_COMMIT_MS: 30000,
     WORLD_WIDTH: 2000,
     WORLD_HEIGHT: 2000,

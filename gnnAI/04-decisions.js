@@ -17,9 +17,23 @@ Object.assign(window.GnnAI, {
 
   // === Принятие решения ===
   decide: function () {
+    const now = performance.now(); // <-- ПЕРЕНЕСЕНО НАВЕРХ
     const state = this.buildGraphState();
     if (!state) return;
-    const now = performance.now();
+
+    // ПРОВЕРКА: есть ли активные макро-операции?
+    const activeMacroMissions = this.missionCache.filter(m => 
+      !m.resolved && 
+      (m.intent.type === "attack" || m.intent.type === "defend") &&
+      (now - m.snapshot.time) < 30000 // операция активна < 30 секунд
+    );
+    
+    // Если армия уже выполняет макро-задачу, пропускаем макро-решение
+    if (activeMacroMissions.length > 0) {
+      this.lastState = state;
+      return; // НЕ принимаем новое макро-решение
+    }
+
     const pred = this.predictData(state);
     if (!pred) return;
     const logitsData = pred.logits;
@@ -247,75 +261,36 @@ Object.assign(window.GnnAI, {
   // === Выполнение действия ===
   execute: function (action, actionIndex, state) {
     const now = performance.now();
-    
-    // === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: Проверка "блокировки" юнита ===
-    // Юнит игнорирует новые макро-приказы, если он уже выполняет задачу < 6 сек,
-    // ИЛИ если его HP критически низкое (< 20%), чтобы позволить экстренное отступление.
+
     const isUnitAvailable = (u) => {
-      if (u.health <= 0) return false;
-      if (u.health < u.maxHealth * 0.2) return true; // Экстренный случай: разрешаем прервать задачу для спасения
+      if (!u || u.health <= 0) return false;
+      if (u.health < u.maxHealth * 0.2) return true;
       if (!u.missionLog) return true;
-      return (now - u.missionLog.startTime) > 6000; // 6 секунд "неприкосновенности"
+      return (now - u.missionLog.startTime) > 6000;
     };
 
-    const tacticalActions = ["strike_weak","focus_fire","retreat_regroup","flank_attack",
-      "harass_economy","all_in_base","defend",
-      "tactic_all_in","tactic_harass","tactic_push","tactic_defend"];
-
-    if (tacticalActions.includes(action)) {
-      const busyUnits = gameState.units.filter(u =>
-        u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) &&
-        u.health > 0 && u.missionLog
-      );
-      const totalArmy = gameState.units.filter(u =>
-        u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0
-      ).length;
-      if (totalArmy > 0) {
-        const busyRatio = busyUnits.length / totalArmy;
-        if (busyRatio > 0.5) {
-          const spamPenalty = -15.0 * busyRatio;
-          this.replay.push({
-            X: state.X, A_distance: state.A_distance, A_threat: state.A_threat,
-            actionIndex: actionIndex, reward: spamPenalty
-          });
-          //console.warn(`[GnnAI] ⚠️ Спам-тактика '${action}': ${Math.round(busyRatio*100)}% армии занята → штраф ${spamPenalty.toFixed(2)}`);
-        }
-        const recentSame = this.missionCache.filter(m => !m.resolved && m.action === action).length;
-        if (recentSame > 0) {
-          const repeatPenalty = -15.0 * recentSame;
-          this.replay.push({
-            X: state.X, A_distance: state.A_distance, A_threat: state.A_threat,
-            actionIndex: actionIndex, reward: repeatPenalty
-          });
-          //console.warn(`[GnnAI] 🔁 Повтор '${action}' (${recentSame}x в полёте) → штраф ${repeatPenalty.toFixed(2)}`);
-        }
-      }
-    }
-
-    const activeAttacks = this.missionCache.filter(m => !m.resolved && m.intent.type === "attack").length;
-    if (action.startsWith("attack") && activeAttacks >= 3) {
-      this.replay.push({
-        X: state.X, A_distance: state.A_distance, A_threat: state.A_threat,
-        actionIndex: actionIndex, reward: -5.5
-      });
-      //console.warn(`[GnnAI] ⚠️ Уже ${activeAttacks} атак в полёте — мягкий штраф`);
-    }
+    const tacticalActions = [
+      "strike_weak", "focus_fire", "retreat_regroup", "flank_attack",
+      "harass_economy", "all_in_base", "defend",
+      "tactic_all_in", "tactic_harass", "tactic_push", "tactic_defend"
+    ];
 
     try {
-      // DEFEND (ИСПРАВЛЕНО: добавлена проверка времени последней команды)
+      // DEFEND
       if (action === "defend") {
         const freeUnits = gameState.units.filter(u => 
-          u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0 && 
-          (!u.commandQueue || u.commandQueue.length === 0) &&
-          (!u.missionLog || (now - u.missionLog.startTime > 8000)) // Не трогать тех, кому команду дали < 8 сек назад
+          u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0 && isUnitAvailable(u)
         );
         if (freeUnits.length === 0) return false;
+        
         const anchor = this.threatAnchor() || aiBase;
         const defenderIds = freeUnits.map(u => u.id);
+        
         freeUnits.forEach(u => {
           u.defending = true;
           u.commandQueue = [{ type: "move", x: anchor.x + (Math.random() - 0.5) * 150, y: anchor.y + (Math.random() - 0.5) * 150 }];
         });
+        
         this.registerAction(action, state, { type: "defend", anchor: anchor.id || "aiBase", units: defenderIds.length, unitIds: defenderIds }, actionIndex);
         return true;
       }

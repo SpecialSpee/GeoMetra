@@ -133,6 +133,13 @@ Object.assign(window.GnnAI, {
         const target = gameState.units.find(u => u.id === intent.targetId) || gameState.buildings.find(b => b.id === intent.targetId);
         snapshot.targetStartHP = target ? target.health : 0;
         snapshot.targetId = intent.targetId;
+        // Сохраняем начальное расстояние от первого юнита до цели
+        if (target && intent.unitIds && intent.unitIds.length > 0) {
+          const firstUnit = gameState.units.find(u => u.id === intent.unitIds[0]);
+          if (firstUnit) {
+            snapshot.distToTarget = Math.hypot(firstUnit.x - target.x, firstUnit.y - target.y);
+          }
+        }
       }
       if (intent.anchor) snapshot.anchorId = intent.anchor;
     }

@@ -70,7 +70,63 @@ Object.assign(window.GnnAI, {
           let tacticReward = 0;
           let eventReason = "";
 
-          if (alive.length === 0 && dead.length > 0) {
+          // === РЕШЕНИЕ 3: Промежуточные награды за прогресс миссии ===
+          const elapsed = (performance.now() - mission.snapshot.time) / 1000;
+
+          // Кешируем начальное расстояние к цели при первом тике миссии
+          if (mission.snapshot.distToTarget === undefined && target && logs.length > 0) {
+            const firstAlive = logs.find(l => l.alive);
+            if (firstAlive) {
+              const u = gameState.units.find(x => x.id === firstAlive.missionId);
+              // fallback: берём координаты из snapshot через unitIds
+              const firstUnitId = unitIds[0];
+              const fu = gameState.units.find(x => x.id === firstUnitId);
+              if (fu) {
+                mission.snapshot.distToTarget = Math.hypot(fu.x - target.x, fu.y - target.y);
+              } else {
+                mission.snapshot.distToTarget = 9999;
+              }
+            }
+          }
+
+          // Промежуточный reward: армия жива и движется к цели
+          if (elapsed > 3 && alive.length > 0 && target && target.health > 0) {
+            const firstAliveUnit = gameState.units.find(x => x.id === unitIds[0] && x.health > 0);
+            if (firstAliveUnit) {
+              const currentDist = Math.hypot(firstAliveUnit.x - target.x, firstAliveUnit.y - target.y);
+              const initialDist = mission.snapshot.distToTarget || 9999;
+              const progress = Math.max(0, Math.min(1, (initialDist - currentDist) / Math.max(1, initialDist)));
+
+              // Награда за продвижение к цели (до +4.0 за полный путь)
+              if (progress > 0.05) {
+                const progressReward = progress * 4.0;
+                mission.replayEntry.reward += progressReward;
+              }
+
+              // Награда за нанесённый урон (до +3.0)
+              if (totalDamageDealt > 0) {
+                const dmgReward = Math.min(3.0, totalDamageDealt * 0.02);
+                mission.replayEntry.reward += dmgReward;
+              }
+
+              // Штраф за застой (юниты живы, но не двигаются > 10 сек)
+              if (progress < 0.02 && elapsed > 10) {
+                mission.replayEntry.reward += -2.0;
+              }
+            }
+          }
+
+          // === РЕШЕНИЕ 4: Минимальное время жизни миссии ===
+          // Миссия не может быть разрешена раньше 15 секунд,
+          // кроме случаев полной гибели армии (тогда ждём хотя бы 5 сек)
+          const MIN_MISSION_LIFE = 15;
+          const MIN_MISSION_LIFE_WIPEOUT = 5;
+          const canResolve = resolved && (
+            (alive.length === 0 && elapsed >= MIN_MISSION_LIFE_WIPEOUT) ||
+            elapsed >= MIN_MISSION_LIFE
+          );
+
+          if (canResolve) {
             resolved = true;
             if (completed.length > 0) {
               const baseReward = targetImportance >= 50 ? 30.0 : 10.0;
@@ -176,7 +232,7 @@ Object.assign(window.GnnAI, {
           }
           rewardDelta += tacticReward;
           reason = eventReason;
-          isResolved = resolved;
+          isResolved = resolved; // <--- ИСПРАВЛЕНО: используем флаг resolved, который вычислен выше
         }
       }
       // 2. ЗАЩИТА
