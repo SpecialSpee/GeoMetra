@@ -218,7 +218,7 @@ function createTrainingOverlay() {
   if (document.getElementById('gnn-training-overlay')) return;
   const overlay = document.createElement('div');
   overlay.id = 'gnn-training-overlay';
-  overlay.style.cssText = `position: fixed; top: 10px; right: 10px; background: rgba(0, 0, 0, 0.8); color: #00ff99; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 8px; border: 1px solid #00ff99; z-index: 9999; pointer-events: none;`;
+  overlay.style.cssText = `position: fixed; top: 26px; right: 350px; background: rgba(0, 0, 0, 0.2); color: #00ff99; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 8px; border: 1px solid #00ff99; z-index: 9999; pointer-events: none;`;
   overlay.innerHTML = `
     <div style="font-weight:bold; margin-bottom:5px; color:#fff;">🧠 GNN AUTO-TRAINING</div>
     <div id="ov-episode">Episode: <span style="color:#fff">-</span></div>

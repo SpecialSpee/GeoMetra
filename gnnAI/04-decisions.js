@@ -15,35 +15,6 @@ Object.assign(window.GnnAI, {
     return groups;
   },
 
-  // === ХЕЛПЕР: время МАТЧА в минутах (не страницы!) ===
-  gameTimeMin: function () {
-    const start = this.matchStartTime || performance.now();
-    return (performance.now() - start) / 60000;
-  },
-
-  // === ДИНАМИЧЕСКАЯ ЭНТРОПИЯ ===
-  getEntropyCoef: function () {
-    const m = this.metrics();
-    const gameTimeMin = this.gameTimeMin(); // 🔥 ВРЕМЯ МАТЧА
-
-    // ФАЗА 1: Ранняя игра — минимальная энтропия, учим экономику
-    if (gameTimeMin < 2.5 || m.aiWarehouses < 2) {
-      return 0.01; // 🎯 Exploit
-    }
-
-    // ФАЗА 2: Середина игры — есть армия, исследуем тактики
-    if (gameTimeMin < 7.0 && m.aiArmy >= 2) {
-      return CFG.ENTROPY_COEF || 0.08; // 🔍 Explore
-    }
-
-    // ФАЗА 3: Поздняя игра — точность
-    if (gameTimeMin >= 7.0 || m.techLevel >= 3) {
-      return 0.02; // 🎯 Exploit
-    }
-
-    // Переходная зона: склады есть, армии ещё нет — мягкий режим
-    return 0.03;
-  },
 
   // === Принятие решения ===
   decide: function () {

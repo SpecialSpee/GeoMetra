@@ -514,26 +514,36 @@ Object.assign(window.GnnAI, {
     });
   },
 
-  // ============================================================
-  // Динамическая энтропия.
-  // ============================================================
-  getEntropyCoef: function () {
-    const batch = this.trainBatches || 0;
-
-    // Фаза 1: активное исследование.
-    if (batch < 300) {
-      return 0.05;
-    }
-
-    // Фаза 2: плавный переход.
-    if (batch < 1500) {
-      const progress = (batch - 300) / 1200;
-      return 0.05 - (0.05 - 0.01) * progress;
-    }
-
-    // Фаза 3: эксплуатация.
-    return 0.01;
+    // === ХЕЛПЕР: время МАТЧА в минутах (не страницы!) ===
+  gameTimeMin: function () {
+    const start = this.matchStartTime || performance.now();
+    return (performance.now() - start) / 60000;
   },
+
+  // === ДИНАМИЧЕСКАЯ ЭНТРОПИЯ ===
+  getEntropyCoef: function () {
+    const m = this.metrics();
+    const gameTimeMin = this.gameTimeMin(); // 🔥 ВРЕМЯ МАТЧА
+
+    // ФАЗА 1: Ранняя игра — минимальная энтропия, учим экономику
+    if (gameTimeMin < 2.5 || m.aiWarehouses < 2) {
+      return 0.01; // 🎯 Exploit
+    }
+
+    // ФАЗА 2: Середина игры — есть армия, исследуем тактики
+    if (gameTimeMin < 7.0 && m.aiArmy >= 2) {
+      return CFG.ENTROPY_COEF || 0.08; // 🔍 Explore
+    }
+
+    // ФАЗА 3: Поздняя игра — точность
+    if (gameTimeMin >= 7.0 || m.techLevel >= 3) {
+      return 0.02; // 🎯 Exploit
+    }
+
+    // Переходная зона: склады есть, армии ещё нет — мягкий режим
+    return 0.03;
+  },
+
 
   // ============================================================
   // Статистика весов для UI/отладки.
