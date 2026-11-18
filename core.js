@@ -488,13 +488,30 @@ function processCommandQueue(unit, overrideDelta) {
 // 4. ЕДИНАЯ ФИЗИКА ДЛЯ ВОЕННЫХ: Сближение + Орбита
 function updateFighterPhysics(unit, target, mode, deltaTime) {
   if (!target || !unit) return;
-  
+
+  // 🔥 АНТИ-СЛИПАНИЕ: Разведение в мировом пространстве
+  const neighbors = getObjectsInRange({x: unit.x, y: unit.y}, 40)
+    .filter(u => u !== unit && u.owner === unit.owner && u.type === unit.type && u.health > 0);
+  if (neighbors.length > 0) {
+    let sepX = 0, sepY = 0;
+    for (let other of neighbors) {
+      const dx = unit.x - other.x;
+      const dy = unit.y - other.y;
+      const d = Math.hypot(dx, dy);
+      if (d < 40 && d > 0) {
+        const force = (40 - d) / 40;
+        sepX += (dx / d) * force * 50;
+        sepY += (dy / d) * force * 50;
+      }
+    }
+    unit.vx += sepX * deltaTime;
+    unit.vy += sepY * deltaTime;
+  }
+
   const dist = Math.hypot(target.x - unit.x, target.y - unit.y);
   if (dist === 0) return;
 
-  // 1. Угол к цели (для стрельбы и визуала)
   const angleToTarget = Math.atan2(target.y - unit.y, target.x - unit.x);
-  // Плавный, но быстрый поворот корпуса к цели
   unit.angle = lerpAngle(unit.angle, angleToTarget, 0.15);
 
   const frontX = Math.cos(unit.angle), frontY = Math.sin(unit.angle);
@@ -502,38 +519,85 @@ function updateFighterPhysics(unit, target, mode, deltaTime) {
 
   let ax = 0, ay = 0;
 
-  if (mode === 'orbit') {
-    // Держимся на 75% от максимальной дальности атаки
-    const idealDist = unit.range * 0.75; 
-    const distError = dist - idealDist;
-
-    // 🔥 УСИЛЕННЫЙ СТРЕЙФ: Если мы в зоне поражения, активно кружим
-    if (Math.abs(distError) < 40) {
-      // Увеличили множитель с 3.0 до 30.0 для ярко выраженного бокового движения
-      ax = tanX * 30.0; 
-      ay = tanY * 30.0;
-    } else {
-      // Коррекция дистанции + сохранение инерции стрейфа, чтобы не останавливаться резко
-      ax = frontX * distError * 4.0 + tanX * 20.0;
-      ay = frontY * distError * 4.0 + tanY * 20.0;
+  // 🔥 РЫВОК (прорыв в тыл): имеет высший приоритет над орбитой
+  if (mode === 'orbit' && !unit.isDashing && (unit.postDashTimer || 0) <= 0) {
+    unit.dashTimer -= deltaTime * 1000;
+    if (unit.dashTimer <= 0 && dist < unit.range * 1.2) {
+      const dashAngle = angleToTarget + (Math.random() - 0.5) * (Math.PI / 3);
+      const dashSpeed = 100; 
+      unit.dashVector = { x: Math.cos(dashAngle) * dashSpeed, y: Math.sin(dashAngle) * dashSpeed };
+      unit.isDashing = true;
+      unit.dashEndTime = performance.now() + 600; 
+      unit.dashTimer = Math.random() * 4000 + 4000; 
     }
-  } else {
-    // 🔥 РЕЖИМ СБЛИЖЕНИЯ (approach): Активное движение к цели
-    const desiredDist = unit.range * 0.8; 
-    const distError = dist - desiredDist;
-    
-    // Агрессивное сближение с легким боковым смещением (чтобы не лететь по прямой линии)
-    ax = frontX * distError * 5.0 + tanX * 5.0;
-    ay = frontY * distError * 5.0 + tanY * 5.0;
   }
 
-  // Применяем инерцию (0.90 дает хороший "дрифт", юниты не останавливаются мгновенно)
+  if (unit.isDashing) {
+    if (performance.now() > unit.dashEndTime) {
+      unit.isDashing = false; 
+      unit.postDashTimer = 1.5; // Фаза закрепления в тылу
+    } else {
+      ax = unit.dashVector.x * 3.0;
+      ay = unit.dashVector.y * 3.0;
+    }
+  } else if (mode === 'orbit') {
+    const wobble = Math.sin((performance.now() / 500) + (unit.orbitPhase || 0)) * 25;
+    const idealDist = (unit.range * 0.75) + wobble;
+    let distError = dist - idealDist;
+
+    // 🔥 ФАЗА ЗАКРЕПЛЕНИЯ В ТЫЛУ (после рывка)
+    if (unit.postDashTimer > 0) {
+      unit.postDashTimer -= deltaTime;
+      distError = 0; // Отключаем "пружину" возврата
+      
+      const decay = unit.postDashTimer / 1.5; 
+      // 🔥 ДОБАВИЛИ СТРЕЙФ СЮДА: чтобы после рывка юнит сразу начинал боковое движение
+      ax = (unit.dashVector.x * 0.3 * decay) + (tanX * 80.0 * (unit.strafeDirection || 1));
+      ay = (unit.dashVector.y * 0.3 * decay) + (tanY * 80.0 * (unit.strafeDirection || 1));
+      
+    } else {
+      // 🔥 СТАНДАРТНАЯ ОРБИТА + СТРЕЙФ (ИСПРАВЛЕННЫЙ)
+      unit.strafeTimer -= deltaTime * 1000;
+      if (unit.strafeTimer <= 0) {
+        // 70% шанс смены направления
+        if (Math.random() < 0.7) {
+          unit.strafeDirection = (unit.strafeDirection || 1) * -1;
+          
+          // 🔥 НОВЫЙ ФИКС: Резкий "пинок" (импульс) при смене направления!
+          // Это делает смену направления визуально заметной, как реальный маневр уклонения
+          unit.vx += (tanX * (unit.strafeDirection || 1)) * 60; 
+          unit.vy += (tanY * (unit.strafeDirection || 1)) * 60;
+        }
+        unit.strafeTimer = Math.random() * 3000 + 500; // 0.5 - 3.5 сек
+      }
+
+      const dir = unit.strafeDirection || 1;
+
+      if (Math.abs(distError) < 40) {
+        // 🔥 УВЕЛИЧИЛИ стрейф до 80.0. Теперь он доминирует над мелкими колебаниями дистанции
+        ax = frontX * distError * 2.0 + tanX * 80.0 * dir;
+        ay = frontY * distError * 2.0 + tanY * 80.0 * dir;
+      } else {
+        // При большом отклонении фронтальное движение сильнее, но стрейф все равно есть
+        ax = frontX * distError * 3.0 + tanX * 40.0 * dir;
+        ay = frontY * distError * 3.0 + tanY * 40.0 * dir;
+      }
+    }
+  } else {
+    // 🔥 СБЛИЖЕНИЕ (approach)
+    const desiredDist = unit.range * 0.8;
+    const distError = dist - desiredDist;
+    ax = frontX * distError * 5.0 + tanX * 8.0 * (unit.strafeDirection || 1);
+    ay = frontY * distError * 5.0 + tanY * 8.0 * (unit.strafeDirection || 1);
+  }
+
+  // Применяем инерцию
   unit.vx = unit.vx * 0.90 + ax * deltaTime;
   unit.vy = unit.vy * 0.90 + ay * deltaTime;
 
-  // Ограничиваем скорость (увеличили до 150 для более резвых и динамичных маневров)
+  // Лимит скорости
+  const maxSpeed = unit.isDashing ? 100 : 70;
   const curSpeed = Math.hypot(unit.vx, unit.vy);
-  const maxSpeed = 70; 
   if (curSpeed > maxSpeed) {
     unit.vx = (unit.vx / curSpeed) * maxSpeed;
     unit.vy = (unit.vy / curSpeed) * maxSpeed;
@@ -2316,6 +2380,16 @@ function getUnitFromPool(type, owner, x, y) {
         unit.orbitRadius = undefined; unit.orbitAngle = undefined;
         unit.engagementRadius = 500;
         unit.visionRadius = FIGHTER_VISION_RANGE;
+        unit.strafeDirection = Math.random() > 0.5 ? 1 : -1;
+        unit.strafeTimer = Math.random() * 2000 + 1000;
+        unit.strafeInterval = Math.random() * 2000 + 1000;
+        unit.orbitPhase = Math.random() * Math.PI * 2;
+        // 🔥 НОВОЕ: Поля для рывка (прорыв в тыл)
+        unit.dashTimer = Math.random() * 4000 + 4000; // Первый рывок через 4-8 сек
+        unit.dashInterval = Math.random() * 4000 + 4000; // Интервал между рывками
+        unit.isDashing = false;
+        unit.dashEndTime = 0;
+        unit.dashVector = { x: 0, y: 0 };
         break;
       case "repairman":
         unit.health = 150; unit.maxHealth = 150;
