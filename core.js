@@ -292,22 +292,63 @@ function moveUnit(unit, targetX, targetY, callback) {
 }
 // 2. ЕДИНАЯ функция обновления позиции (вызывается из updateUnits каждый кадр)
 function applyUnitMovement(unit, deltaTime) {
-  if (unit.shocked || unit.isRetreating || unit.health <= 0) return;
+  if (unit.shocked || unit.health <= 0) return;
 
-  // ПРИОРИТЕТ 1: Боевая физика для военных юнитов
+  // 🔥 ПРИОРИТЕТ 0: ОТСТУПЛЕНИЕ (единственный источник движения при отступлении)
+  if (unit.isRetreating) {
+    const base = unit.owner === "player" ? playerBase : aiBase;
+    
+    // 🔥 КРИТИЧНЫЙ ФИКС: Если база уничтожена — снимаем флаг и ищем ближайшую свою постройку
+    if (!base) {
+      const fallbackBase = gameState.buildings.find(b => 
+        b.owner === unit.owner && b.health > 0 && 
+        (b.type === "base" || b.type === "base2" || b.type === "base3" || b.type === "warehouse")
+      );
+      if (fallbackBase) {
+        const dx = fallbackBase.x - unit.x;
+        const dy = fallbackBase.y - unit.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 10) {
+          unit.angle = Math.atan2(dy, dx);
+          const speed = 50; // Ускорение при панике
+          unit.x += (dx / dist) * speed * deltaTime;
+          unit.y += (dy / dist) * speed * deltaTime;
+        } else {
+          unit.isRetreating = false;
+          unit.target = null;
+        }
+      } else {
+        // Своих построек нет вообще — выходим из режима отступления, чтобы не висеть
+        unit.isRetreating = false;
+        unit.target = null;
+      }
+    } else {
+      const dx = base.x - unit.x;
+      const dy = base.y - unit.y;
+      const dist = Math.hypot(dx, dy);
+      
+      if (dist > 15) {
+        unit.angle = Math.atan2(dy, dx);
+        const speed = 50; // Ускорение при панике
+        unit.x += (dx / dist) * speed * deltaTime;
+        unit.y += (dy / dist) * speed * deltaTime;
+      } else {
+        unit.isRetreating = false;
+        unit.target = null;
+      }
+    }
+    return; // Прерываем, чтобы боевая логика не перехватила управление
+  }
+
+  // ПРИОРИТЕТ 1: Боевая физика
   if (["fighter", "assault", "elite"].includes(unit.type) && unit.target && unit.target.health > 0) {
     const dist = Math.hypot(unit.target.x - unit.x, unit.target.y - unit.y);
-    
-    // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: 
-    // Если цель далеко (> range), используем агрессивное сближение ('approach').
-    // Если цель в радиусе атаки, переключаемся на боевую орбиту ('orbit').
     const mode = dist > unit.range ? 'approach' : 'orbit';
-    
     updateFighterPhysics(unit, unit.target, mode, deltaTime);
     return; 
   }
 
-  // ПРИОРИТЕТ 2: Стандартное движение к точке (для рабочих, ремонтников и когда нет цели)
+  // ПРИОРИТЕТ 2: Стандартное движение к точке
   if (unit.moveTarget) {
     const dx = unit.moveTarget.x - unit.x;
     const dy = unit.moveTarget.y - unit.y;
@@ -324,7 +365,6 @@ function applyUnitMovement(unit, deltaTime) {
     }
 
     unit.angle = Math.atan2(dy, dx);
-    // 🔥 ИСПРАВЛЕНИЕ: военные юниты должны двигаться быстрее рабочих по умолчанию
     const speed = unit.speed || (["fighter", "assault", "elite"].includes(unit.type) ? 120 : WORKER_SPEED);
     unit.x += (dx / dist) * speed * deltaTime;
     unit.y += (dy / dist) * speed * deltaTime;
@@ -493,7 +533,7 @@ function updateFighterPhysics(unit, target, mode, deltaTime) {
 
   // Ограничиваем скорость (увеличили до 150 для более резвых и динамичных маневров)
   const curSpeed = Math.hypot(unit.vx, unit.vy);
-  const maxSpeed = 150; 
+  const maxSpeed = 70; 
   if (curSpeed > maxSpeed) {
     unit.vx = (unit.vx / curSpeed) * maxSpeed;
     unit.vy = (unit.vy / curSpeed) * maxSpeed;
@@ -951,14 +991,22 @@ function processResourceDepletion() {
 function applyUnitMicroReflexes(unit, now) {
   if (unit.health <= 0 || unit.type === "worker" || unit.type === "repairman") return;
 
-  // 1. АВТО-ПЕРЕНАЦЕЛИВАНИЕ (Не бить по трупам)
+  // 1. АВТО-ПЕРЕНАЦЕЛИВАНИЕ
   if (unit.target && unit.target.health <= 0) {
     unit.target = null;
-    unit.lastAutonomousActionTime = now; // Даем 6 сек на поиск новой цели без вмешательства GNN
+    unit.lastAutonomousActionTime = now;
   }
 
-  // 2. ПАНИЧЕСКОЕ ОТСТУПЛЕНИЕ (Крайний случай < 15% HP)
+  // 2. ПАНИЧЕСКОЕ ОТСТУПЛЕНИЕ (< 15% HP) — ТОЛЬКО УСТАНОВКА ФЛАГА
   if (unit.health < unit.maxHealth * 0.15 && !unit.isRetreating) {
+    const base = unit.owner === "player" ? playerBase : aiBase;
+    
+    // 🔥 ФИКС: Если базы нет — не входим в режим отступления, иначе юнит застрянет навсегда
+    if (!base) {
+      unit.isRetreating = false;
+      return; 
+    }
+
     const nearWorkshop = gameState.buildings.some(b => 
       b.owner === unit.owner && b.type === 'repairWorkshop' && 
       Math.hypot(b.x - unit.x, b.y - unit.y) < 300 && b.active
@@ -969,28 +1017,18 @@ function applyUnitMicroReflexes(unit, now) {
       unit.commandQueue = []; 
       unit.target = null;
       unit.lastAutonomousActionTime = now;
-      
-      // Принудительно двигаем к базе
-      const dx = (unit.owner === "ai" ? aiBase.x : playerBase.x) - unit.x;
-      const dy = (unit.owner === "ai" ? aiBase.y : playerBase.y) - unit.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist > 5) {
-        unit.angle = Math.atan2(dy, dx);
-        const speed = (unit.speed || 100) * 1.5; // Ускорение при панике
-        unit.x += (dx / dist) * speed * 0.016; 
-        unit.y += (dy / dist) * speed * 0.016;
-      } else {
-        unit.isRetreating = false; // Дополз, снимаем флаг
-      }
-      return; // Прерываем обработку атаки в этом кадре
+      // 🔥 ФИКС: Убрали физическое движение отсюда! Пусть applyUnitMovement занимается движением.
+      return; 
     }
   } else if (unit.health >= unit.maxHealth * 0.25) {
-    unit.isRetreating = false; // Здоровье восстановилось
+    unit.isRetreating = false; 
   }
 }
 
 function updateUnits(deltaTime) {
   const now = performance.now();
+  
+  // 1. Обработка зон шока
   shockZones = shockZones.filter(zone => {
     const elapsed = now - zone.start;
     if (elapsed < 5000) {
@@ -1003,20 +1041,32 @@ function updateUnits(deltaTime) {
     }
     return false;
   });
+
+  // 2. Основной цикл юнитов
   gameState.units.forEach(unit => {
+    // Сначала микро-рефлексы (они только ставят флаг isRetreating, но не двигают юнита)
     applyUnitMicroReflexes(unit, now);
 
-   // 🔥 ЕДИНАЯ ТОЧКА ОБНОВЛЕНИЯ ПОЗИЦИИ
+    // 🔥 ЕДИНАЯ ТОЧКА ОБНОВЛЕНИЯ ПОЗИЦИИ (двигает юнита, в том числе при отступлении)
     applyUnitMovement(unit, deltaTime);
 
     const isShocked = unit.shockedUntil && now < unit.shockedUntil;
 
+    // Логика горения
     if (unit.burning) {
       const elapsed = now - unit.burnTime;
       if (elapsed < unit.burnDuration) {
-        if (!unit.lastBurnTick || now - unit.lastBurnTick > 500) { unit.health -= 10; unit.lastBurnTick = now; spawnSparkEffect(unit.x, unit.y); }
-      } else { unit.burning = false; }
+        if (!unit.lastBurnTick || now - unit.lastBurnTick > 500) { 
+          unit.health -= 10; 
+          unit.lastBurnTick = now; 
+          spawnSparkEffect(unit.x, unit.y); 
+        }
+      } else { 
+        unit.burning = false; 
+      }
     }
+
+    // Логика шока (только для ИИ, чтобы дать ему передышку)
     if (isShocked && unit.owner === "ai") {
       if (!unit.lastShockEffect || now - unit.lastShockEffect > 500) { 
         spawnShockEffect(unit.x, unit.y); 
@@ -1025,27 +1075,35 @@ function updateUnits(deltaTime) {
       unit.shocked = true; 
       unit.commandQueue = []; 
       unit.target = null;
-      // ИСПРАВЛЕНО: Даем 3 секунды "неприкосновенности" после оглушения, чтобы GNN не шлем его обратно в мясорубку
       unit.lastAutonomousActionTime = now + 3000; 
-      return;
+      return; // Выходим из обработки этого юнита на этом кадре
     } else { 
       unit.shocked = false; 
     }
-    // Обработка атак теперь делегирована processCommandQueue и applyUnitMovement
-    if (unit.type === "elite" && unit.health > 0 && !unit.shocked && !unit.isRetreating) { 
-      processCommandQueue(unit, deltaTime); 
-    } else if (unit.type === "assault" && unit.health > 0 && !unit.shocked && !unit.isRetreating) { 
-      processCommandQueue(unit, deltaTime); 
-    } else if (unit.type === "fighter" && unit.health > 0 && !unit.shocked && !unit.isRetreating) { 
-      processCommandQueue(unit, deltaTime); 
-    } else { 
-      unit.idleTimer += deltaTime; 
+
+    // 🔥 ИСПРАВЛЕНИЕ БАГА С ЗАВИСАНИЕМ:
+    // Мы убрали "!unit.isRetreating" из условий. 
+    // Теперь processCommandQueue вызывается ВСЕГДА, даже при отступлении.
+    // Это позволяет игроку отменить отступление, просто кликнув правой кнопкой мыши (новая команда перезапишет старую).
+    if (unit.health > 0 && !unit.shocked) {
+      if (unit.type === "elite" || unit.type === "assault" || unit.type === "fighter" || unit.type === "repairman") { 
+        processCommandQueue(unit, deltaTime); 
+      } else { 
+        unit.idleTimer += deltaTime; 
+      }
     }
   });
+
+  // 3. Очистка мертвых юнитов
   gameState.units = gameState.units.filter(unit => {
-    if (unit.health <= 0) { removeUnit(unit); return false; }
+    if (unit.health <= 0) { 
+      removeUnit(unit); 
+      return false; 
+    }
     return true;
   });
+
+  // 4. Поведение роя (если нужно)
   swarmFrameCounter++;
   if (swarmFrameCounter % 5 === 0) updateSwarmBehavior(deltaTime);
   if (swarmFrameCounter > 1000) swarmFrameCounter = 0;
