@@ -500,8 +500,8 @@ function updateFighterPhysics(unit, target, mode, deltaTime) {
       const d = Math.hypot(dx, dy);
       if (d < 40 && d > 0) {
         const force = (40 - d) / 40;
-        sepX += (dx / d) * force * 50;
-        sepY += (dy / d) * force * 50;
+        sepX += (dx / d) * force * 20
+        sepY += (dy / d) * force * 20
       }
     }
     unit.vx += sepX * deltaTime;
@@ -552,9 +552,8 @@ function updateFighterPhysics(unit, target, mode, deltaTime) {
       
       const decay = unit.postDashTimer / 1.5; 
       // 🔥 ДОБАВИЛИ СТРЕЙФ СЮДА: чтобы после рывка юнит сразу начинал боковое движение
-      ax = (unit.dashVector.x * 0.3 * decay) + (tanX * 80.0 * (unit.strafeDirection || 1));
-      ay = (unit.dashVector.y * 0.3 * decay) + (tanY * 80.0 * (unit.strafeDirection || 1));
-      
+ax = (unit.dashVector.x * 0.3 * decay) + (tanX * 80.0 * (unit.orbitDirection || 1) * (unit.strafeDirection || 1));
+ay = (unit.dashVector.y * 0.3 * decay) + (tanY * 80.0 * (unit.orbitDirection || 1) * (unit.strafeDirection || 1));      
     } else {
       // 🔥 СТАНДАРТНАЯ ОРБИТА + СТРЕЙФ (ИСПРАВЛЕННЫЙ)
       unit.strafeTimer -= deltaTime * 1000;
@@ -575,21 +574,18 @@ function updateFighterPhysics(unit, target, mode, deltaTime) {
 
       if (Math.abs(distError) < 40) {
         // 🔥 УВЕЛИЧИЛИ стрейф до 80.0. Теперь он доминирует над мелкими колебаниями дистанции
+        const dir = (unit.orbitDirection || 1) * (unit.strafeDirection || 1);
         ax = frontX * distError * 2.0 + tanX * 80.0 * dir;
-        ay = frontY * distError * 2.0 + tanY * 80.0 * dir;
-      } else {
-        // При большом отклонении фронтальное движение сильнее, но стрейф все равно есть
-        ax = frontX * distError * 3.0 + tanX * 40.0 * dir;
-        ay = frontY * distError * 3.0 + tanY * 40.0 * dir;
+        ay = frontY * distError * 2.0 + tanY * 80.0 * dir;      } else {
+
       }
     }
   } else {
     // 🔥 СБЛИЖЕНИЕ (approach)
     const desiredDist = unit.range * 0.8;
     const distError = dist - desiredDist;
-    ax = frontX * distError * 5.0 + tanX * 8.0 * (unit.strafeDirection || 1);
-    ay = frontY * distError * 5.0 + tanY * 8.0 * (unit.strafeDirection || 1);
-  }
+    ax = frontX * distError * 5.0 + tanX * 8.0 * (unit.orbitDirection || 1) * (unit.strafeDirection || 1);
+    ay = frontY * distError * 5.0 + tanY * 8.0 * (unit.orbitDirection || 1) * (unit.strafeDirection || 1);  }
 
   // Применяем инерцию
   unit.vx = unit.vx * 0.90 + ax * deltaTime;
@@ -2386,6 +2382,7 @@ function getUnitFromPool(type, owner, x, y) {
         unit.orbitPhase = Math.random() * Math.PI * 2;
         // 🔥 НОВОЕ: Поля для рывка (прорыв в тыл)
         unit.dashTimer = Math.random() * 4000 + 4000; // Первый рывок через 4-8 сек
+        unit.orbitDirection = Math.random() > 0.5 ? 1 : -1; // 🔥 Индивидуальное направление орбиты
         unit.dashInterval = Math.random() * 4000 + 4000; // Интервал между рывками
         unit.isDashing = false;
         unit.dashEndTime = 0;
