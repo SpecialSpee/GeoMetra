@@ -104,9 +104,14 @@ function processCanvasClick(pos) {
   if (clickedUnit) {
     selectedUnits = [clickedUnit];
   } else if (selectedUnits.length > 0) {
-    sanitizeSelectedUnits(); // 🔥 Двойная защита: приказ move только своим
+    sanitizeSelectedUnits();
     selectedUnits.forEach(unit => {
       unit.commandQueue = [];
+      
+      // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Сбрасываем цель атаки и подвешенные задачи при ручном перемещении
+      unit.target = null;
+      unit.suspendedQueue = null;
+      
       if (unit.currentMovementAnimation) {
         cancelAnimationFrame(unit.currentMovementAnimation);
         unit.currentMovementAnimation = null;

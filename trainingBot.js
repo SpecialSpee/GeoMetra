@@ -24,11 +24,11 @@
     
     // 🔥 УСКОРЕНИЕ: Фазы сокращены в 2-3 раза
     phases: [
-      { name: "Economy Rush", duration: 160, action: "buildEconomy" },       
-      { name: "Army & Defense", duration: 160, action: "buildArmy" },   
-      { name: "Tech Tier 2", duration: 130, action: "techUp2" },        
-      { name: "Mid Game Army", duration: 160, action: "buildMidArmy" }, 
-      { name: "Tech Tier 3", duration: 130, action: "techUp3" },        
+      { name: "Economy Rush", duration: 80, action: "buildEconomy" },       
+      { name: "Army & Defense", duration: 80, action: "buildArmy" },   
+      { name: "Tech Tier 2", duration: 80, action: "techUp2" },        
+      { name: "Mid Game Army", duration: 50, action: "buildMidArmy" }, 
+      { name: "Tech Tier 3", duration: 80, action: "techUp3" },        
       { name: "Late Game Waves", duration: 9999, action: "largeAttacks" } 
     ],
 	  

@@ -1360,7 +1360,8 @@ function renderGame() {
       ctx.fillStyle = `rgba(100, 200, 255, ${Math.min(coreAlpha, 1)})`; ctx.fill();
       ctx.restore();
     }
-    ctx.rotate(unit.angle);
+        // 🔥 ВИЗУАЛ: Наклон корпуса (Banking) при маневрах
+    ctx.rotate(unit.angle + (unit.leanAngle || 0));
     if (unit.burning) {
       const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 100);
       ctx.strokeStyle = `rgba(255, 0, 0, ${pulse.toFixed(2)})`; ctx.lineWidth = 2.5;
@@ -1592,6 +1593,39 @@ function renderGame() {
   checkVictoryConditions();
   updateBaseNavButton(); updateBase2NavButton(); updateBase3NavButton();
   updateSaleIndicator();
+}
+
+function renderFragments() {
+  if (!gameState.fragments || gameState.fragments.length === 0) return;
+  
+  ctx.save();
+  ctx.translate(camera.offsetX, camera.offsetY);
+  ctx.scale(camera.scale, camera.scale);
+  
+  gameState.fragments.forEach(f => {
+    ctx.save();
+    ctx.translate(f.x, f.y);
+    ctx.rotate(f.angle);
+    ctx.fillStyle = f.color;
+    ctx.globalAlpha = Math.max(0, f.life / f.maxLife); // Плавное исчезновение
+    
+    ctx.beginPath();
+    if (f.points && f.points.length > 0) {
+      // Рисуем сложную форму осколка
+      ctx.moveTo(f.points[0].x, f.points[0].y);
+      for (let i = 1; i < f.points.length; i++) {
+        ctx.lineTo(f.points[i].x, f.points[i].y);
+      }
+    } else {
+      // Запасной вариант (простой квадрат)
+      ctx.rect(-4, -4, 8, 8);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  });
+  
+  ctx.restore();
 }
 
 function updateResourceUI() {
