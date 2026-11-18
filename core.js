@@ -847,25 +847,142 @@ function startRepairmanCycle(repairman) {
     if (!gameState.units.includes(repairman)) return;
     const isIdle = !repairman.busyRepair && repairman.commandQueue.length === 0;
     const isOutside = !repairman.hidden;
+    
     if (isIdle) {
-      const damaged = gameState.buildings.find(b => b.owner === repairman.owner && b.health < b.maxHealth && (!b.repairmen || b.repairmen.length < 3 || b.repairmen.includes(repairman)));
-      if (damaged) {
-        if (!damaged.repairmen) damaged.repairmen = [];
-        if (!damaged.repairmen.includes(repairman)) damaged.repairmen.push(repairman);
-        const distance = Math.hypot(damaged.x - repairman.x, damaged.y - repairman.y);
-        if (distance > 10) { repairman.commandQueue = [{ type: "repair", target: damaged, workshop: repairman.homeWorkshop }]; processCommandQueue(repairman); } 
-        else { startRepairProcess(repairman, { target: damaged, workshop: repairman.homeWorkshop }); }
+      // 🔥 ИСПРАВЛЕНИЕ: Сначала ищем раненых СОЮЗНЫХ ЮНИТОВ в радиусе видимости
+      const repairRadius = repairman.engagementRadius || 500;
+      const damagedUnit = gameState.units.find(u => 
+        u.owner === repairman.owner && 
+        u.health > 0 && 
+        u.health < u.maxHealth * 0.9 && 
+        u !== repairman &&
+        Math.hypot(u.x - repairman.x, u.y - repairman.y) < repairRadius
+      );
+      
+      if (damagedUnit) {
+        const distance = Math.hypot(damagedUnit.x - repairman.x, damagedUnit.y - repairman.y);
+        if (distance > 10) { 
+          repairman.commandQueue = [{ type: "repair", target: damagedUnit, workshop: repairman.homeWorkshop }]; 
+          processCommandQueue(repairman); 
+        } else { 
+          startRepairProcess(repairman, { target: damagedUnit, workshop: repairman.homeWorkshop }); 
+        }
         repairman.busyRepair = true;
-      } else if (isOutside && performance.now() - idleStartTime > 5000) {
-        const w = repairman.homeWorkshop;
-        if (w) {
-          animateMoveAndScale(repairman, w.x, w.y, 0.1, 700, () => { repairman.hidden = true; repairman.inWorkshop = w; });
+      } else {
+        // Если раненых юнитов нет — ищем поврежденные здания (старая логика)
+        const damaged = gameState.buildings.find(b => 
+          b.owner === repairman.owner && 
+          b.health < b.maxHealth && 
+          (!b.repairmen || b.repairmen.length < 3 || b.repairmen.includes(repairman))
+        );
+        if (damaged) {
+          if (!damaged.repairmen) damaged.repairmen = [];
+          if (!damaged.repairmen.includes(repairman)) damaged.repairmen.push(repairman);
+          const distance = Math.hypot(damaged.x - repairman.x, damaged.y - repairman.y);
+          if (distance > 10) { 
+            repairman.commandQueue = [{ type: "repair", target: damaged, workshop: repairman.homeWorkshop }]; 
+            processCommandQueue(repairman); 
+          } else { 
+            startRepairProcess(repairman, { target: damaged, workshop: repairman.homeWorkshop }); 
+          }
+          repairman.busyRepair = true;
+        } else if (isOutside && performance.now() - idleStartTime > 5000) {
+          const w = repairman.homeWorkshop;
+          if (w) {
+            animateMoveAndScale(repairman, w.x, w.y, 0.1, 700, () => { 
+              repairman.hidden = true; 
+              repairman.inWorkshop = w; 
+            });
+          }
         }
       }
-    } else { idleStartTime = performance.now(); }
+    } else { 
+      idleStartTime = performance.now(); 
+    }
     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);
+}
+
+function startRepairProcess(repairman, command) {
+  const target = command.target;
+
+  if (!target || target.health >= target.maxHealth || target.health <= 0) {
+    repairman.busyRepair = false;
+    processCommandQueue(repairman);
+    return;
+  }
+
+  const repairRate = 15;
+  const intervalTime = 100;
+  const REPAIR_COST = { gold: 1, silicon: 4, plasma: 3 };
+  const intervalsPerCycle = 5000 / intervalTime;
+  const costGoldPerInterval = REPAIR_COST.gold / intervalsPerCycle;
+  const costSiliconPerInterval = REPAIR_COST.silicon / intervalsPerCycle;
+  const costPlasmaPerInterval = REPAIR_COST.plasma / intervalsPerCycle;
+
+  repairman.repairIntervalId = setInterval(() => {
+    // 🔥 ПРОВЕРКА ДИСТАНЦИИ: если юнит улетел, прекращаем ремонт
+    const distToTarget = Math.hypot(repairman.x - target.x, repairman.y - target.y);
+    if (distToTarget > 50) {
+      clearInterval(repairman.repairIntervalId);
+      repairman.repairIntervalId = null;
+      repairman.busyRepair = false;
+      if (target.repairmen) {
+        target.repairmen = target.repairmen.filter(r => r !== repairman);
+      }
+      processCommandQueue(repairman);
+      return;
+    }
+
+    if (target.health >= target.maxHealth || target.health <= 0) {
+      clearInterval(repairman.repairIntervalId);
+      repairman.repairIntervalId = null;
+      repairman.busyRepair = false;
+      if (target.repairmen) {
+        target.repairmen = target.repairmen.filter(r => r !== repairman);
+      }
+      processCommandQueue(repairman);
+      return;
+    }
+
+    const resources = target.owner === playerId ? gameState.playerResources : gameState.aiResources;
+
+    if (resources.gold < costGoldPerInterval || resources.silicon < costSiliconPerInterval || resources.plasma < costPlasmaPerInterval) {
+      if (target.owner === playerId) showWarning("Недостаточно ресурсов для ремонта");
+      clearInterval(repairman.repairIntervalId);
+      repairman.repairIntervalId = null;
+      repairman.busyRepair = false;
+      if (target.repairmen) {
+        target.repairmen = target.repairmen.filter(r => r !== repairman);
+      }
+      processCommandQueue(repairman);
+      return;
+    }
+
+    resources.gold -= costGoldPerInterval;
+    resources.silicon -= costSiliconPerInterval;
+    resources.plasma -= costPlasmaPerInterval;
+    updateResourceUI();
+
+    target.health += (repairRate * intervalTime) / 5000;
+
+    if (target.health > target.maxHealth) {
+      target.health = target.maxHealth;
+    }
+
+    if (!repairman.sparkTimer) repairman.sparkTimer = 0;
+    repairman.sparkTimer += intervalTime;
+    if (repairman.sparkTimer >= 1000) {
+      const dist = Math.hypot(repairman.x - target.x, repairman.y - target.y);
+      if (dist <= 50) {
+        spawnSparkEffect(target.x, target.y);
+        spawnSparkEffect(target.x, target.y);
+      }
+      repairman.sparkTimer = 0;
+    }
+
+  }, intervalTime);
 }
 
 function updateResources(deltaTime) {
