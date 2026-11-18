@@ -1476,8 +1476,7 @@ function renderGame() {
       ctx.fillStyle = markerColor; ctx.beginPath(); ctx.arc(0, offsetY, 4, 0, Math.PI * 2); ctx.fill();
     }
     ctx.restore();
-    if (selectedUnits.includes(unit)) drawCircularHP(unit.x, unit.y, 10, unit.health, unit.maxHealth);
-    if (unit.formationBuff) {
+    if (unit.owner === playerId && selectedUnits.includes(unit)) drawCircularHP(unit.x, unit.y, 10, unit.health, unit.maxHealth);    if (unit.formationBuff) {
       ctx.save();
       const t = performance.now(), pulse = 0.5 + 0.5 * Math.sin(t / 200);
       if (unit.formationBuff.type === "speed") { ctx.beginPath(); ctx.arc(unit.x, unit.y, 12, 0, Math.PI * 2); ctx.strokeStyle = `rgba(0,255,255,${0.2 + 0.3 * pulse})`; ctx.lineWidth = 1.5; ctx.stroke(); } 
@@ -1510,11 +1509,36 @@ function renderGame() {
   });
 
   gameState.particles.forEach(p => {
-    ctx.fillStyle = p.color; ctx.globalAlpha = p.life / p.maxLife;
-    ctx.beginPath(); ctx.arc(p.x, p.y, 2, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = 1;
-  });
+    if (isInFogOfWar(p.x, p.y)) return; // Не рисуем в тумане
+    
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+    
+    // 🔥 УЛУЧШЕНИЕ: Добавляем свечение для ярких эффектов
+    if (p.flash || p.type === "sparkLine") {
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 10 * camera.scale;
+    }
 
+    if (p.type === "laser" || p.type === "sparkLine") {
+      ctx.strokeStyle = p.color; 
+      ctx.lineWidth = (p.thickness || 2) * camera.scale;
+      ctx.beginPath(); 
+      ctx.moveTo(p.x, p.y); 
+      ctx.lineTo(p.x + Math.cos(p.angle) * p.length, p.y + Math.sin(p.angle) * p.length); 
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = p.color; 
+      ctx.beginPath(); 
+      // 🔥 УЛУЧШЕНИЕ: Увеличиваем базовый радиус с 2 до 4, умножаем на масштаб
+      ctx.arc(p.x, p.y, (p.radius || 4) * camera.scale, 0, Math.PI * 2); 
+      ctx.fill();
+    }
+    
+    ctx.shadowBlur = 0; // Сброс
+    ctx.restore();
+  });
+  renderFragments();
   gameState.resourceTokens.forEach(token => renderWorkerResourceToken(ctx, token));
   renderShockZones();
   renderBombZones();

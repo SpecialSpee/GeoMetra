@@ -20,9 +20,26 @@ let buildingMenuOpened = false;
 // ============================================================
 // ОСНОВНАЯ ЛОГИКА КЛИКА (ОРИГИНАЛЬНАЯ, ВОССТАНОВЛЕННАЯ)
 // ============================================================
+// ============================================================
+// 🔥 ЗАЩИТА ОТ ВЫДЕЛЕНИЯ ЧУЖИХ ЮНИТОВ (страж selectedUnits)
+// ============================================================
+function sanitizeSelectedUnits() {
+  if (!Array.isArray(selectedUnits)) { selectedUnits = []; return selectedUnits; }
+  // Выбрасываем: мёртвых, чужих, несуществующих, рабочих/ремонтников (их нельзя выделять)
+  selectedUnits = selectedUnits.filter(u =>
+    u && u.alive !== false &&
+    u.health > 0 &&
+    u.owner === playerId &&
+    gameState.units.includes(u) &&
+    u.type !== "worker" && u.type !== "repairman"
+  );
+  return selectedUnits;
+}
+
+
 function processCanvasClick(pos) {
   clearBuildZones();
-
+  sanitizeSelectedUnits(); // 🔥 Чистим список перед обработкой клика
   const clickedResource = getObjectsInRange(pos, 10)
     .find(r => (r.type === "gold" || r.type === "silicon" || r.type === "plasma"));
 
@@ -87,6 +104,7 @@ function processCanvasClick(pos) {
   if (clickedUnit) {
     selectedUnits = [clickedUnit];
   } else if (selectedUnits.length > 0) {
+    sanitizeSelectedUnits(); // 🔥 Двойная защита: приказ move только своим
     selectedUnits.forEach(unit => {
       unit.commandQueue = [];
       if (unit.currentMovementAnimation) {
@@ -323,8 +341,10 @@ canvas.addEventListener("contextmenu", e => {
     );
   }
 
+  sanitizeSelectedUnits();
   if (enemyTarget && selectedUnits.length > 0) {
     selectedUnits.forEach(unit => {
+      unit.suspendedQueue = null; // 🔥 Приказ атаки — сбрасываем память о старых задачах
       unit.commandQueue = [];
       unit.commandQueue.push({ type: "attack", target: enemyTarget });
       if (gameMode === "pvp" && typeof sendPvpAction === "function") {

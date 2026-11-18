@@ -215,22 +215,82 @@ function dynamicMove(unit, target, deltaTime) {
   const dx = target.x - unit.x, dy = target.y - unit.y;
   const distance = Math.hypot(dx, dy);
   if (distance === 0) return;
+  
   const desiredAngle = Math.atan2(dy, dx);
-  unit.angle = lerpAngle(unit.angle, desiredAngle, 0.01);
+  // 🔥 Плавный, но уверенный поворот (было 0.01, ставим 0.08 для заметного, но не резкого разворота)
+  unit.angle = lerpAngle(unit.angle, desiredAngle, 0.08); 
+  
   const frontDirX = Math.cos(unit.angle), frontDirY = Math.sin(unit.angle);
-  const desiredDistance = target instanceof Building ? (Math.max(target.width, target.height) / 2) + 50 : (unit.desiredDistance || 100);
+  
+  // Держимся на оптимальной дистанции для красивого стрейфа
+  const desiredDistance = target instanceof Building 
+    ? (Math.max(target.width, target.height) / 2) + 60 
+    : (unit.desiredDistance || unit.range || 100);
+    
   const distanceError = distance - desiredDistance;
-  const approachStrength = 1.1, orbitStrength = 1.1;
+  
+  // 🔥 КОРРЕКТИРОВКА: +15-20% к маневренности. Достаточно для тактики, без эффекта "турбо"
+  const approachStrength = 0.8; // Было 2.5 (теперь мягкое и естественное сближение)
+  const orbitStrength = 1.0;   // Было 1.8 (теперь легкий, тактический стрейф по дуге, чтобы не слипаться)
+  
   const tanX = -frontDirY, tanY = frontDirX;
   let ax, ay;
-  if (Math.abs(distanceError) < 1) { ax = tanX * orbitStrength; ay = tanY * orbitStrength; } 
-  else { ax = frontDirX * distanceError * approachStrength + tanX * orbitStrength; ay = frontDirY * distanceError * approachStrength + tanY * orbitStrength; }
+  
+  if (Math.abs(distanceError) < 15) { 
+    // На боевой дистанции: легкий стрейф, чтобы юниты "дышали" и уворачивались от снарядов
+    ax = tanX * orbitStrength; 
+    ay = tanY * orbitStrength; 
+  } else { 
+    // Сближение: летим к цели с небольшой коррекцией на обход препятствий/других юнитов
+    ax = frontDirX * distanceError * approachStrength + tanX * orbitStrength; 
+    ay = frontDirY * distanceError * approachStrength + tanY * orbitStrength; 
+  }
+  
   if (typeof unit.vx !== 'number') unit.vx = 0;
   if (typeof unit.vy !== 'number') unit.vy = 0;
-  unit.vx = unit.vx * 0.9 + ax * deltaTime; unit.vy = unit.vy * 0.9 + ay * deltaTime;
+  
+  // 🔥 КОРРЕКТИРОВКА: Более плавная инерция (было 0.85, ставим 0.92). 
+  // Это убирает "дерганье" и делает торможение перед атакой кинематографичным.
+  unit.vx = unit.vx * 0.92 + ax * deltaTime; 
+  unit.vy = unit.vy * 0.92 + ay * deltaTime;
+  
   const currentSpeed = Math.hypot(unit.vx, unit.vy);
-  if (currentSpeed > 50) { unit.vx = (unit.vx / currentSpeed); unit.vy = (unit.vy / currentSpeed); }
-  unit.x += unit.vx * deltaTime; unit.y += unit.vy * deltaTime;
+  
+  // 🔥 КОРРЕКТИРОВКА: Строго ограничиваем скорость. 
+  // Максимум = базовая скорость юнита + 10% на маневр. Никаких 150 по умолчанию!
+  const maxSpeed = (unit.speed || 70) * 1.1; 
+  
+  if (currentSpeed > maxSpeed) { 
+    unit.vx = (unit.vx / currentSpeed) * maxSpeed; 
+    unit.vy = (unit.vy / currentSpeed) * maxSpeed; 
+  }
+  
+  unit.x += unit.vx * deltaTime; 
+  unit.y += unit.vy * deltaTime;
+}
+
+// 🔥 НОВАЯ ФУНКЦИЯ: Умное динамическое сближение с врагом (вместо линейного moveUnit)
+function dynamicApproach(unit, target, callback) {
+  // Если юнит или цель уничтожены — прерываем и передаем управление дальше
+  if (!unit || unit.health <= 0 || !target || target.health <= 0) {
+    if (callback) callback();
+    return;
+  }
+
+  const dist = Math.hypot(unit.x - target.x, unit.y - target.y);
+  
+  // Если мы достигли дистанции атаки, прекращаем сближение и передаем управление очереди команд
+  if (dist <= unit.range) {
+    if (callback) callback();
+    return;
+  }
+
+  // 🔥 МАГИЯ: Используем физику dynamicMove для сближения!
+  // Это дает плавные повороты, стрейфы и обходы препятствий/других юнитов
+  dynamicMove(unit, target, 1 / 60);
+
+  // Продолжаем динамическое сближение в следующем кадре
+  requestAnimationFrame(() => dynamicApproach(unit, target, callback));
 }
 
 function moveUnit(unit, targetX, targetY, callback, spreadDone = false) {
@@ -247,13 +307,26 @@ function moveUnit(unit, targetX, targetY, callback, spreadDone = false) {
     const currentTime = performance.now();
     const elapsed = (currentTime - startTime) / 1000;
     const progress = Math.min(elapsed / duration, 1);
-    if (unit.owner === "ai" && unit.type !== "worker" && unit.type !== "repairman" && !unit.isRetreating) {
-      const enemies = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range || 150).filter(e => e.owner !== unit.owner);
+    // 🔥 ИСПРАВЛЕНИЕ: ТЕПЕРЬ И ИГРОК, И ИИ проверяют врагов во время движения!
+    if ((unit.owner === "ai" || unit.owner === playerId) && unit.type !== "worker" && unit.type !== "repairman" && !unit.isRetreating) {
+      const enemies = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range || 150).filter(e => e.owner !== unit.owner && e.health > 0);
       if (enemies.length > 0) {
+        // 🔥 Сохраняем текущую задачу, чтобы вернуться к ней после боя (механика Доты!)
+        if (!unit.suspendedQueue && unit.commandQueue.length > 0) {
+          unit.suspendedQueue = [...unit.commandQueue];
+        }
+        
         unit.commandQueue = [];
         const nearestEnemy = enemies.reduce((prev, curr) => Math.hypot(curr.x - unit.x, curr.y - unit.y) < Math.hypot(prev.x - unit.x, prev.y - unit.y) ? curr : prev);
         unit.commandQueue.push({ type: "attack", target: nearestEnemy });
-        if (unit.currentMovementAnimation) { cancelAnimationFrame(unit.currentMovementAnimation); unit.currentMovementAnimation = null; }
+        
+        if (unit.currentMovementAnimation) { 
+          cancelAnimationFrame(unit.currentMovementAnimation); 
+          unit.currentMovementAnimation = null; 
+        }
+        
+        // Мгновенно начинаем атаку или движение к врагу
+        if (typeof processCommandQueue === "function") processCommandQueue(unit);
         return;
       }
     }
@@ -497,6 +570,10 @@ function dynamicAttackElite(unit, target, deltaTime) {
 }
 
 function processCommandQueue(unit) {
+  // 🔥 АБСОЛЮТНАЯ ЗАЩИТА: чужой юнит не выполняет чужие приказы
+  if (!unit || unit.health <= 0) return;
+  if (unit.owner !== playerId && unit.owner !== "ai") return;
+
   if (unit.shocked) { unit.commandQueue = []; return; }
   if (unit.commandQueue.length === 0) {
     if (unit.type === "fighter" && getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range).filter(e => e.owner !== unit.owner && e.health > 0).length > 0) {
@@ -520,21 +597,31 @@ function processCommandQueue(unit) {
   } else if (command.type === "attack") {
     const target = command.target;
     if (!target || typeof target.x !== "number" || typeof target.y !== "number" || target.health <= 0 || (!gameState.buildings.includes(target) && !gameState.units.includes(target))) {
-      // ИСПРАВЛЕНО: Не просто обнуляем, а даем "иммунитет" на 6 секунд, чтобы GNN не перехватил юнита
       unit.target = null;
       unit.lastAutonomousActionTime = performance.now(); 
-      // Не очищаем queue полностью, пусть startFighterCycle сам найдет новую цель
       return;
     }
 
     unit.target = target;
     
-    // 🔥 ХУК ДОСТИЖЕНИЯ ЦЕЛИ (начало атаки)
     if (typeof window.GnnEventHooks !== 'undefined') window.GnnEventHooks.onUnitReachedTarget(unit, target);
     
     const dist = Math.hypot(unit.x - target.x, unit.y - target.y);
-    if (unit.range && dist > unit.range) { moveUnit(unit, target.x, target.y, () => { processCommandQueue(unit); }); } 
-    else { dynamicAttack(unit, target, 1 / 60); requestAnimationFrame(() => processCommandQueue(unit)); }
+    
+    // 🔥 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: ВСЕГДА используем dynamicMove для сближения с врагом!
+    if (unit.range && dist > unit.range) {
+      // Устанавливаем желаемую дистанцию для красивого стрейфа (orbit) вокруг цели
+      unit.desiredDistance = unit.range; 
+      
+      dynamicApproach(unit, target, () => { 
+        // Когда динамическое сближение завершилось (мы в радиусе), запускаем очередь снова
+        processCommandQueue(unit); 
+      });
+    } else {
+      // Мы уже в радиусе, сразу начинаем динамическую атаку (которая тоже использует dynamicMove для стрейфа!)
+      dynamicAttack(unit, target, 1 / 60); 
+      requestAnimationFrame(() => processCommandQueue(unit)); 
+    }
   } else if (command.type === "gather") {
     const resource = command.resource;
     if (!resource || typeof resource.x !== "number" || typeof resource.y !== "number") { processCommandQueue(unit); return; }
@@ -574,27 +661,77 @@ function processCommandQueue(unit) {
 }
 
 function checkForEnemiesAndAttack(unit) {
-  if (!unit || !unit.range) return;
+  // Базовые проверки: юнит должен быть жив, иметь дальность атаки и не отступать
+  if (!unit || !unit.range || unit.isRetreating || unit.health <= 0) return;
   
-  // 🔥 ИСПРАВЛЕНИЕ: Если юнит в панике или целенаправленно отходит, не перехватываем управление!
-  if (unit.isRetreating) return;
-
+  // 1. Ищем врагов (юнитов и здания) в радиусе
   const enemiesInRange = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
     .filter(e => e.owner !== unit.owner && e.health > 0);
     
   if (enemiesInRange.length > 0) {
+    // Если мы уже атакуем эту конкретную цель и она жива — ничего не меняем, продолжаем бой
     if (unit.target && unit.target.health > 0 && enemiesInRange.includes(unit.target)) {
       return; 
     }
     
+    // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ №1: ЖЕСТКИЙ СБРОС ДВИЖЕНИЯ!
+    // Если юнит сейчас летит куда-то по анимации, мы НЕМЕДЛЕННО останавливаем его.
+    if (unit.currentMovementAnimation) {
+      cancelAnimationFrame(unit.currentMovementAnimation);
+      unit.currentMovementAnimation = null;
+    }
+
+    // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ №2: Сохраняем прерванную задачу (если она была)
+    if (unit.commandQueue.length > 0 && !unit.suspendedQueue) {
+      unit.suspendedQueue = [...unit.commandQueue]; 
+    }
+    
+    // Очищаем текущую очередь, чтобы начать бой с ближайшим врагом
     unit.commandQueue = [];
     unit.target = enemiesInRange.sort((a, b) => 
       Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
     )[0];
     
+    // Ставим приоритетную команду атаки
     unit.commandQueue.push({ type: "attack", target: unit.target });
+    
+    // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ №3: НЕМЕДЛЕННО запускаем выполнение новой команды!
+    // Это заставит юнита либо подойти к врагу, либо сразу начать стрелять в этом же кадре.
+    processCommandQueue(unit);
+    
   } else {
-    if (unit.target) unit.target = null;
+    // 2. Врагов в радиусе НЕТ. Проверяем, нужно ли вернуться к старой задаче.
+    if (unit.suspendedQueue && unit.suspendedQueue.length > 0) {
+      
+      const nextTask = unit.suspendedQueue[0];
+      let isTaskValid = true;
+
+      // Проверяем, жива ли цель из оригинального приказа
+      if ((nextTask.type === "move" || nextTask.type === "attack") && nextTask.target) {
+        if (nextTask.target.health <= 0) {
+          isTaskValid = false; // Цель уничтожена, идти туда больше нет смысла
+        }
+      }
+
+      if (isTaskValid) {
+        // 🔥 ВОЗВРАТ: Восстанавливаем оригинальную очередь команд!
+        unit.commandQueue = [...unit.suspendedQueue];
+        unit.suspendedQueue = null; // Очищаем "память"
+        unit.target = null; // Сбрасываем, чтобы processCommandQueue взял цель из восстановленной очереди
+        
+        // Сразу запускаем выполнение восстановленной задачи
+        processCommandQueue(unit); 
+      } else {
+        // Задача устарела. Просто очищаем память и ждем новых приказов
+        unit.suspendedQueue = null;
+        unit.target = null;
+      }
+    } else {
+      // Обычное поведение: врагов нет, сохраненных задач нет
+      if (unit.target && unit.target.health <= 0) {
+        unit.target = null;
+      }
+    }
   }
 }
 
@@ -1010,6 +1147,39 @@ function updateParticles(deltaTime) {
     p.x += p.vx * particleUpdateAccumulator; p.y += p.vy * particleUpdateAccumulator;
   }
   particleUpdateAccumulator = 0;
+}
+
+function renderFragments() {
+  if (!gameState.fragments || gameState.fragments.length === 0) return;
+  
+  ctx.save();
+  ctx.translate(camera.offsetX, camera.offsetY);
+  ctx.scale(camera.scale, camera.scale);
+  
+  gameState.fragments.forEach(f => {
+    ctx.save();
+    ctx.translate(f.x, f.y);
+    ctx.rotate(f.angle);
+    ctx.fillStyle = f.color;
+    ctx.globalAlpha = Math.max(0, f.life / f.maxLife); // Плавное исчезновение
+    
+    ctx.beginPath();
+    if (f.points && f.points.length > 0) {
+      // Рисуем сложную форму осколка
+      ctx.moveTo(f.points[0].x, f.points[0].y);
+      for (let i = 1; i < f.points.length; i++) {
+        ctx.lineTo(f.points[i].x, f.points[i].y);
+      }
+    } else {
+      // Запасной вариант (простой квадрат)
+      ctx.rect(-4, -4, 8, 8);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  });
+  
+  ctx.restore();
 }
 
 function updateFragments(deltaTime) {
@@ -1677,6 +1847,7 @@ function processProductionQueue(building) {
     }
   }
 }
+
 // Пример: при уничтожении здания (или продаже) вызываем функцию для маркировки зоны
 function onBuildingDestroyed(building) {
 	if (gameMode === "neural" && building.owner === "ai") {
@@ -1724,8 +1895,6 @@ function onBuildingDestroyed(building) {
   //reactToAttack();
   //mobilizeDefendersAround(building);
 }
-
-
 
 function updateGameState(deltaTime) {
   // Обновляем квадродерево
@@ -1793,6 +1962,8 @@ function gameLoop(time) {
   });
   gameState.buildings = gameState.buildings.filter(b => b.health > 0);
   updateResourceUI();
+    // 🔥 Раз в кадр подчищаем selectedUnits от мёртвых и чужих
+  if (selectedUnits.length > 0) sanitizeSelectedUnits();
   gameState.units.filter(unit => unit.owner === playerId && ["fighter", "assault", "elite"].includes(unit.type)).forEach(unit => checkForEnemiesAndAttack(unit));
   updateGameState(deltaTime);
   try {
@@ -2206,12 +2377,31 @@ function selectAllFighters() {
 }
 
 function commandAttack() {
+    sanitizeSelectedUnits();
+  if (!selectedUnits.length) return;
   selectedUnits.forEach(unit => {
     const nearestEnemyBuilding = findNearestEnemyBuilding(unit.x, unit.y);
     if (nearestEnemyBuilding) {
-      unit.commandQueue = [{ type: "move", x: nearestEnemyBuilding.x, y: nearestEnemyBuilding.y }, { type: "attack", target: nearestEnemyBuilding }];
+      
+      // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Игрок дал прямой приказ! 
+      // Мы стираем любую "подвешенную" память, чтобы юнит не вернулся к старой задаче после этой атаки.
+      unit.suspendedQueue = null;
+
+      unit.commandQueue = [
+        { type: "move", x: nearestEnemyBuilding.x, y: nearestEnemyBuilding.y }, 
+        { type: "attack", target: nearestEnemyBuilding }
+      ];
       unit.target = nearestEnemyBuilding;
-      if (gameMode === "pvp") sendPvpAction({ type: "attack", unitId: unit.id, targetId: nearestEnemyBuilding.id, x: nearestEnemyBuilding.x, y: nearestEnemyBuilding.y });
+      
+      if (gameMode === "pvp") {
+        sendPvpAction({ 
+          type: "attack", 
+          unitId: unit.id, 
+          targetId: nearestEnemyBuilding.id, 
+          x: nearestEnemyBuilding.x, 
+          y: nearestEnemyBuilding.y 
+        });
+      }
     }
   });
 }
@@ -2227,33 +2417,28 @@ function findNearestEnemyBuilding(x, y) {
 }
 
 function commandDefence() {
+    sanitizeSelectedUnits();
+  if (!selectedUnits.length) return;
   const myBase = playerBase || gameState.buildings.find(b => b.owner === playerId && b.type.startsWith("base"));
   if (!myBase) return;
+  
   selectedUnits.forEach(unit => {
-    unit.commandQueue = [{ type: "move", x: myBase.x, y: myBase.y }]; unit.defending = true;
-    if (gameMode === "pvp") sendPvpAction({ type: "defend", unitId: unit.id, x: myBase.x, y: myBase.y });
-  });
-}
-
-function applyBombDamage(x, y) {
-  gameState.units.forEach(unit => {
-    if (unit.owner !== playerId) {
-      const dist = Math.hypot(unit.x - x, unit.y - y);
-      if (dist <= bombRadius) {
-        const damage = bombMaxDamage * (1 - dist / bombRadius);
-        if (typeof window.onDamage === "function") {
-          window.onDamage(unit, damage);
-        } else {
-          unit.health -= damage;
-        }
-        if (unit.health <= 0) removeUnit(unit);
-        else { unit.burning = true; unit.burnTime = performance.now(); unit.burnDuration = 5000; }
-      }
+    // 🔥 СБРОС ПАМЯТИ: Игрок дал прямой приказ на защиту, старые "подвешенные" задачи аннулируются
+    unit.suspendedQueue = null;
+    
+    unit.commandQueue = [{ type: "move", x: myBase.x, y: myBase.y }]; 
+    unit.defending = true;
+    unit.target = null; // Сбрасываем текущую цель атаки, чтобы начать с чистого листа
+    
+    if (gameMode === "pvp") {
+      sendPvpAction({ type: "defend", unitId: unit.id, x: myBase.x, y: myBase.y });
     }
   });
 }
 
 function setFormation(type) {
+    sanitizeSelectedUnits();
+  if (!selectedUnits.length) return;
   if (selectedUnits.length === 0) return;
   const centerX = selectedUnits.reduce((sum, u) => sum + u.x, 0) / selectedUnits.length;
   const centerY = selectedUnits.reduce((sum, u) => sum + u.y, 0) / selectedUnits.length;
@@ -2411,6 +2596,8 @@ function handlePerkClick(pos) {
 }
 
 function commandScout() {
+    sanitizeSelectedUnits();
+  if (!selectedUnits.length) return;
   if (!selectedUnits.length) return;
   selectedUnits.forEach(unit => {
     const target = scoutUnitToFog(unit);
@@ -2437,22 +2624,39 @@ function findFogTargetAroundBase(base, radius = 400, angleAttempts = 20) {
 }
 
 function scoutUnitToFog(unit) {
+  // 🔥 СБРОС ПАМЯТИ: Игрок приказал разведывать, забываем старые задачи
+  unit.suspendedQueue = null;
+  unit.target = null;
+
+  // 1. Приоритет: скрытые точки захвата
   if (Array.isArray(gameState.capturePoints)) {
     const hidden = gameState.capturePoints.find(p => {
       const col = Math.floor(p.x / FOG_CELL_SIZE), row = Math.floor(p.y / FOG_CELL_SIZE);
       return fogMap?.[row]?.[col] === 0;
     });
-    if (hidden) { unit.commandQueue = [{ type: "move", x: hidden.x, y: hidden.y }]; unit.target = null; return hidden; }
+    if (hidden) { 
+      unit.commandQueue = [{ type: "move", x: hidden.x, y: hidden.y }]; 
+      return hidden; 
+    }
   }
-  const startCol = Math.floor(unit.x / FOG_CELL_SIZE), startRow = Math.floor(unit.y / FOG_CELL_SIZE), maxRadius = 50;
+  
+  // 2. Поиск ближайшей клетки тумана войны
+  const startCol = Math.floor(unit.x / FOG_CELL_SIZE);
+  const startRow = Math.floor(unit.y / FOG_CELL_SIZE);
+  const maxRadius = 50;
+  
   for (let r = 1; r < maxRadius; r++) {
     for (let dx = -r; dx <= r; dx++) {
       for (let dy = -r; dy <= r; dy++) {
-        if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+        if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue; // Проверяем только периметр квадрата
+        
         const col = startCol + dx, row = startRow + dy;
         if (fogMap?.[row]?.[col] === 0) {
-          const x = col * FOG_CELL_SIZE + FOG_CELL_SIZE / 2, y = row * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
-          unit.commandQueue = [{ type: "move", x, y }]; unit.target = null; return { x, y };
+          const x = col * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
+          const y = row * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
+          
+          unit.commandQueue = [{ type: "move", x, y }]; 
+          return { x, y };
         }
       }
     }

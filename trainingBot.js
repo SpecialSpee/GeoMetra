@@ -11,10 +11,10 @@
 	
   // 🔥 PBT: Профили противников для эволюционного обучения
   window.OPPONENT_PROFILES = [
-    { name: "Rush", aggression: 0.9, eco: 0.3, expand: 0.1 },
-    { name: "Turtle", aggression: 0.2, eco: 0.9, expand: 0.4 },
-    { name: "Balanced", aggression: 0.5, eco: 0.6, expand: 0.5 },
-    { name: "Macro", aggression: 0.4, eco: 0.8, expand: 0.8 }
+    { name: "Rush", aggression: 0.9, eco: 0.5, expand: 0.5 },
+    //{ name: "Turtle", aggression: 0.2, eco: 0.9, expand: 0.4 },
+    //{ name: "Balanced", aggression: 0.7, eco: 0.6, expand: 0.6 },
+    //{ name: "Macro", aggression: 0.4, eco: 0.8, expand: 0.8 }
   ];
 
   const TrainingBot = {

@@ -208,7 +208,7 @@ function aiPlaceBuilding(buildingType, x, y) {
 
   return building;
 }
-// === 5. Найм юнитов (Вызывается GnnAI) ===
+// === 5. Найм рабочих (Вызывается GnnAI) ===
 function aiHireWorker(building) {
   if (!building || building.type !== "warehouse" || !building.active) return;
   if (building.workers >= building.maxDeliveryWorkers) return;
@@ -233,7 +233,7 @@ function aiHireWorker(building) {
     });
   }
 }
-
+// === 6. Найм мастеров (Вызывается GnnAI) ===
 function aiHireRepairMan(repairWorkshop) {
   if (!repairWorkshop.active || repairWorkshop.repairman >= repairWorkshop.capacity) return;
   if (!canSpendResources(REPAIRMAN_COST, "ai")) return;
@@ -256,7 +256,7 @@ function aiHireRepairMan(repairWorkshop) {
     });
   }
 }
-// === 6. Экономика и производство (Вызывается GnnAI) ===
+// === 7. Экономика и производство (Вызывается GnnAI) ===
 function canSpendResources(cost, owner) {
   // Fallback на прямое чтение, если глобальная функция getResourcesByOwner отсутствует
   const resources = typeof getResourcesByOwner === "function" 
