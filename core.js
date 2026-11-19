@@ -8,6 +8,157 @@ let particleUpdateAccumulator = 0;
 let idCollisionCount = 0;
 const PARTICLE_UPDATE_INTERVAL = 0.033;
 
+
+
+
+
+// ==========================================
+// 🧱 ФУНДАМЕНТ ФИКСОВ — состояние и хелперы
+// ==========================================
+const FX_MIL = ["fighter", "assault", "elite"];
+const FX_STATE = {
+  frame: 0,
+  stats: { phantom: 0, ghost: 0, zombie: 0, dupPool: 0, dupAdd: 0, doubleRemove: 0, culled: 0, mg: 0, rockets: 0 },
+  _bs: new Set(), _us: new Set(), _ts: -1e9
+};
+
+function fxNum(v, d) { return (typeof v === "number" && isFinite(v)) ? v : d; }
+function fxClamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+
+function fxInvalidate() { FX_STATE._ts = -1e9; }
+function fxSets() {
+  const t = performance.now();
+  if (t - FX_STATE._ts > 100) {
+    FX_STATE._bs = new Set(gameState.buildings);
+    FX_STATE._us = new Set(gameState.units);
+    FX_STATE._ts = t;
+  }
+}
+function fxInGame(o) { fxSets(); return FX_STATE._bs.has(o) || FX_STATE._us.has(o); }
+
+function fxValidTarget(t) {
+  if (!t || !(fxNum(t.health, 0) > 0) || t.destroyed || t.isSelling) return false;
+  fxSets();
+  return FX_STATE._bs.has(t) || (FX_STATE._us.has(t) && t.alive !== false);
+}
+
+function fxBaseFor(owner) {
+  const ok = b => b && b.health > 0 && fxInGame(b);
+  if (owner === "player" && typeof playerBase !== "undefined" && ok(playerBase)) return playerBase;
+  if (owner === "ai" && typeof aiBase !== "undefined" && ok(aiBase)) return aiBase;
+  return gameState.buildings.find(b => b.owner === owner && b.health > 0 &&
+    (String(b.type).startsWith("base") || b.type === "warehouse")) || null;
+}
+
+function fxResetTransient(u) {
+  u.__epoch = (u.__epoch || 0) + 1;
+  u.__phaseInit = false; u.__physFrame = -1; u.__eliteFrame = -1;
+  u.suspendedQueue = null;
+  u.moveTarget = null; u.moveCallback = null;
+  u.commandQueue = []; u.target = null;
+  u.isRetreating = false; u.isDashing = false;
+  u.dashEndTime = 0; u.postDashTimer = 0; u.dashVector = { x: 0, y: 0 };
+  u.lastAutonomousActionTime = 0; u.lastBurnTick = 0; u.lastShockEffect = 0;
+  u.sparkTimer = 0; u.isRepairing = false; u.busyRepair = false; u.__repairTarget = null;
+  u.missionLog = null; u.shockedUntil = 0; u.shocked = false;
+  u.burning = false; u.burnTime = 0; u.burnStartTime = 0; u.burnDuration = 0;
+  u.hidden = false; u.hiding = false; u.inWorkshop = null;
+  u.delivering = false; u.carrying = 0; u.carriedResourceToken = null;
+  u.assignedResource = null; u.assignedResourceType = null;
+  u.laserBeam = null; u.vx = 0; u.vy = 0;
+  if (u.repairIntervalId) { clearInterval(u.repairIntervalId); u.repairIntervalId = null; }
+  if (u.burningIntervalId) { clearInterval(u.burningIntervalId); u.burningIntervalId = null; }
+  if (u.currentMovementAnimation) { cancelAnimationFrame(u.currentMovementAnimation); u.currentMovementAnimation = null; }
+  if (u.waitingAnimation) { cancelAnimationFrame(u.waitingAnimation); u.waitingAnimation = null; }
+  if (u.__cycleId) { cancelAnimationFrame(u.__cycleId); u.__cycleId = null; }
+  if (u.__repairCycleId) { cancelAnimationFrame(u.__repairCycleId); u.__repairCycleId = null; }
+  u.__fragmentsSpawned = false;
+}
+
+function fxEnsureCombat(u) {
+  if (!u) return;
+  u.vx = fxNum(u.vx, 0); u.vy = fxNum(u.vy, 0);
+  u.angle = fxNum(u.angle, 0); u.scale = fxNum(u.scale, 1);
+  u.lastFireTime = fxNum(u.lastFireTime, 0);
+  if (u.strafeDirection !== 1 && u.strafeDirection !== -1) u.strafeDirection = Math.random() < .5 ? -1 : 1;
+  if (u.orbitDirection !== 1 && u.orbitDirection !== -1) u.orbitDirection = Math.random() < .5 ? -1 : 1;
+  u.strafeTimer = fxNum(u.strafeTimer, Math.random() * 2000 + 800);
+  u.orbitPhase = fxNum(u.orbitPhase, Math.random() * Math.PI * 2);
+  u.postDashTimer = fxNum(u.postDashTimer, 0);
+  u.isDashing = !!u.isDashing;
+  u.dashEndTime = fxNum(u.dashEndTime, 0);
+  if (!u.dashVector) u.dashVector = { x: 0, y: 0 };
+
+  if (u.type === "fighter") {
+    u.range = fxNum(u.range, 180); u.fireRate = fxNum(u.fireRate, 350);
+    u.dashTimer = fxNum(u.dashTimer, Math.random() * 4000 + 4000);
+  }
+  if (u.type === "assault") {
+    u.machineGunRange = fxNum(u.machineGunRange, 200);
+    u.machineGunFireRate = fxNum(u.machineGunFireRate, 250);
+    u.rocketRange = fxNum(u.rocketRange, 280);
+    u.range = fxNum(u.range, 280);
+    u.lastMachineGunFireTime = fxNum(u.lastMachineGunFireTime, 0);
+    u.lastRocketFireTime = fxNum(u.lastRocketFireTime, 0);
+    u.figure8Phase = fxNum(u.figure8Phase, Math.random() * Math.PI * 2);
+    u.rocketBurstCount = fxNum(u.rocketBurstCount, 0);
+    u.rocketBurstTimer = fxNum(u.rocketBurstTimer, 0);
+    if (!u.__phaseInit) {
+      u.combatPhase = "approach";
+      u.phaseTimer = 2500 + Math.random() * 1500;
+      u.__phaseInit = true;
+      u.__lastShotAt = performance.now();
+    } else {
+      u.phaseTimer = fxNum(u.phaseTimer, 2000);
+      if (u.combatPhase !== "approach" && u.combatPhase !== "retreat") u.combatPhase = "approach";
+      u.__lastShotAt = fxNum(u.__lastShotAt, performance.now());
+    }
+  }
+  if (u.type === "elite") {
+    u.range = fxNum(u.range, 500);
+    u.meleeRange = fxNum(u.meleeRange, 200);
+    u.artilleryRange = fxNum(u.artilleryRange, 500);
+    u.laserRange = fxNum(u.laserRange, 300);
+    u.meleeCooldown = fxNum(u.meleeCooldown, 1000);
+    u.artilleryCooldown = fxNum(u.artilleryCooldown, 10000);
+    u.laserCooldown = fxNum(u.laserCooldown, 5000);
+    u.lastMeleeAttack = fxNum(u.lastMeleeAttack, 0);
+    u.lastArtilleryAttack = fxNum(u.lastArtilleryAttack, 0);
+    u.lastLaserAttack = fxNum(u.lastLaserAttack, 0);
+    u.dashTimer = fxNum(u.dashTimer, 1e9);
+  }
+}
+
+function fxSanitizeOrders(u) {
+  if (!u) return;
+  if (u.target && !fxValidTarget(u.target)) { u.target = null; FX_STATE.stats.ghost++; }
+  if (Array.isArray(u.commandQueue) && u.commandQueue.length) {
+    const n = u.commandQueue.length;
+    u.commandQueue = u.commandQueue.filter(c => {
+      if (!c) return false;
+      if (c.type === "attack") return fxValidTarget(c.target);
+      if (c.type === "gather") return c.resource && c.resource.amount > 0 && !c.resource.depleted;
+      if (c.type === "repair") return c.target && c.target.health > 0 && c.target.health < c.target.maxHealth;
+      if (c.type === "move") return isFinite(c.x) && isFinite(c.y);
+      return true;
+    });
+    if (u.commandQueue.length !== n) FX_STATE.stats.phantom++;
+  }
+  if (Array.isArray(u.suspendedQueue) && u.suspendedQueue.length) {
+    u.suspendedQueue = u.suspendedQueue.filter(c => c &&
+      (c.type !== "attack" || fxValidTarget(c.target)) &&
+      (c.type !== "gather" || (c.resource && c.resource.amount > 0)));
+    if (!u.suspendedQueue.length) u.suspendedQueue = null;
+  }
+  if (u.type === "repairman" && u.busyRepair && !u.repairIntervalId && !u.moveTarget &&
+      !(u.commandQueue || []).some(c => c.type === "repair")) u.busyRepair = false;
+}
+
+
+
+
+
+
 // ==========================================
 // 🔥 GNN СОБЫТИЙНЫЕ ХУКИ (Mission Logging)
 // ==========================================
@@ -67,33 +218,54 @@ window.GnnEventHooks = {
 };
 
 function addUnit(unit) {
-  // 🔥 АВТОМАТИЧЕСКОЕ ПРИСВАИВАНИЕ ID, если его нет
-  if (!unit.id || unit.id === undefined) {
-    unit.id = generateUniqueUnitId();
-  }
-  
-  // ПРОВЕРКА: нет ли уже юнита с таким ID?
-  const existingUnit = gameState.units.find(u => u.id === unit.id);
-  if (existingUnit) {
-    console.warn(`[⚠️ ID COLLISION] Юнит с ID ${unit.id} уже существует! Генерируем новый...`);
-    unit.id = generateUniqueUnitId();
-  }
-  
-  gameState.units.push(unit);
-  if (unit.type === "fighter" || unit.type === "assault" || unit.type === "elite") gameState.attackers.push(unit);
-  if (unit.type === "repairman") gameState.repairmen.push(unit);
-  if (unit.defending) gameState.defenders.push(unit);
+if (!unit) return unit;
+// 🛡️ Проверяем РЕАЛЬНОЕ присутствие в массиве, а не флаг
+if (gameState.units.indexOf(unit) !== -1) { FX_STATE.stats.dupAdd++; return unit; }
+unit.__inGame = true;
+unit.__removed = false;
+unit.__inPool = false;
+unit.__pooled = false;
+fxEnsureCombat(unit);
+fxSanitizeOrders(unit);
+// 🔥 АВТОМАТИЧЕСКОЕ ПРИСВАИВАНИЕ ID, если его нет
+if (!unit.id) unit.id = generateUniqueUnitId();
+// ПРОВЕРКА: нет ли уже ДРУГОГО юнита с таким ID?
+if (gameState.units.some(u => u !== unit && u.id === unit.id)) {
+console.warn(`[⚠️ ID COLLISION] Юнит с ID ${unit.id} уже существует! Генерируем новый...`);
+unit.id = generateUniqueUnitId();
+}
+gameState.units.push(unit);
+if (unit.type === "fighter" || unit.type === "assault" || unit.type === "elite") gameState.attackers.push(unit);
+if (unit.type === "repairman") gameState.repairmen.push(unit);
+if (unit.defending) gameState.defenders.push(unit);
+fxInvalidate();
+return unit;
 }
 
 function removeUnit(unit, killer = null) {
-  // 🔥 ХУК СМЕРТИ
-  if (typeof window.GnnEventHooks !== 'undefined') window.GnnEventHooks.onUnitDeath(unit, killer);
-  
-  cleanupUnitState(unit);
+if (!unit) return;
+// 🛡️ Смерть строго один раз: иначе двойные очки, двойные осколки и дубль в пуле
+if (gameState.units.indexOf(unit) !== -1) {
+  unit.__removed = false;   // объект реально в игре — снимаем протухшие флаги
+  unit.__inPool = false;
+} else if (unit.__removed || unit.__inPool) {
+  FX_STATE.stats.doubleRemove++;
+  return;
+}
+unit.__removed = true;
+unit.__inGame = false;
+if (!killer && unit.__lastAttacker) killer = unit.__lastAttacker;
+fxInvalidate();
+// 🔥 ХУК СМЕРТИ
+if (typeof window.GnnEventHooks !== 'undefined') window.GnnEventHooks.onUnitDeath(unit, killer);
+cleanupUnitState(unit);
   for (let key in unitGroups) unitGroups[key] = unitGroups[key].filter(u => u !== unit);
   if (gameMode === "pvp" && unit.owner === playerId) sendPvpAction({ type: "die", unitId: unit.id });
+// 🛡️ ОСКОЛКИ СТРОГО ОДИН РАЗ (onDamage уже мог их породить)
+if (!unit.__fragmentsSpawned) {
+  unit.__fragmentsSpawned = true;
   spawnDestructionFragments(unit.x, unit.y, unit.width || 10, unit.height || 10, unit.type);
-  
+}  
   if (unit.assignedResource) { 
     unit.assignedResource.currentWorkers = Math.max(0, unit.assignedResource.currentWorkers - 1); 
     unit.assignedResource = null; 
@@ -144,8 +316,19 @@ function cleanUpBuildingReferences() {
 }
 
 function releaseUnitToPool(unit) {
-  // 🔥 ПОЛНЫЙ СБРОС всех полей перед возвратом
-  unit.alive = false;
+// 🛡️ Один объект не может лежать в пуле дважды
+if (unit.__inPool) { FX_STATE.stats.dupPool++; return; }
+unit.__inPool = true;
+unit.__inGame = false;
+unit.__epoch = (unit.__epoch || 0) + 1;
+// 🧹 Стираем память прошлой жизни — источник фантомных приказов
+unit.suspendedQueue = null;
+unit.moveTarget = null;
+unit.moveCallback = null;
+unit.isRetreating = false;
+fxInvalidate();
+// 🔥 ПОЛНЫЙ СБРОС всех полей перед возвратом
+unit.alive = false;
   unit.commandQueue = [];
   unit.target = null;
   unit.hidden = false;
@@ -246,12 +429,29 @@ function fireBullet(shooter, enemy) {
     bulletConfig = { speed: 300, lifetime: 1.5, damage: 10 };
   }
   
-  const bullet = getBulletFromPool(bulletType, shooter, enemy, bulletConfig);
-  
-// 🔥 ЯВНЫЙ СБРОС ЦВЕТА ПЕРЕД УСТАНОВКОЙ НОВОГО
-  bullet.color = null;
-  bullet.isArtillery = false;
-  bullet.isMelee = false;
+const bullet = getBulletFromPool(bulletType, shooter, enemy, bulletConfig);
+// 🔥 ЯВНЫЙ СБРОС ЦВЕТА И ВСЕХ ФЛАГОВ ПЕРЕД УСТАНОВКОЙ НОВОГО
+bullet.color = null;
+bullet.isArtillery = false;
+bullet.isMelee = false;
+bullet.isMissile = (bulletType === 'missile');
+bullet.alive = true;
+bullet.shooter = shooter;
+bullet.target = enemy;
+bullet.x = shooter.x;
+bullet.y = shooter.y;
+bullet.angle = Math.atan2(enemy.y - shooter.y, enemy.x - shooter.x);
+bullet.speed = bulletConfig.speed;
+bullet.lifetime = bulletConfig.lifetime;
+const isUnitShooter = ["fighter", "assault", "elite"].includes(shooter.type);
+bullet.damage = (isUnitShooter && shooter.damage > 0) ? shooter.damage : bulletConfig.damage;
+if (bullet.isMissile) {
+bullet.splashRadius = MISSILE_CONFIG.splashRadius;
+bullet.splashDamage = MISSILE_CONFIG.splashDamage;
+} else {
+bullet.splashRadius = 0;
+bullet.splashDamage = 0;
+}
 
   // Цвета для визуального различия
   if (shooter.type === "assault") {
@@ -271,7 +471,6 @@ function fireBullet(shooter, enemy) {
 
   gameState.bullets.push(bullet);
 }
-
 // ============================================================
 // ЕДИНЫЙ ДВИЖОК ДВИЖЕНИЯ (Заменить старый moveUnit и логику в core.js)
 // ============================================================
@@ -340,13 +539,18 @@ function applyUnitMovement(unit, deltaTime) {
     return; // Прерываем, чтобы боевая логика не перехватила управление
   }
 
-  // ПРИОРИТЕТ 1: Боевая физика
-  if (["fighter", "assault", "elite"].includes(unit.type) && unit.target && unit.target.health > 0) {
+// ПРИОРИТЕТ 1: Боевая физика
+if (["fighter", "assault", "elite"].includes(unit.type) && unit.target && unit.target.health > 0) {
+  if (unit.type === "assault") {
+    updateAssaultPhysics(unit, unit.target, deltaTime);
+  } else if (unit.type === "fighter") {
     const dist = Math.hypot(unit.target.x - unit.x, unit.target.y - unit.y);
     const mode = dist > unit.range ? 'approach' : 'orbit';
     updateFighterPhysics(unit, unit.target, mode, deltaTime);
-    return; 
   }
+  // Для elite движение обрабатывается внутри dynamicAttackElite, чтобы не было двойного вызова
+  return;
+}
 
   // ПРИОРИТЕТ 2: Стандартное движение к точке
   if (unit.moveTarget) {
@@ -602,6 +806,128 @@ ay = (unit.dashVector.y * 0.3 * decay) + (tanY * 80.0 * (unit.orbitDirection || 
   unit.x += unit.vx * deltaTime;
   unit.y += unit.vy * deltaTime;
 }
+
+function updateAssaultPhysics(unit, target, deltaTime) {
+  if (!target || !unit) return;
+
+  // 1. АНТИ-СЛИПАНИЕ (только для своих штурмовиков)
+  const neighbors = getObjectsInRange({x: unit.x, y: unit.y}, 50)
+    .filter(u => u !== unit && u.owner === unit.owner && u.type === "assault" && u.health > 0);
+  if (neighbors.length > 0) {
+    let sepX = 0, sepY = 0;
+    for (let other of neighbors) {
+      const dx = unit.x - other.x;
+      const dy = unit.y - other.y;
+      const d = Math.hypot(dx, dy);
+      if (d < 50 && d > 0) {
+        const force = (50 - d) / 50;
+        sepX += (dx / d) * force * 20;
+        sepY += (dy / d) * force * 20;
+      }
+    }
+    unit.vx += sepX * deltaTime;
+    unit.vy += sepY * deltaTime;
+  }
+
+  const dist = Math.hypot(target.x - unit.x, target.y - unit.y);
+  if (dist === 0) return;
+
+  const angleToTarget = Math.atan2(target.y - unit.y, target.x - unit.x);
+  // Плавный поворот (0.08 вместо 0.15 у файтера) = ощущение тяжелого корабля
+  unit.angle = lerpAngle(unit.angle, angleToTarget, 0.08);
+
+  const frontX = Math.cos(unit.angle), frontY = Math.sin(unit.angle);
+  const tanX = -frontY, tanY = frontX;
+
+  let ax = 0, ay = 0;
+
+  // 2. УПРАВЛЕНИЕ ФАЗАМИ БОЯ
+  unit.phaseTimer -= deltaTime * 1000;
+  if (unit.phaseTimer <= 0) {
+    if (unit.combatPhase === 'approach') {
+      unit.combatPhase = 'retreat';
+      unit.phaseTimer = 2000; // 2 сек на откат и залп
+      unit.rocketBurstCount = 0;
+      unit.rocketBurstTimer = 0;
+    } else if (unit.combatPhase === 'retreat') {
+      unit.combatPhase = 'approach';
+      unit.phaseTimer = Math.random() * 3000 + 3000; // 3-6 сек сближения (это и есть кулдаун между залпами!)
+      unit.figure8Phase = Math.random() * Math.PI * 2;
+    }
+  }
+
+  // 3. ДВИЖЕНИЕ В ЗАВИСИМОСТИ ОТ ФАЗЫ
+  if (unit.combatPhase === 'approach') {
+  // Плавная восьмерка при сближении (ускорение увеличено для компенсации демпфирования 0.88)
+  const approachSpeed = 600;
+  const figure8Amplitude = 50;
+  const figure8Frequency = 1.2;
+  unit.figure8Phase += deltaTime * figure8Frequency;
+  const figure8Offset = Math.sin(unit.figure8Phase) * figure8Amplitude;
+  ax = frontX * approachSpeed + tanX * figure8Offset * 2.0;
+  ay = frontY * approachSpeed + tanY * figure8Offset * 2.0;
+  } else if (unit.combatPhase === 'retreat') {
+  // Откат назад
+  const retreatSpeed = 400;
+  ax = -frontX * retreatSpeed;
+  ay = -frontY * retreatSpeed;
+    
+    // 🔥 КРИТИЧЕСКИЙ ФИКС: Выстрел ракетами ТОЛЬКО если цель в радиусе ракет (280)!
+    if (dist <= unit.rocketRange) {
+      unit.rocketBurstTimer -= deltaTime * 1000;
+      if (unit.rocketBurstTimer <= 0 && unit.rocketBurstCount < 3) {
+        const targetAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
+        const rocket = new Bullet(unit.x, unit.y, targetAngle, MISSILE_CONFIG.speed, unit, target);
+        rocket.lifetime = MISSILE_CONFIG.lifetime;
+        rocket.damage = MISSILE_CONFIG.damage;
+        rocket.splashRadius = MISSILE_CONFIG.splashRadius;
+        rocket.splashDamage = MISSILE_CONFIG.splashDamage;
+        rocket.isMissile = true;
+        rocket.target = target;
+        rocket.color = "255,0,0";
+        gameState.bullets.push(rocket);
+        
+        unit.rocketBurstCount++;
+        unit.rocketBurstTimer = 400; // 🔥 400мс между ракетами (теперь виден четкий интервал)
+        unit.lastRocketFireTime = performance.now();
+      }
+    }
+  }
+
+  // 4. МЯГКИЙ СТРЕЙФ (поверх фазы)
+  unit.strafeTimer -= deltaTime * 1000;
+  if (unit.strafeTimer <= 0) {
+    if (Math.random() < 0.5) { // 50% шанс смены направления
+      unit.strafeDirection = (unit.strafeDirection || 1) * -1;
+      // Мягкий толчок (30 вместо 100), чтобы не было мгновенного "щелчка" скорости
+      unit.vx += (tanX * (unit.strafeDirection || 1)) * 30;
+      unit.vy += (tanY * (unit.strafeDirection || 1)) * 30;
+    }
+    unit.strafeTimer = Math.random() * 4000 + 2000; // 2-6 сек (реже, чем у файтера)
+  }
+
+  const dir = unit.strafeDirection || 1;
+  // Постоянная боковая сила для плавности (увеличена)
+  ax += tanX * 120.0 * dir;
+  ay += tanY * 120.0 * dir;
+
+  // 5. ИНЕРЦИЯ И ОГРАНИЧЕНИЕ СКОРОСТИ
+  // Чуть больше инерции для ощущения массы (0.88)
+  unit.vx = unit.vx * 0.88 + ax * deltaTime;
+  unit.vy = unit.vy * 0.88 + ay * deltaTime;
+
+  // Максимальная скорость 90 (медленнее файтера, чувствуется "тяжесть", но динамика сохранена)
+  const maxSpeed = 90;
+  const curSpeed = Math.hypot(unit.vx, unit.vy);
+  if (curSpeed > maxSpeed) {
+    unit.vx = (unit.vx / curSpeed) * maxSpeed;
+    unit.vy = (unit.vy / curSpeed) * maxSpeed;
+  }
+
+  unit.x += unit.vx * deltaTime;
+  unit.y += unit.vy * deltaTime;
+}
+
 // 5. ОБЁРТКА ДЛЯ ДВИЖЕНИЯ В БОЮ (сближение/кайтинг)
 function dynamicMove(unit, target, deltaTime) {
   if (!unit || !target || unit.health <= 0) return;
@@ -638,13 +964,12 @@ function dynamicAttack(unit, target, deltaTime) {
   const now = performance.now(); 
 
   if (unit.type === "fighter") {
-    if (unit.shocked) return;
-    if (now - unit.lastFireTime >= unit.fireRate) { 
-      fireBullet(unit, target); 
-      unit.lastFireTime = now; 
-    }
-    // ✅ ЕДИНАЯ ФИЗИКА В РЕЖИМЕ ОРБИТЫ
-    updateFighterPhysics(unit, target, 'orbit', deltaTime); 
+  if (unit.shocked) return;
+  if (now - unit.lastFireTime >= unit.fireRate) {
+  fireBullet(unit, target);
+  unit.lastFireTime = now;
+  }
+  // ✅ ФИЗИКА УЖЕ ОБРАБАТЫВАЕТСЯ В applyUnitMovement
   }
 }
 
@@ -655,35 +980,18 @@ function dynamicAttackAssault(unit, target, deltaTime) {
   }
   
   const currentDistance = Math.hypot(target.x - unit.x, target.y - unit.y);
-  if (currentDistance > unit.range) { 
-    unit.target = null; 
-    return; 
-  }
-  
   const now = performance.now();
   
-  // Пулемет (ближний бой)
-  if (currentDistance <= unit.machineGunRange && (now - unit.lastMachineGunFireTime >= unit.machineGunFireRate)) {
-    fireBullet(unit, target); // Теперь fireBullet правильно определит конфигурацию
+  // Пулемет: стреляем ТОЛЬКО в фазе сближения и ТОЛЬКО в упор
+  if (currentDistance <= unit.machineGunRange && 
+      (now - unit.lastMachineGunFireTime >= unit.machineGunFireRate) &&
+      unit.combatPhase === 'approach') {
+    fireBullet(unit, target);
     unit.lastMachineGunFireTime = now;
   }
   
-  // Ракеты (дальний бой)
-  if (currentDistance <= unit.rocketRange && (now - unit.lastRocketFireTime >= unit.rocketCooldown)) {
-    const targetAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
-    let rocket = new Bullet(unit.x, unit.y, targetAngle, MISSILE_CONFIG.speed, unit, target);
-    rocket.lifetime = MISSILE_CONFIG.lifetime;
-    rocket.damage = MISSILE_CONFIG.damage;
-    rocket.splashRadius = MISSILE_CONFIG.splashRadius;
-    rocket.splashDamage = MISSILE_CONFIG.splashDamage;
-    rocket.isMissile = true;
-    rocket.target = target;
-    rocket.color = "255,0,0"; // Красный для ракет штурмовика
-    gameState.bullets.push(rocket);
-    unit.lastRocketFireTime = now;
-  }
-  
-  dynamicMove(unit, target, deltaTime);
+// Ракеты теперь управляются внутри updateAssaultPhysics с проверкой dist <= unit.rocketRange
+// 🔥 ФИЗИКА ШТУРМОВИКА УЖЕ ОБРАБАТЫВАЕТСЯ В applyUnitMovement, здесь только стрельба!
 }
 
 function dynamicAttackElite(unit, target, deltaTime) {
@@ -786,55 +1094,47 @@ function dynamicAttackElite(unit, target, deltaTime) {
 
 function checkForEnemiesAndAttack(unit) {
   if (!unit || !unit.range || unit.isRetreating || unit.health <= 0) return;
-  
+  fxSanitizeOrders(unit); // 🔥 Чистим призрачные приказы перед поиском
   const enemiesInRange = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
-    .filter(e => e.owner !== unit.owner && e.health > 0);
-    
+    .filter(e => e.owner !== unit.owner && e.health > 0 && fxValidTarget(e));
   if (enemiesInRange.length > 0) {
     // Если уже атакуем эту цель, ничего не меняем
     if (unit.target && unit.target.health > 0 && enemiesInRange.includes(unit.target)) {
-      return; 
+      return;
     }
-    
-    // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Сохраняем прерванную задачу
+    // Сохраняем прерванную задачу
     if (unit.commandQueue.length > 0 && !unit.suspendedQueue) {
-      unit.suspendedQueue = [...unit.commandQueue]; 
+      unit.suspendedQueue = [...unit.commandQueue];
     }
-    
     // Очищаем текущую очередь и цель движения, чтобы включить боевую физику
     unit.commandQueue = [];
     unit.moveTarget = null;
     unit.moveCallback = null;
-    
     // Находим ближайшего врага
-    unit.target = enemiesInRange.sort((a, b) => 
+    unit.target = enemiesInRange.sort((a, b) =>
       Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
     )[0];
-    
     // Ставим приоритетную команду атаки
     unit.commandQueue.push({ type: "attack", target: unit.target });
-    
   } else {
     // Врагов нет. Проверяем, нужно ли вернуться к старой задаче.
     if (unit.suspendedQueue && unit.suspendedQueue.length > 0) {
       const nextTask = unit.suspendedQueue[0];
       let isTaskValid = true;
-
       if ((nextTask.type === "move" || nextTask.type === "attack") && nextTask.target) {
-        if (nextTask.target.health <= 0) isTaskValid = false;
+        if (!fxValidTarget(nextTask.target)) isTaskValid = false;
       }
-
       if (isTaskValid) {
         unit.commandQueue = [...unit.suspendedQueue];
         unit.suspendedQueue = null;
         unit.target = null;
-        // Не вызываем processCommandQueue здесь, пусть главный цикл подхватит это на следующем кадре
+        fxSanitizeOrders(unit); // 🔥 Чистим восстановленную очередь
       } else {
         unit.suspendedQueue = null;
         unit.target = null;
       }
     } else {
-      if (unit.target && unit.target.health <= 0) {
+      if (unit.target && !fxValidTarget(unit.target)) {
         unit.target = null;
       }
     }
@@ -1285,6 +1585,38 @@ function updateUnits(deltaTime) {
   if (swarmFrameCounter % 5 === 0) updateSwarmBehavior(deltaTime);
   if (swarmFrameCounter > 1000) swarmFrameCounter = 0;
 }
+
+
+
+
+// 🔥 ЕДИНАЯ ТОЧКА НАНЕСЕНИЯ УРОНА (пули + сплэш)
+function fxApplyDamage(entity, damage, source) {
+  if (!entity || !(entity.health > 0) || !(damage > 0) || entity.destroyed) return;
+  if (source) entity.__lastAttacker = source;
+  // 🛡️ Устанавливаем флаг ДО onDamage, чтобы onDamage мог нарисовать осколки,
+  // а removeUnit — пропустить свой вызов (иначе двойные осколки)
+  entity.__fragmentsSpawned = true;
+  if (typeof onDamage === "function") {
+    onDamage(entity, damage);
+  } else {
+    entity.health -= damage;
+    if (typeof window.GnnEventHooks !== 'undefined') window.GnnEventHooks.onUnitDamaged(entity, damage, source);
+  }
+  // Страховка добивания: если onDamage не убрал труп — убираем сами, ровно один раз
+  if (entity.health <= 0 && !entity.__removed) {
+    const isBld = (typeof Building !== "undefined" && entity instanceof Building);
+    if (isBld) {
+      if (gameState.buildings.indexOf(entity) !== -1) { entity.__removed = true; onBuildingDestroyed(entity); }
+    } else {
+      removeUnit(entity, source || entity.__lastAttacker || null);
+    }
+  }
+}
+
+
+
+
+
 // ОПТИМИЗИРОВАННЫЙ ГОРЯЧИЙ ЦИКЛ ПУЛЬ ===
 function updateBullets(deltaTime) {
   // Обратный цикл позволяет безопасно удалять элементы через splice
@@ -1316,29 +1648,19 @@ function updateBullets(deltaTime) {
     const candidates = quadtree ? quadtree.query(queryRect) : [];
     let hit = false;
 
-    for (let j = 0; j < candidates.length; j++) {
-      let target = candidates[j];
-      if (target.owner !== bullet.shooter.owner && target.health > 0) {
-        target.health -= bullet.damage;
-        // 🔥 ХУК УРОНА
-        if (typeof window.GnnEventHooks !== 'undefined') window.GnnEventHooks.onUnitDamaged(target, bullet.damage, bullet.shooter);
-        if (typeof onDamage === "function") onDamage(target, bullet.damage);
-        hit = true;
-        
-        if (bullet.isMissile || bullet.isArtillery) {
-          applySplashDamage(bullet);
-        } else {
-          spawnSparkEffect(bullet.x, bullet.y);
-        }
-
-        if (target.health <= 0) {
-          spawnDestructionFragments(target.x, target.y, target.width || 10, target.height || 10, target.type);
-          if (target instanceof Building) onBuildingDestroyed(target);
-		  else removeUnit(target, bullet.shooter); // 🔥 ПЕРЕДАЕМ УБИЙЦУ
-        }
-        break; // Пуля поражает первую цель и исчезает
-      }
-    }
+ for (let j = 0; j < candidates.length; j++) {
+   let target = candidates[j];
+   if (!target || target === bullet.shooter) continue;
+   if (target.owner === bullet.shooter.owner || !(target.health > 0) || target.destroyed) continue;
+   hit = true;
+   fxApplyDamage(target, bullet.damage, bullet.shooter);   // 🔥 урон РОВНО один раз
+   if (bullet.isMissile || bullet.isArtillery) {
+     applySplashDamage(bullet);
+   } else {
+     spawnSparkEffect(bullet.x, bullet.y);
+   }
+   break; // Пуля поражает первую цель и исчезает
+ }
 
     if (hit) {
       releaseBulletToPool(bullet);
@@ -1350,36 +1672,24 @@ function updateBullets(deltaTime) {
 }
 
 function applySplashDamage(bullet) {
-  spawnExplosionEffect(bullet.x, bullet.y);
-  const queryRect = { 
-    x: bullet.x - bullet.splashRadius, 
-    y: bullet.y - bullet.splashRadius, 
-    width: bullet.splashRadius * 2, 
-    height: bullet.splashRadius * 2 
-  };
-  const candidates = quadtree ? quadtree.query(queryRect) : [];
-  
-  for (let i = 0; i < candidates.length; i++) {
-    let obj = candidates[i];
-    if (obj.owner !== bullet.shooter.owner && obj.health > 0 && Math.hypot(obj.x - bullet.x, obj.y - bullet.y) <= bullet.splashRadius) {
-      
-      // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: вызываем onDamage вместо прямого вычитания!
-      if (typeof onDamage === "function") {
-        onDamage(obj, bullet.splashDamage);
-      } else {
-        // Fallback на случай, если onDamage вдруг не определен
-        obj.health -= bullet.splashDamage;
-        if (obj.health <= 0) {
-          spawnDestructionFragments(obj.x, obj.y, obj.width || 10, obj.height || 10, obj.type);
-          if (obj instanceof Building) {
-            if (typeof onBuildingDestroyed === "function") onBuildingDestroyed(obj);
-          } else {
-            if (typeof removeUnit === "function") removeUnit(obj, bullet.shooter); // 🔥 ПЕРЕДАЕМ УБИЙЦУ
-          }
-        }
-      }
-    }
-  }
+if (!bullet || !bullet.shooter || !(bullet.splashRadius > 0)) return;
+spawnExplosionEffect(bullet.x, bullet.y);
+const queryRect = {
+x: bullet.x - bullet.splashRadius,
+y: bullet.y - bullet.splashRadius,
+width: bullet.splashRadius * 2,
+height: bullet.splashRadius * 2
+};
+const candidates = quadtree ? quadtree.query(queryRect) : [];
+const done = new Set();   // 🔥 один объект не может получить сплэш дважды
+for (let i = 0; i < candidates.length; i++) {
+const obj = candidates[i];
+if (!obj || done.has(obj)) continue;
+if (obj.owner === bullet.shooter.owner || !(obj.health > 0) || obj.destroyed) continue;
+if (Math.hypot(obj.x - bullet.x, obj.y - bullet.y) > bullet.splashRadius) continue;
+done.add(obj);
+fxApplyDamage(obj, bullet.splashDamage, bullet.shooter);
+}
 }
 
 function updateParticles(deltaTime) {
@@ -1880,11 +2190,30 @@ function cleanUpOffscreenObjects() {
   const screenRight = screenLeft + canvas.width / camera.scale + 2 * margin;
   const screenTop = -camera.offsetY / camera.scale - margin;
   const screenBottom = screenTop + canvas.height / camera.scale + 2 * margin;
-  gameState.units = gameState.units.filter(unit => {
+  const keep = [];
+  for (const unit of gameState.units) {
     const isImportant = ['worker', 'repairman', 'fighter', 'assault', 'elite'].includes(unit.type);
     const isVisible = unit.x > screenLeft && unit.x < screenRight && unit.y > screenTop && unit.y < screenBottom;
-    return isImportant || isVisible;
+    if (isImportant || isVisible) {
+      keep.push(unit);
+    } else {
+      // 🧹 Юнит ушёл за экран — чистим его и возвращаем в пул (иначе утечка памяти)
+      unit.__removed = true;
+      unit.__inGame = false;
+      cleanupUnitState(unit);
+      releaseUnitToPool(unit);
+      FX_STATE.stats.culled++;
+    }
+  }
+  const keepSet = new Set(keep);
+  gameState.units = keep;
+  // 🧹 Синхронизируем специализированные массивы
+  ['attackers', 'defenders', 'repairmen'].forEach(key => {
+    if (Array.isArray(gameState[key])) {
+      gameState[key] = gameState[key].filter(u => keepSet.has(u));
+    }
   });
+  fxInvalidate();
 }
 
 function cleanUpBulletsAndParticles() {
@@ -1917,6 +2246,28 @@ function queueSale(building) {
 function triggerSale(building) {
   if (!building) return;
   if (!gameState.buildings.includes(building)) return;
+
+  // 🛡️ Помечаем здание как уничтоженное ДО удаления из массива
+  building.health = 0;
+  building.destroyed = true;
+  building.active = false;
+  // 🧹 Чистим ссылки на это здание во всех очередях юнитов
+  gameState.units.forEach(u => {
+    if (u.target === building) u.target = null;
+    if (Array.isArray(u.commandQueue)) {
+      u.commandQueue = u.commandQueue.filter(c => !(c && c.target === building));
+    }
+    if (Array.isArray(u.suspendedQueue)) {
+      u.suspendedQueue = u.suspendedQueue.filter(c => !(c && c.target === building));
+      if (!u.suspendedQueue.length) u.suspendedQueue = null;
+    }
+    if (u.repairIntervalId && u.__repairTarget === building) {
+      clearInterval(u.repairIntervalId);
+      u.repairIntervalId = null;
+      u.busyRepair = false;
+    }
+  });
+  fxInvalidate();
 
   const owner = building.owner;
   const isPlayerBuilding = owner === playerId;
@@ -2064,6 +2415,28 @@ function processProductionQueue(building) {
 
 // Пример: при уничтожении здания (или продаже) вызываем функцию для маркировки зоны
 function onBuildingDestroyed(building) {
+  // 🛡️ Помечаем здание как уничтоженное ДО удаления из массива,
+  // чтобы фантомные цели в очередях юнитов отсекались fxValidTarget
+  building.health = 0;
+  building.destroyed = true;
+  building.active = false;
+  // 🧹 Чистим ссылки на это здание во всех очередях юнитов
+  gameState.units.forEach(u => {
+    if (u.target === building) u.target = null;
+    if (Array.isArray(u.commandQueue)) {
+      u.commandQueue = u.commandQueue.filter(c => !(c && c.target === building));
+    }
+    if (Array.isArray(u.suspendedQueue)) {
+      u.suspendedQueue = u.suspendedQueue.filter(c => !(c && c.target === building));
+      if (!u.suspendedQueue.length) u.suspendedQueue = null;
+    }
+    if (u.repairIntervalId && u.__repairTarget === building) {
+      clearInterval(u.repairIntervalId);
+      u.repairIntervalId = null;
+      u.busyRepair = false;
+    }
+  });
+  fxInvalidate();
 	if (gameMode === "neural" && building.owner === "ai") {
   recentThreats.push({
     x: building.x,
@@ -2243,21 +2616,22 @@ function createCapturePointsForBase(base) {
 
 function startAssaultEliteCycle(unit) {
   if (!unit) return;
+  // 🛡️ Каждая новая "жизнь" юнита получает новый epoch.
+  // Когда юнит умрёт и будет выдан из пула заново, fxResetTransient сбросит __epoch,
+  // и старый requestAnimationFrame умрёт сам.
+  const epoch = (unit.__epoch = (unit.__epoch || 0) + 1);
   function cycle() {
-    if (unit.health <= 0) return;
-    
-    // 🔥 ИСПРАВЛЕНИЕ: Уважение к режиму отступления
+    if ((unit.__epoch || 0) !== epoch) { FX_STATE.stats.zombie++; return; }
+    if (unit.health <= 0 || !gameState.units.includes(unit)) return;
     if (unit.isRetreating) {
       requestAnimationFrame(cycle);
       return;
     }
-
     if (unit.commandQueue && unit.commandQueue.length > 0) {
       processCommandQueue(unit);
       requestAnimationFrame(cycle);
       return;
     }
-    // Если у юнита есть цель, и она жива, вызываем динамическую атаку
     if (unit.target && unit.target.health > 0) {
       if (unit.type === "assault") {
         dynamicAttackAssault(unit, unit.target, 1/60);
@@ -2265,7 +2639,6 @@ function startAssaultEliteCycle(unit) {
         dynamicAttackElite(unit, unit.target, 1/60);
       }
     } else {
-      // Если цели нет или она мертва, ищем новую цель
       let enemies = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
                     .filter(e => e.owner !== unit.owner && e.health > 0);
       if (enemies.length > 0) {
@@ -2282,7 +2655,10 @@ function startAssaultEliteCycle(unit) {
 function spawnWaveFromCapturePoint(cp) {
   const side = cp.owner;
   if (!side) return;
-  let enemyTarget = gameMode === "single" ? (side === "player" ? aiBase : playerBase) : gameState.buildings.find(b => b.type.startsWith("base") && b.owner !== side);
+  let enemyTarget = gameMode === "single"
+    ? (side === "player" ? aiBase : playerBase)
+    : gameState.buildings.find(b => b.type.startsWith("base") && b.owner !== side);
+  if (enemyTarget && !fxValidTarget(enemyTarget)) enemyTarget = null;
   const spawnCenter = { x: cp.x, y: cp.y }, spawnRadius = 50;
   function getRandomSpawnPos(center) {
     const angle = Math.random() * Math.PI * 2, distance = Math.random() * spawnRadius;
@@ -2290,14 +2666,16 @@ function spawnWaveFromCapturePoint(cp) {
   }
   for (let i = 0; i < 2; i++) {
     const pos = getRandomSpawnPos(spawnCenter);
-    const fighter = new Unit("fighter", side, pos.x, pos.y);
-    gameState.units.push(fighter); startFighterCycle(fighter);
+    const fighter = getUnitFromPool("fighter", side, pos.x, pos.y);
+    addUnit(fighter);
+    startFighterCycle(fighter);
     if (enemyTarget) fighter.commandQueue.push({ type: "attack", target: enemyTarget });
   }
   for (let i = 0; i < 1; i++) {
     const pos = getRandomSpawnPos(spawnCenter);
-    const assault = new Unit("assault", side, pos.x, pos.y);
-    gameState.units.push(assault); startAssaultEliteCycle(assault);
+    const assault = getUnitFromPool("assault", side, pos.x, pos.y);
+    addUnit(assault);
+    startAssaultEliteCycle(assault);
     if (enemyTarget) assault.commandQueue.push({ type: "attack", target: enemyTarget });
   }
 }
@@ -2427,9 +2805,18 @@ function generateResources(countPerType = 50, seed = 777) {
 }
 
 function getUnitFromPool(type, owner, x, y) {
-  if (!unitPools[type]) unitPools[type] = [];
-  const pool = unitPools[type];
-  let unit;
+if (!unitPools[type]) unitPools[type] = [];
+// 🧹 Выкидываем из пула дубли и объекты, которые уже в игре
+if (unitPools[type].length > 0) {
+  const live = new Set(gameState.units), seen = new Set(), clean = [];
+  for (const p of unitPools[type]) {
+    if (!p || seen.has(p) || live.has(p)) { FX_STATE.stats.dupPool++; continue; }
+    seen.add(p); clean.push(p);
+  }
+  unitPools[type] = clean;
+}
+const pool = unitPools[type];
+let unit;
   
   if (pool.length > 0) {
     unit = pool.pop();
@@ -2520,6 +2907,14 @@ function getUnitFromPool(type, owner, x, y) {
         unit.engagementRadius = 500;
         unit.range = 280;
         unit.visionRadius = ASSAULT_VISION_RANGE;
+        unit.strafeDirection = Math.random() > 0.5 ? 1 : -1;
+        unit.strafeTimer = Math.random() * 3000 + 1000;
+        unit.strafeInterval = Math.random() * 3000 + 1000;
+        unit.combatPhase = 'approach'; // Начальная фаза: сближение
+        unit.phaseTimer = 0;
+        unit.figure8Phase = Math.random() * Math.PI * 2;
+        unit.rocketBurstCount = 0;
+        unit.rocketBurstTimer = 0;
         break;
       case "elite":
         unit.health = 750; unit.maxHealth = 750;
@@ -2534,12 +2929,17 @@ function getUnitFromPool(type, owner, x, y) {
         break;
     }
     
-    unit.id = generateUniqueUnitId();
-  } else { 
-    unit = new Unit(type, owner, x, y); 
-  }
-  
-  return unit;
+ unit.id = generateUniqueUnitId();
+} else {
+unit = new Unit(type, owner, x, y);
+}
+// 🧹 Единая зачистка + гарантия боевых полей (лечит undefined → NaN)
+fxResetTransient(unit);
+fxEnsureCombat(unit);
+unit.__inPool = false;
+unit.__removed = false;
+unit.__inGame = false;   // в игру юнита ставит addUnit — это шаг 3
+return unit;
 }
 
 function startLaserEffect(laser) {

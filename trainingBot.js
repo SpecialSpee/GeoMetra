@@ -125,6 +125,7 @@
       const warehouses = gameState.buildings.filter(b => b.owner === "player" && b.type === "warehouse").length;
       const workshops = gameState.buildings.filter(b => b.owner === "player" && b.type === "repairWorkshop").length;
       const workers = gameState.units.filter(u => u.owner === "player" && u.type === "worker").length;
+      const repairman = gameState.units.filter(u => u.owner === "player" && u.type === "repairman").length;
 
       if (warehouses < 4 && typeof canSpendResources === "function" && canSpendResources(WAREHOUSE_COST, "player")) {
         const pos = this.findBuildPos("warehouse");
@@ -186,7 +187,7 @@
         }
       } 
       
-      if (fighters < 15) {
+      if (fighters < 10) {
         this.hireFighter();
       }
     },
@@ -242,7 +243,7 @@
         if (pos) { placeBuilding(pos.x, pos.y, "beacon", "player"); }
       }
       
-      if (hasBarracks2 && assaults < 15) {
+      if (hasBarracks2 && assaults < 5) {
         this.hireAssault();
       }
     },
@@ -279,7 +280,7 @@
       const elites = gameState.units.filter(u => u.owner === "player" && u.type === "elite").length;
       const hasBarracks3 = gameState.buildings.some(b => b.owner === "player" && b.type === "barracks3");
 
-      if (hasBarracks3 && elites < 8) {
+      if (hasBarracks3 && elites < 3) {
         this.hireElite();
       } else {
         this.hireAssault();
