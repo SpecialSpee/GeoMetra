@@ -34,7 +34,7 @@ window.initGnnOverlay = function() {
 };
 
 // Инициализируем с небольшой задержкой, чтобы canvas точно был готов
-setTimeout(window.initGnnOverlay, 100);
+setTimeout(window.initGnnOverlay, 500);
 
 // Обновляем размер при изменении окна
 window.addEventListener("resize", () => {
@@ -259,7 +259,7 @@ window.drawGnnOverlay = function() {
         // --- ОТРИСОВКА КЛАСТЕРОВ ---
         for (const cluster of clusters) {
             let r = 2.5;
-            if (cluster.type.includes("base")) r = 5;
+            if (cluster.type.includes("base")) r = 2;
             else if (cluster.type.includes("barracks") || cluster.type.includes("warehouse") || cluster.type.includes("turret")) r = 3.5;
             
             if (cluster.avgHp !== undefined) r = Math.max(r, 3 + (cluster.avgHp * 5));

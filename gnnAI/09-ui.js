@@ -214,16 +214,23 @@ function createTrainingOverlay() {
   if (document.getElementById('gnn-training-overlay')) return;
   const overlay = document.createElement('div');
   overlay.id = 'gnn-training-overlay';
-  overlay.style.cssText = `position: fixed; top: 26px; right: 350px; background: rgba(0, 0, 0, 0.2); color: #00ff99; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 8px; border: 1px solid #00ff99; z-index: 9999; pointer-events: none;`;
+  overlay.style.cssText = `position: fixed; top: 86px; right: 20px; background: rgba(0, 0, 0, 0.7); color: #00ff99; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 8px; border: 1px solid #00ff99; z-index: 9999; pointer-events: none; min-width: 220px;`;
   overlay.innerHTML = `
-    <div style="font-weight:bold; margin-bottom:5px; color:#fff;">🧠 GNN AUTO-TRAINING</div>
+    <div style="font-weight:bold; margin-bottom:5px; color:#fff; border-bottom: 1px solid #00ff99; padding-bottom: 4px;">🧠 GNN AUTO-TRAINING</div>
     <div id="ov-episode">Episode: <span style="color:#fff">-</span></div>
     <div id="ov-winrate">Winrate: <span style="color:#fff">-</span></div>
     <div id="ov-action">Last: <span style="color:#87ceeb">-</span></div>
     <div id="ov-entropy">🎚️ Entropy: <span style="color:#fff">-</span></div>
-    <div style="margin-top:5px; border-top:1px solid #00ff99; padding-top:5px;">
-      ⚔️ Army: <span id="ov-army" style="color:#ff6b6b">0</span> |
-      👷 Workers: <span id="ov-workers" style="color:#ffd93d">0</span>
+    <div style="margin-top:8px; border-top:1px solid #00ff99; padding-top:5px;">
+      ⚔️ Army: <span id="ov-army" style="color:#ff6b6b">0</span> | 👷 Workers: <span id="ov-workers" style="color:#ffd93d">0</span>
+    </div>
+    <!-- 🔥 НОВЫЙ БЛОК: График градиентов -->
+    <div style="margin-top:8px; border-top:1px solid #00ff99; padding-top:5px;">
+      <div style="font-size:10px; color:#aaa; margin-bottom:2px;">📈 Grad Norm & Loss (last 60 steps)</div>
+      <canvas id="gnn-grad-canvas" width="190" height="60" style="background: rgba(0,0,0,0.5); border: 1px solid #333; border-radius: 4px;"></canvas>
+      <div style="font-size:9px; color:#888; margin-top:2px;">
+        <span style="color:#00ffff">━ Grad</span> | <span style="color:#ffff00">━ Loss</span>
+      </div>
     </div>
   `;
   document.body.appendChild(overlay);
@@ -259,7 +266,68 @@ window.updateTrainingOverlay = function() {
 
   document.getElementById('ov-army').innerText = m.aiArmy;
   document.getElementById('ov-workers').innerText = workers;
+    if (typeof window.drawGradientChart === 'function') window.drawGradientChart();
+
 };
+
+window.drawGradientChart = function() {
+  const canvas = document.getElementById('gnn-grad-canvas');
+  if (!canvas || !window.GnnAI || !GnnAI.gradHistory || GnnAI.gradHistory.length < 2) return;
+  
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  const data = GnnAI.gradHistory;
+  
+  ctx.clearRect(0, 0, w, h);
+  
+  // Находим макс. значения для масштабирования
+  let maxGrad = 0, maxLoss = 0;
+  data.forEach(d => {
+    if (d.gradNorm > maxGrad) maxGrad = d.gradNorm;
+    if (Math.abs(d.loss) > maxLoss) maxLoss = Math.abs(d.loss);
+  });
+  
+  // Добавляем небольшой отступ, чтобы график не прилипал к краям
+  maxGrad = Math.max(maxGrad, 0.1);
+  maxLoss = Math.max(maxLoss, 0.1);
+
+  // Функция для рисования линии
+  const drawLine = (key, color, maxVal) => {
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    data.forEach((d, i) => {
+      const x = (i / (data.length - 1)) * w;
+      // Инвертируем Y, чтобы 0 был внизу
+      const y = h - (Math.abs(d[key]) / maxVal) * (h - 5); 
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  };
+
+const drawLineSmooth = (key, color, maxVal, window = 3) => {
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  const smoothed = data.map((d, i) => {
+    const start = Math.max(0, i - window + 1);
+    const slice = data.slice(start, i + 1);
+    const avg = slice.reduce((s, x) => s + (isFinite(x[key]) ? Math.abs(x[key]) : 0), 0) / slice.length;
+    return avg;
+  });
+  smoothed.forEach((v, i) => {
+    const x = (i / (smoothed.length - 1)) * w;
+    const y = h - (v / maxVal) * (h - 4) - 2;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+};
+drawLineSmooth('loss', '#ffff00', maxLoss, 3);
+drawLineSmooth('gradNorm', '#00ffff', maxGrad, 3);
+};
+
 // 🔥 ИСПРАВЛЕНИЕ: Надежное обновление UI через setInterval
 if (!window._gnnUiInterval) {
   window._gnnUiInterval = setInterval(() => {

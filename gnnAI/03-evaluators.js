@@ -2,14 +2,12 @@
 // 03-evaluators.js — ПОЛНАЯ система наград
 // ============================================================
 "use strict";
-
 // === ФЛАГ ОТЛАДКИ НАГРАД ===
 // false = показывать только крупные события (>= 5.0 или <= -5.0)
 // true = показывать каждое начисление (для глубокой отладки)
 window.GNN_DEBUG_REWARDS = window.GNN_DEBUG_REWARDS || false;
 
 Object.assign(window.GnnAI, {
-
   // === КОНСТАНТЫ (синхронизированы с entities.js) ===
   GAME_CONSTANTS: {
     // Вместимость зданий
@@ -32,11 +30,7 @@ Object.assign(window.GnnAI, {
     BASE2_COST: 216,        // 81+92+43
     BEACON_COST: 77,        // 27+38+12
   },
-
-  // ============================================================
   // ГРУППА 1: ЭКОНОМИКА
-  // ============================================================
-
   // === Экономический паралич ===
   checkEconomicParalysis: function(now) {
     if (!this.lastEcoCheck || now - this.lastEcoCheck < 10000) return;
@@ -74,7 +68,6 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
   // === Миссии (атака, защита, найм, строительство, бездействие) ===
   evaluateMissions: function () {
     for (let i = this.missionCache.length - 1; i >= 0; i--) {
@@ -311,7 +304,7 @@ Object.assign(window.GnnAI, {
           if (unitAppeared) {
             const rewards = {
               "worker": 3.0,
-              "repairman": 2.0,
+              "repairman": 1.0,
               "fighter": 5.0,
               "assault": 8.0,
               "elite": 12.0
@@ -354,36 +347,62 @@ Object.assign(window.GnnAI, {
           
           if (isBuilt) {
             // Льготный период для складов/мастерских
-            if (bt === "warehouse" || bt === "repairWorkshop") {
-              const totalWorkers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
-              const totalWarehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type === "warehouse" && b.active).length;
-              const totalWorkshops = gameState.buildings.filter(b => b.owner === "ai" && b.type === "repairWorkshop" && b.active).length;
-              const neededWorkers = totalWarehouses * 5 + totalWorkshops * 5;
-              const gameTimeMin = performance.now() / 60000;
-              
-              const recentlyBuilt = gameState.buildings.filter(b => 
-                b.owner === "ai" && b.type === bt && b.active && 
+        if (bt === "warehouse" || bt === "repairWorkshop") {
+            const totalWorkers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
+            const totalWarehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type === "warehouse" && b.active).length;
+            const totalWorkshops = gameState.buildings.filter(b => b.owner === "ai" && b.type === "repairWorkshop" && b.active).length;
+            const neededWorkers = totalWarehouses * 5 + totalWorkshops * 5;
+            const gameTimeMin = performance.now() / 60000;
+
+            const recentlyBuilt = gameState.buildings.filter(b =>
+                b.owner === "ai" && b.type === bt && b.active &&
                 (performance.now() - b.builtAt) < 15000
-              ).length;
-              
-              const emptyWarehouses = gameState.buildings.filter(b => 
+            ).length;
+
+            const emptyWarehouses = gameState.buildings.filter(b =>
                 b.owner === "ai" && b.type === "warehouse" && b.active && (b.workers || 0) === 0
-              ).length;
-              const penalizedEmpty = Math.max(0, emptyWarehouses - recentlyBuilt);
-              
-              if (totalWorkers < neededWorkers && penalizedEmpty > 0 && gameTimeMin > 2.0) {
-                rewardDelta = 5.0 - 2.0 * penalizedEmpty;
-                reason = `BUILDING_BUILT_NEEDS_WORKERS: ${bt} (${penalizedEmpty} ждут рабочих)`;
-              } else {
-                rewardDelta = 8.0;
-                reason = `BUILDING_BUILT: ${bt}`;
-              }
-            } else {
+            ).length;
+            const penalizedEmpty = Math.max(0, emptyWarehouses - recentlyBuilt);
+
+            if (bt === "warehouse") {
+                // 🔥 СКЛАД — основа экономики, всегда высокая награда
+                if (totalWorkers < neededWorkers && penalizedEmpty > 0 && gameTimeMin > 1.5) {
+                    rewardDelta = 4.0 - 2.0 * penalizedEmpty;
+                    reason = `BUILDING_BUILT_NEEDS_WORKERS: склад (${penalizedEmpty} ждут рабочих)`;
+                } else {
+                    rewardDelta = 10.0; // 🔥 ВЫСОКАЯ награда за экономику
+                    reason = `BUILDING_BUILT_ECONOMY: склад (отлично!)`;
+                }
+            }
+            else if (bt === "repairWorkshop") {
+                // 🔥 МАСТЕРСКАЯ — вспомогательная, награда зависит от контекста
+                const woundedUnits = gameState.units.filter(u =>
+                    u.owner === "ai" && u.health > 0 && u.health < u.maxHealth * 0.8
+                ).length;
+                const totalArmy = gameState.units.filter(u =>
+                    u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0
+                ).length;
+
+                if (woundedUnits >= 2 || (totalArmy >= 3 && gameTimeMin > 2.0)) {
+                    // Армия есть и нуждается в ремонте — честная награда
+                    rewardDelta = 6.0;
+                    reason = `BUILDING_BUILT_SUPPORT: мастерская (армия нуждается в ремонте)`;
+                } else if (gameTimeMin < 1.5 && totalArmy === 0) {
+                    // 🔥 ШТРАФ: построена слишком рано, армии ещё нет
+                    rewardDelta = -3.0;
+                    reason = `BUILDING_BUILT_PREMATURE: мастерская построена слишком рано (до 1.5 мин), армии нет`;
+                } else {
+                    // Минимальная награда "просто построено"
+                    rewardDelta = 2.0;
+                    reason = `BUILDING_BUILT_SUPPORT: мастерская (преждевременно или без острой нужды)`;
+                }
+            }
+        } else {
               const rewards = {
-                "barracks": 10.0, "barracks2": 15.0, "barracks3": 20.0,
-                "base2": 25.0, "base3": 30.0,
+                "barracks": 5.0, "barracks2": 8.0, "barracks3": 10.0,
+                "base2": 12.0, "base3": 15.0,
                 "turret": 5.0, "turret2": 8.0, "turret3": 10.0,
-                "beacon": 12.0
+                "beacon": 5.0
               };
               rewardDelta = rewards[bt] || 5.0;
               
@@ -397,7 +416,7 @@ Object.assign(window.GnnAI, {
                 const expansionThreshold = 400 * scale; 
 
                 if (distFromBase > expansionThreshold) {
-                  rewardDelta += 5.0;
+                  rewardDelta += 15.0;
                   reason = `BUILDING_BUILT_EXPANSION: ${bt} на расстоянии ${distFromBase.toFixed(0)}px (порог: ${expansionThreshold.toFixed(0)})`;
                 } else {
                   reason = `BUILDING_BUILT: ${bt}`;
@@ -456,7 +475,7 @@ Object.assign(window.GnnAI, {
         }
         
         if (criticalGoal && totalResRaw >= criticalCost * 0.9) {
-          rewardDelta = -5.0;
+          rewardDelta = -20.0;
           reason = `IDLE_WHILE_CAN_BUILD: можно построить ${criticalGoal}`;
         } else if (totalResRaw > 100 && gameTimeMin > 3.0) {
           rewardDelta = 0.0;
@@ -493,7 +512,6 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
   // === Эффективность экономики ===
   evaluateEconomyEfficiency: function (now) {
     if (!this.lastEcoEffCheck || now - this.lastEcoEffCheck < 6000) return;
@@ -550,11 +568,7 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
-  // ============================================================
   // ГРУППА 2: РЕСУРСЫ И ЭКСПАНСИЯ
-  // ============================================================
-
   // === Контроль ресурсов ===
   evaluateResourceControl: function (now) {
     if (!this.lastResourceControlCheck || now - this.lastResourceControlCheck < 5000) return;
@@ -640,7 +654,6 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
   // === Экспансия ===
   evaluateExpansion: function (now) {
     if (!this.lastExpansionCheck || now - this.lastExpansionCheck < 5000) return;
@@ -752,11 +765,7 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
-  // ============================================================
   // ГРУППА 3: ВОЕННАЯ МОЩЬ
-  // ============================================================
-
   // === Военный баланс ===
   evaluateMilitaryBalance: function (now) {
     if (!this.lastMilitaryCheck || now - this.lastMilitaryCheck < 3000) return;
@@ -807,7 +816,6 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
   // === Отставание от противника ===
   evaluateOpponentGap: function (now) {
     if (!this.lastGapCheck || now - this.lastGapCheck < 3000) return;
@@ -855,7 +863,6 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
   // === Активность армии ===
   evaluateArmyActivity: function (now) {
     if (!this.lastArmyActivityCheck || now - this.lastArmyActivityCheck < 4000) return;
@@ -909,13 +916,6 @@ Object.assign(window.GnnAI, {
       reasons.push(`ARMY_DEFENDING: ${defendingUnits} бойцов защищают`);
     }
     
-    // Штраф за панику движка
-    const panicRetreatUnits = combatUnits.filter(u => u.isRetreating === true).length;
-    if (panicRetreatUnits > 0) {
-      reward -= 10.0 * panicRetreatUnits;
-      reasons.push(`ENGINE_PANIC: ${panicRetreatUnits} юнитов в панике`);
-    }
-    
     // Бонус за разнообразие
     if (attackingUnits > 0 && defendingUnits > 0) {
       reward += 5.0;  // Было 8.0
@@ -935,7 +935,6 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
   // === Эффективность боя ===
   evaluateCombatEfficiency: function (now) {
     if (!this.lastCombatEfficiencyCheck || now - this.lastCombatEfficiencyCheck < 6000) return;
@@ -1032,7 +1031,6 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
   // === Качество выбора целей ===
   evaluateTargetSelection: function (now) {
     if (!this.lastTargetSelectionCheck || now - this.lastTargetSelectionCheck < 8000) return;
@@ -1121,11 +1119,34 @@ Object.assign(window.GnnAI, {
       }
     }
   },
+    // === Сохранение армии (Группа 3: Военная мощь) ===
+  evaluateArmyPreservation: function (now) {
+    if (!this.lastArmyPreservationCheck || now - this.lastArmyPreservationCheck < 8000) return;
+    this.lastArmyPreservationCheck = now;
 
-  // ============================================================
+    const myCombatUnits = gameState.units.filter(u =>
+      u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0
+    );
+
+    if (myCombatUnits.length >= 3) {
+      const healthyUnits = myCombatUnits.filter(u => u.health > u.maxHealth * 0.7).length;
+      const healthRatio = healthyUnits / myCombatUnits.length;
+
+      if (healthRatio >= 0.8) {
+        const currentState = this.buildGraphState();
+        if (currentState) {
+          this.replay.push({
+            X: currentState.X,
+            A_distance: currentState.A_distance,
+            A_threat: currentState.A_threat,
+            actionIndex: this._AIDX.idle,
+            reward: 8.0
+          });
+        }
+      }
+    }
+  },
   // ГРУППА 4: РАЗВЕДКА
-  // ============================================================
-
   // === Разведка ===
   evaluateRecon: function (now) {
     if (!this.lastReconCheck || now - this.lastReconCheck < 3000) return;
@@ -1177,7 +1198,6 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
   // === Разведка новых узлов ===
   evaluateReconDiscovery: function (now) {
     if (!this.lastReconDiscoveryCheck || now - this.lastReconDiscoveryCheck < 2000) return;
@@ -1226,11 +1246,7 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
-  // ============================================================
   // ГРУППА 5: ФАЗОВЫЕ НАГРАДЫ И СТАГНАЦИЯ
-  // ============================================================
-
   // === Фазовые награды ===
   evaluatePhaseRewards: function (now) {
     if (!this.lastPhaseCheck || now - this.lastPhaseCheck < 5000) return;
@@ -1295,6 +1311,10 @@ Object.assign(window.GnnAI, {
           reasons.push("PHASE2_ZERO_ARMY: нет армии");
         }
       }
+      if (gameTimeMin > 3.0 && armySize === 0 && hasBarracks && unitsInProduction === 0) {
+        phaseReward -= 15.0;  // жёсткий пинок: казарма есть, но не строит
+        reasons.push("PHASE2_BARRACKS_IDLE: казарма простаивает");
+}
     }
     
     // === ПОЗДНЯЯ ИГРА (5+ мин) ===
@@ -1336,7 +1356,6 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
   // === Стагнация ===
   evaluateStagnation: function (now) {
     if (now - this.lastStagnationCheck < 5000) return;
@@ -1413,7 +1432,6 @@ Object.assign(window.GnnAI, {
     this.lastBuildingCount = m.aiBuildings;
     this.lastResourceTotal = m.resTotal;
   },
-
   // === Технологическая стагнация ===
   checkTechStagnation: function (now) {
     if (!this.lastTechStagnationCheck || now - this.lastTechStagnationCheck < 10000) return;
@@ -1453,6 +1471,178 @@ Object.assign(window.GnnAI, {
     }
     
     this.lastResourceTotal = m.resTotal;
-  }
+  },
+    // === Адаптация к стратегии врага (Группа 5: Стратегия) ===
+  evaluateStrategicAdaptation: function (now) {
+    if (!this.lastAdaptationCheck || now - this.lastAdaptationCheck < 15000) return;
+    this.lastAdaptationCheck = now;
 
+    const currentEnemyComp = this.strategicMemory.enemyComposition || {};
+    const enemyFighters = currentEnemyComp.fighter || 0;
+    const enemyWorkers = currentEnemyComp.worker || 0;
+
+    // Эвристика смены стратегии: враг перешел от экономики к армии или наоборот
+    const isEnemyAggressive = enemyFighters > enemyWorkers;
+    const wasEnemyAggressive = this.strategicMemory.wasEnemyAggressive || false;
+
+    if (isEnemyAggressive !== wasEnemyAggressive) {
+      const myCombatUnits = gameState.units.filter(u =>
+        u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) && u.health > 0
+      ).length;
+
+      const myTurrets = gameState.buildings.filter(b =>
+        b.owner === "ai" && b.type?.startsWith("turret") && b.health > 0
+      ).length;
+
+      let aiResponded = false;
+      if (isEnemyAggressive && (myCombatUnits >= 2 || myTurrets >= 2)) {
+        aiResponded = true; // Враг атакует, мы построили оборону/армию
+      } else if (!isEnemyAggressive && myCombatUnits >= 1) {
+        aiResponded = true; // Враг мирный, мы сохраняем минимальную армию для харасса
+      }
+
+      if (aiResponded) {
+        const currentState = this.buildGraphState();
+        if (currentState) {
+          this.replay.push({
+            X: currentState.X,
+            A_distance: currentState.A_distance,
+            A_threat: currentState.A_threat,
+            actionIndex: this._AIDX.idle,
+            reward: 15.0
+          });
+        }
+      }
+      this.strategicMemory.wasEnemyAggressive = isEnemyAggressive;
+    }
+  },
+  // === ГРУППА 6: УПРАВЛЕНИЕ АКТИВАМИ (ПРОДАЖА ЗДАНИЙ) ===
+  evaluateBuildingLiquidation: function(now) {
+    if (!this.lastLiquidationCheck || now - this.lastLiquidationCheck < 4000) {
+      this.lastLiquidationCheck = now;
+    } else {
+      return;
+    }
+
+    const m = this.metrics();
+    const gameTimeMin = performance.now() / 60000;
+    let reward = 0;
+    let reasons = [];
+
+    const aiBuildings = gameState.buildings.filter(b => b.owner === "ai" && b.health > 0 && b.active);
+    const aiWorkers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0);
+    const protectedTypes = ["base", "base2", "base3"];
+
+    // ==========================================
+    // 🥕 1. ПРЯНИК: Награда за УМНОЕ ВОССТАНОВЛЕНИЕ (Smart Recovery)
+    // ==========================================
+    if (window.soldBuildings && window.soldBuildings.length > 0) {
+      // Смотрим продажи за последние 15 секунд
+      const recentSales = window.soldBuildings.filter(s => (now - s.time) < 15000);
+      
+      for (let sale of recentSales) {
+        // Проверяем: потратил ли ИИ полученные ресурсы на что-то полезное?
+        const recentMilitaryBuilds = gameState.buildings.filter(b =>
+          b.owner === "ai" && b.type.startsWith("barracks") && (now - b.builtAt) < 15000
+        ).length;
+        
+        const recentHires = gameState.units.filter(u =>
+          u.owner === "ai" && ["fighter", "assault", "elite"].includes(u.type) &&
+          (now - (u.builtAt || 0)) < 15000
+        ).length;
+
+        // Если после продажи здания ИИ построил казарму или нанял юнита — это ГЕНИАЛЬНО!
+        if (recentMilitaryBuilds > 0 || recentHires > 0) {
+          reward += 12.0; // 🔥 СИЛЬНЫЙ ПОЛОЖИТЕЛЬНЫЙ СИГНАЛ
+          reasons.push(`SMART_RECOVERY: Продал ${sale.type} и вложил ресурсы в армию!`);
+        } else if (sale.hpAtSale < (sale.maxHp * 0.4)) {
+          // Или хотя бы спас ресурсы от здания, которое всё равно бы уничтожили
+          reward += 5.0;
+          reasons.push(`SMART_SALVAGE: Спас 20% ресурсов от уничтожения ${sale.type}`);
+        }
+      }
+      // Чистим массив, чтобы не спамить наградами
+      window.soldBuildings = window.soldBuildings.filter(s => (now - s.time) < 15000);
+    }
+
+    // ==========================================
+    // 🏏 2. КНУТ: Штрафы за глупость (смягченные, но четкие)
+    // ==========================================
+    
+    // А. Экономический паралич (склады есть, рабочих нет)
+    if (aiWorkers.length === 0 && gameTimeMin > 1.5) {
+      const uselessEconomy = aiBuildings.filter(b => b.type === "warehouse" || b.type === "repairWorkshop").length;
+      if (uselessEconomy > 1) {
+        reward -= 6.0; // Было -10.0 (смягчили, но сигнал остался)
+        reasons.push(`HOARDING_USELESS: ${uselessEconomy} экон. зданий без рабочих`);
+        
+        // Подстраховка: ставим в очередь на продажу самое слабое
+        const toSell = aiBuildings.filter(b => b.type === "warehouse").sort((a,b) => a.health - b.health)[0];
+        if (toSell && typeof queueSale === "function" && !toSell.isSelling) {
+          queueSale(toSell);
+          reasons.push(" -> AUTO-QUEUED SALE");
+        }
+      }
+    }
+
+    // Б. Держит смертельно раненые здания без ремонта
+    const criticalUnrepaired = aiBuildings.filter(b => 
+      !protectedTypes.includes(b.type) &&
+      b.health < b.maxHealth * 0.3 &&
+      (!b.repairmen || b.repairmen.length === 0) &&
+      (!b.productionQueue || b.productionQueue.length === 0)
+    );
+
+    if (criticalUnrepaired.length > 0) {
+      reward -= 4.0 * criticalUnrepaired.length; // Было -5.0
+      reasons.push(`HOLDING_DYING: ${criticalUnrepaired.length} зданий на грани без ремонта`);
+
+      const worstBuilding = criticalUnrepaired.sort((a, b) => a.health - b.health)[0];
+      if (typeof queueSale === "function" && !worstBuilding.isSelling) {
+        queueSale(worstBuilding);
+        reasons.push(` -> AUTO-QUEUED CRITICAL ${worstBuilding.type}`);
+      }
+    }
+
+    // В. Turtle-стагнация (много турелей, 0 армии)
+    const turrets = aiBuildings.filter(b => b.type.startsWith("turret"));
+    if (turrets.length >= 4 && m.aiArmy === 0 && gameTimeMin > 3.0) {
+      reward -= 6.0; // Было -8.0
+      reasons.push("TURTLE_STAGNATION: Много турелей, 0 армии");
+      
+      const cheapestTurret = turrets.sort((a, b) => {
+        const costA = (a.buildCost?.gold || 0) + (a.buildCost?.silicon || 0);
+        const costB = (b.buildCost?.gold || 0) + (b.buildCost?.silicon || 0);
+        return costA - costB;
+      })[0];
+      
+      if (cheapestTurret && typeof queueSale === "function" && !cheapestTurret.isSelling) {
+        queueSale(cheapestTurret);
+        reasons.push(" -> AUTO-QUEUED EXCESS TURRET");
+      }
+    }
+
+    // ==========================================
+    // 3. ЗАПИСЬ В ОБУЧЕНИЕ (Replay Buffer)
+    // ==========================================
+    if (reward !== 0) {
+      const currentState = this.buildGraphState();
+      if (currentState) {
+        this.replay.push({
+          X: currentState.X,
+          A_distance: currentState.A_distance,
+          A_threat: currentState.A_threat,
+          actionIndex: this._AIDX.idle,
+          reward: reward
+        });
+        
+        // Логирование (показываем и кнут, и пряник)
+        if (window.GNN_DEBUG_REWARDS || Math.abs(reward) >= 4.0) {
+          const sign = reward >= 0 ? '+' : '';
+          const emoji = reward >= 5.0 ? '🥕' : (reward <= -4.0 ? '🏏' : '⚖️');
+          console.log(`[GnnAI ${emoji} SALE] ${sign}${reward.toFixed(1)} | ${reasons.join(', ')}`);
+        }
+      }
+    }
+  }
 });

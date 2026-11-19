@@ -34,14 +34,14 @@ window.gameMode = "single"; // или просто: gameMode = "single";
     WORLD_HEIGHT: 2200,
     BUILD_QUEUE_MS: 400,
     ECO_MS: 1500,
-    TRAIN_MS: 6000,
+    TRAIN_MS: 8000,
     SAVE_EVERY_BATCHES: 50,
     INTERACTION_RADIUS: 320,
-    BASE_THREAT_RADIUS: 450,
+    BASE_THREAT_RADIUS: 650,
     REPLAY_SIZE: 2000,
     BATCH_SIZE: 64,
     AUTO_ECONOMY: false,
-    BC_MODE:  true,
+    BC_MODE:  false,
     BC_TRANSITION_BATCHES: 250,
     STORAGE_KEY: "geomestra_gnn_weights_v7_7",
     STATS_KEY: "geomestra_gnn_benchmark_v7_7",
@@ -510,7 +510,7 @@ function autoRepairDamagedObjects() {
     const nearestWorkshop = workshops[0];
     
     // 🔥 ИСПРАВЛЕНИЕ: Для юнитов радиус чуть больше, так как они двигаются
-    const checkRadius = nearestWorkshop.controlRadius || 350; 
+    const checkRadius = nearestWorkshop.controlRadius || 210; 
     
     if (Math.hypot(target.x - nearestWorkshop.x, target.y - nearestWorkshop.y) <= checkRadius) {
       requestRepair(target, nearestWorkshop);

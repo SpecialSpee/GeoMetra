@@ -179,8 +179,19 @@ Object.assign(window.GnnAI, {
     if (!gameStarted || gameState.gameEnded || gameMode !== "gnn") return;
     if (!this.initialized) await this.init();
     if (!this.initialized) return;
-
     const now = performance.now();
+
+    // 🔥 РЕАБИЛИТАЦИЯ: Сброс флага отступления, если юнит вылечен (>85% HP)
+    if (gameState.units) {
+      gameState.units.forEach(u => {
+        if (u.owner === "ai" && u.forceRetreat && u.health > u.maxHealth * 0.85) {
+          u.isRetreating = false;
+          u.forceRetreat = false;
+          u.missionLog = null; // Юнит здоров и готов получать новые приказы
+        }
+      });
+    }
+
     this._wrapReplayPush();
 
     // 1. Оценка мира
@@ -202,6 +213,9 @@ Object.assign(window.GnnAI, {
       this.evaluateResourceControl(now);
       this.evaluateMissions();
       this.checkEconomicParalysis(now);
+      this.evaluateArmyPreservation(now);
+      this.evaluateStrategicAdaptation(now);
+      this.evaluateBuildingLiquidation(now);
     } catch (e) {
       console.error("[GnnAI] Error in evaluation phase:", e);
     }

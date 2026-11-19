@@ -7,10 +7,8 @@ let swarmFrameCounter = 0;
 let particleUpdateAccumulator = 0;
 let idCollisionCount = 0;
 const PARTICLE_UPDATE_INTERVAL = 0.033;
-
-// ==========================================
+const unitGroups = { group1: [], group2: [], group3: [] };
 // 🧱 ФУНДАМЕНТ ФИКСОВ — состояние и хелперы
-// ==========================================
 const FX_MIL = ["fighter", "assault", "elite"];
 const FX_STATE = {
   frame: 0,
@@ -32,6 +30,7 @@ function fxSets() {
     FX_STATE._ts = t;
   }
 }
+
 function fxInGame(o) { fxSets(); return FX_STATE._bs.has(o) || FX_STATE._us.has(o); }
 
 function fxValidTarget(t) {
@@ -155,10 +154,7 @@ function fxSanitizeOrders(u) {
   if (u.type === "repairman" && u.busyRepair && !u.repairIntervalId && !u.moveTarget &&
       !(u.commandQueue || []).some(c => c.type === "repair")) u.busyRepair = false;
 }
-
-// ==========================================
 // 🔥 GNN СОБЫТИЙНЫЕ ХУКИ (Mission Logging)
-// ==========================================
 window.GnnEventHooks = {
   onUnitDamaged: function(unit, damage, source) {
     if (!unit || !unit.missionLog) return;
@@ -468,9 +464,7 @@ bullet.splashDamage = 0;
 
   gameState.bullets.push(bullet);
 }
-// ============================================================
 // ЕДИНЫЙ ДВИЖОК ДВИЖЕНИЯ (Заменить старый moveUnit и логику в core.js)
-// ============================================================
 // 1. Функция только ЗАДАЕТ цель движения и коллбек, не выполняя анимацию
 function moveUnit(unit, targetX, targetY, callback) {
   if (unit.shocked || unit.isRetreating || unit.health <= 0) return;
@@ -538,17 +532,18 @@ function applyUnitMovement(unit, deltaTime) {
 
 // ПРИОРИТЕТ 1: Боевая физика
 if (["fighter", "assault", "elite"].includes(unit.type) && unit.target && unit.target.health > 0) {
-  if (unit.type === "assault") {
-    updateAssaultPhysics(unit, unit.target, deltaTime);
-  } else if (unit.type === "fighter") {
-    const dist = Math.hypot(unit.target.x - unit.x, unit.target.y - unit.y);
-    const mode = dist > unit.range ? 'approach' : 'orbit';
-    updateFighterPhysics(unit, unit.target, mode, deltaTime);
-  }
-  // Для elite движение обрабатывается внутри dynamicAttackElite, чтобы не было двойного вызова
-  return;
+    if (unit.type === "assault") {
+        updateAssaultPhysics(unit, unit.target, deltaTime);
+    } else if (unit.type === "fighter") {
+        const dist = Math.hypot(unit.target.x - unit.x, unit.target.y - unit.y);
+        const mode = dist > unit.range ? 'approach' : 'orbit';
+        updateFighterPhysics(unit, unit.target, mode, deltaTime);
+    } else if (unit.type === "elite") {
+        // 🔥 НОВОЕ: своя физика для элиты
+        updateElitePhysics(unit, unit.target, deltaTime);
+    }
+    return;
 }
-
   // ПРИОРИТЕТ 2: Стандартное движение к точке
   if (unit.moveTarget) {
     const dx = unit.moveTarget.x - unit.x;
@@ -925,6 +920,128 @@ function updateAssaultPhysics(unit, target, deltaTime) {
   unit.y += unit.vy * deltaTime;
 }
 
+function updateElitePhysics(unit, target, deltaTime) {
+    if (!target || !unit || unit.health <= 0) return;
+
+    const dist = Math.hypot(target.x - unit.x, target.y - unit.y);
+    if (dist === 0) return;
+
+    const angleToTarget = Math.atan2(target.y - unit.y, target.x - unit.x);
+    unit.angle = lerpAngle(unit.angle, angleToTarget, 0.03);
+
+    const frontX = Math.cos(unit.angle), frontY = Math.sin(unit.angle);
+    const tanX = -frontY, tanY = frontX;
+
+    const SIEGE_MIN = 380, SIEGE_MAX = 520;   
+    const BURN_MIN = 220, BURN_MAX = 340;     
+    const MELEE_MAX = 200;                     
+
+    let desiredPhase = unit.combatPhase || 'siege';
+    
+    if (dist > SIEGE_MAX) {
+        desiredPhase = 'approach'; 
+    } else if (dist < MELEE_MAX) {
+        // 🔥 КУЛДАУН НА ФАЗУ SHRED: не убегает чаще раза в 5 секунд
+        const now = performance.now();
+        if (!unit.lastShredTime || now - unit.lastShredTime > 5000) {
+            desiredPhase = 'shred';
+            unit.lastShredTime = now;
+        } else {
+            desiredPhase = 'burn'; // Вместо побега используем лазер
+        }
+    } else if (dist >= BURN_MIN && dist <= BURN_MAX) {
+        desiredPhase = 'burn';     
+    } else if (dist >= SIEGE_MIN && dist <= SIEGE_MAX) {
+        desiredPhase = 'siege';    
+    } else if (dist > BURN_MAX && dist < SIEGE_MIN) {
+        desiredPhase = 'closeIn';  
+    }
+    
+    unit.combatPhase = desiredPhase;
+    const panicMode = unit.health < unit.maxHealth * 0.3;
+
+    let ax = 0, ay = 0;
+
+    switch (desiredPhase) {
+        case 'approach': {
+            const desiredDist = SIEGE_MAX - 30;
+            const distError = dist - desiredDist;
+            ax = frontX * distError * 1.5;
+            ay = frontY * distError * 1.5;
+            break;
+        }
+
+        case 'siege': {
+            if (!unit.siegePhaseAngle) unit.siegePhaseAngle = Math.random() * Math.PI * 2;
+            unit.siegePhaseAngle += deltaTime * 0.15;
+
+            const orbitX = Math.cos(unit.siegePhaseAngle);
+            const orbitY = Math.sin(unit.siegePhaseAngle);
+            const idealDist = (SIEGE_MIN + SIEGE_MAX) / 2;
+            const distError = dist - idealDist;
+
+            ax = frontX * distError * 1.5 + orbitX * 15;
+            ay = frontY * distError * 1.5 + orbitY * 15;
+
+            // 🔥 МЯГКИЙ ОТКАТ ПОСЛЕ ЗАЛПА (уменьшено с 40 до 20)
+            if (unit.postVolleyTimer && unit.postVolleyTimer > 0) {
+                unit.postVolleyTimer -= deltaTime;
+                ax -= frontX * 20; // Было 40
+                ay -= frontY * 20;
+            }
+            break;
+        }
+
+        case 'closeIn': {
+            const desiredDist = BURN_MAX - 20;
+            const distError = dist - desiredDist;
+            ax = frontX * distError * 1.5;
+            ay = frontY * distError * 1.5;
+            break;
+        }
+
+        case 'burn': {
+            const idealDist = (BURN_MIN + BURN_MAX) / 2;
+            const distError = dist - idealDist;
+            
+            if (!unit.burnDriftTimer) unit.burnDriftTimer = 0;
+            unit.burnDriftTimer -= deltaTime;
+            if (unit.burnDriftTimer <= 0) {
+                unit.burnDriftDir = (unit.burnDriftDir || 1) * -1;
+                unit.burnDriftTimer = 6 + Math.random() * 4;
+            }
+            
+            ax = frontX * distError * 1.5 + tanX * 12 * (unit.burnDriftDir || 1);
+            ay = frontY * distError * 1.5 + tanY * 12 * (unit.burnDriftDir || 1);
+            break;
+        }
+
+        case 'shred': {
+            // 🔥 МЯГКИЙ ОТКАТ (уменьшено с 2.0 до 1.0)
+            const escapeDist = MELEE_MAX + 60; // Было +80
+            const distError = dist - escapeDist;
+            ax = -frontX * Math.abs(distError) * 1.0; // Было 2.0
+            ay = -frontY * Math.abs(distError) * 1.0;
+            
+            ax += tanX * 15 * (unit.orbitDirection || 1); // Было 25
+            ay += tanY * 15 * (unit.orbitDirection || 1);
+            break;
+        }
+    }
+
+    unit.vx = unit.vx * 0.97 + ax * deltaTime;
+    unit.vy = unit.vy * 0.97 + ay * deltaTime;
+
+    const maxSpeed = panicMode ? 45 : 40;
+    const curSpeed = Math.hypot(unit.vx, unit.vy);
+    if (curSpeed > maxSpeed) {
+        unit.vx = (unit.vx / curSpeed) * maxSpeed;
+        unit.vy = (unit.vy / curSpeed) * maxSpeed;
+    }
+
+    unit.x += unit.vx * deltaTime;
+    unit.y += unit.vy * deltaTime;
+}
 // 5. ОБЁРТКА ДЛЯ ДВИЖЕНИЯ В БОЮ (сближение/кайтинг)
 function dynamicMove(unit, target, deltaTime) {
   if (!unit || !target || unit.health <= 0) return;
@@ -992,101 +1109,147 @@ function dynamicAttackAssault(unit, target, deltaTime) {
 }
 
 function dynamicAttackElite(unit, target, deltaTime) {
-  if (unit.health <= 0 || !target || target.health <= 0) { 
-    unit.target = null; 
-    return; 
-  }
-  
-  const currentDistance = Math.hypot(target.x - unit.x, target.y - unit.y);
-  const preferredRange = unit.artilleryPreferredRange || unit.artilleryRange || 500;
-  const now = performance.now();
-  
-  // Держим дистанцию
-  if (currentDistance < preferredRange * 0.8) {
-    const angleAway = Math.atan2(unit.y - target.y, unit.x - target.x);
-    dynamicMove(unit, { x: target.x + Math.cos(angleAway) * preferredRange, y: target.y + Math.sin(angleAway) * preferredRange }, deltaTime);
-  } else if (currentDistance > preferredRange * 1.2) {
-    dynamicMove(unit, target, deltaTime);
-  }
-  
-  // Ближний бой (дробовик)
-  if (currentDistance <= unit.meleeRange && now - unit.lastMeleeAttack >= unit.meleeCooldown) {
-    const desiredAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
-    const pelletCount = 7, spreadAngle = 30 * Math.PI / 180;
-    for (let i = 0; i < pelletCount; i++) {
-      const angleOffset = -spreadAngle / 2 + (spreadAngle * i) / (pelletCount - 1);
-      let pellet = new Bullet(unit.x, unit.y, desiredAngle + angleOffset, MELEE_BULLET_CONFIG.speed, unit, target);
-      pellet.lifetime = MELEE_BULLET_CONFIG.lifetime;
-      pellet.damage = MELEE_BULLET_CONFIG.damage;
-      pellet.isMelee = true;
-      pellet.color = "255,165,0"; // Оранжевый для элиты
-      gameState.bullets.push(pellet);
+    if (unit.health <= 0 || !target || target.health <= 0) {
+        unit.target = null;
+        return;
     }
-    unit.lastMeleeAttack = now;
-  }
-  
-  // Артиллерия (дальний бой)
-  if (currentDistance <= unit.artilleryRange && now - unit.lastArtilleryAttack >= unit.artilleryCooldown) {
-    const desiredAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
-    const artilleryCount = 5 + Math.floor(Math.random() * 6);
-    for (let i = 0; i < artilleryCount; i++) {
-      let artillery = new Bullet(unit.x, unit.y, desiredAngle + (Math.random() - 0.5) * 0.2, ARTILLERY_BULLET_CONFIG.speed, unit, target);
-      artillery.lifetime = ARTILLERY_BULLET_CONFIG.lifetime;
-      artillery.damage = ARTILLERY_BULLET_CONFIG.damage;
-      artillery.splashRadius = ARTILLERY_BULLET_CONFIG.splashRadius;
-      artillery.splashDamage = ARTILLERY_BULLET_CONFIG.splashDamage;
-      artillery.color = "0,255,0"; // Зеленый для артиллерии
-      artillery.isArtillery = true;
-      gameState.bullets.push(artillery);
-    }
-    unit.lastArtilleryAttack = now;
-  }
-  
-  // Лазер
-  if (currentDistance <= unit.laserRange && now - unit.lastLaserAttack >= unit.laserCooldown) {
-    const laserAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
-    unit.laserBeam = { 
-      startX: unit.x, 
-      startY: unit.y, 
-      endX: unit.x + Math.cos(laserAngle) * unit.laserRange, 
-      endY: unit.y + Math.sin(laserAngle) * unit.laserRange, 
-      timestamp: now 
-    };
+
+    const currentDistance = Math.hypot(target.x - unit.x, target.y - unit.y);
+    const now = performance.now();
+
+    // 🔥 ПРОВЕРКА БЛИЖНИХ УГРОЗ: переключение на врагов в упор
+    const nearbyMeleeEnemies = getEnemiesInRange({x: unit.x, y: unit.y}, unit.meleeRange)
+        .filter(e => e.owner !== unit.owner && e.health > 0);
     
-    let hits = 0;
-    const enemyCandidates = gameState.units.concat(gameState.buildings)
-      .filter(e => e.owner !== unit.owner && e.health > 0)
-      .sort((a, b) => 
-        ((a.x - unit.x) * Math.cos(laserAngle) + (a.y - unit.y) * Math.sin(laserAngle)) - 
-        ((b.x - unit.x) * Math.cos(laserAngle) + (b.y - unit.y) * Math.sin(laserAngle))
-      );
-    
-    for (let enemy of enemyCandidates) {
-      const proj = ((enemy.x - unit.x) * Math.cos(laserAngle) + (enemy.y - unit.y) * Math.sin(laserAngle));
-      if (proj > 0 && proj < unit.laserRange) {
-        const perp = Math.abs(-Math.sin(laserAngle) * (enemy.x - unit.x) + Math.cos(laserAngle) * (enemy.y - unit.y));
-        if (perp < 20) {
-          if (typeof onDamage === "function") {
-            onDamage(enemy, 50);
-          } else {
-            enemy.health -= 50;
-            if (enemy.health <= 0) {
-              if (enemy instanceof Building) { 
-                spawnParticles(enemy.x, enemy.y, "red"); 
-                gameState.buildings = gameState.buildings.filter(b => b !== enemy); 
-              } else { 
-                gameState.units = gameState.units.filter(u => u !== enemy); 
-                selectedUnits = selectedUnits.filter(u => u !== enemy); 
-              }
-            }
-          }
-          hits++; 
-          if (hits >= 3) break;
+    if (nearbyMeleeEnemies.length > 0) {
+        // Переключаем цель на ближайшего врага в упор
+        target = nearbyMeleeEnemies.sort((a, b) => 
+            Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
+        )[0];
+        unit.target = target;
+    } else {
+        // Проверяем врагов в радиусе лазера (220-340)
+        const nearbyLaserEnemies = getEnemiesInRange({x: unit.x, y: unit.y}, unit.laserRange)
+            .filter(e => e.owner !== unit.owner && e.health > 0 && 
+                        Math.hypot(e.x - unit.x, e.y - unit.y) >= 220);
+        
+        if (nearbyLaserEnemies.length > 0 && currentDistance > unit.laserRange) {
+            // Переключаем на ближнего врага для лазера
+            target = nearbyLaserEnemies.sort((a, b) => 
+                Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
+            )[0];
+            unit.target = target;
         }
-      }
     }
-    unit.lastLaserAttack = now;
-  }
+
+    // Пересчитываем дистанцию после возможного переключения цели
+    const dist = Math.hypot(target.x - unit.x, target.y - unit.y);
+
+    // Держим дистанцию
+    const preferredRange = unit.artilleryPreferredRange || unit.artilleryRange || 500;
+    if (dist < preferredRange * 0.8) {
+        const angleAway = Math.atan2(unit.y - target.y, unit.x - target.x);
+        dynamicMove(unit, { x: target.x + Math.cos(angleAway) * preferredRange, y: target.y + Math.sin(angleAway) * preferredRange }, deltaTime);
+    } else if (dist > preferredRange * 1.2) {
+        dynamicMove(unit, target, deltaTime);
+    }
+
+    // 🔥 КАРТЕЧЬ (приоритет выше арты!)
+    if (dist <= unit.meleeRange && now - unit.lastMeleeAttack >= unit.meleeCooldown) {
+        if (typeof spaceAudio !== 'undefined') {
+            spaceAudio.play('melee', 100, 0.15, 0.6);
+        }
+        
+        const desiredAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
+        const pelletCount = 9;
+        const spreadAngle = 40 * Math.PI / 180;
+        
+        for (let i = 0; i < pelletCount; i++) {
+            const angleOffset = -spreadAngle / 2 + (spreadAngle * i) / (pelletCount - 1);
+            let pellet = new Bullet(unit.x, unit.y, desiredAngle + angleOffset, MELEE_BULLET_CONFIG.speed, unit, target);
+            pellet.lifetime = MELEE_BULLET_CONFIG.lifetime;
+            pellet.damage = MELEE_BULLET_CONFIG.damage;
+            pellet.isMelee = true;
+            pellet.color = "255,165,0";
+            gameState.bullets.push(pellet);
+        }
+        unit.lastMeleeAttack = now;
+    }
+
+    // 🔥 АРТИЛЛЕРИЯ (только если НЕТ врагов в упор!)
+    const noMeleeThreats = nearbyMeleeEnemies.length === 0;
+    if (noMeleeThreats && dist <= unit.artilleryRange && now - unit.lastArtilleryAttack >= unit.artilleryCooldown) {
+        if (typeof spaceAudio !== 'undefined') {
+            spaceAudio.play('artillery', 80, 0.6, 0.7);
+        }
+        
+        const desiredAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
+        const artilleryCount = 5 + Math.floor(Math.random() * 6);
+        
+        for (let i = 0; i < artilleryCount; i++) {
+            let artillery = new Bullet(unit.x, unit.y, desiredAngle + (Math.random() - 0.5) * 0.2, ARTILLERY_BULLET_CONFIG.speed, unit, target);
+            artillery.lifetime = ARTILLERY_BULLET_CONFIG.lifetime;
+            artillery.damage = ARTILLERY_BULLET_CONFIG.damage;
+            artillery.splashRadius = ARTILLERY_BULLET_CONFIG.splashRadius;
+            artillery.splashDamage = ARTILLERY_BULLET_CONFIG.splashDamage;
+            artillery.color = "0,255,0";
+            artillery.isArtillery = true;
+            gameState.bullets.push(artillery);
+        }
+        
+        unit.lastArtilleryAttack = now;
+        unit.postVolleyTimer = 0.4; // Было 0.6
+    }
+
+    // 🔥 ЛАЗЕР (средний приоритет)
+    if (dist <= unit.laserRange && now - unit.lastLaserAttack >= unit.laserCooldown) {
+        if (typeof spaceAudio !== 'undefined') {
+            spaceAudio.play('laser', 400, 0.15, 0.4);
+        }
+        
+        const laserAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
+        unit.laserBeam = {
+            startX: unit.x,
+            startY: unit.y,
+            endX: unit.x + Math.cos(laserAngle) * unit.laserRange,
+            endY: unit.y + Math.sin(laserAngle) * unit.laserRange,
+            timestamp: now
+        };
+        
+        let hits = 0;
+        const enemyCandidates = gameState.units.concat(gameState.buildings)
+            .filter(e => e.owner !== unit.owner && e.health > 0)
+            .sort((a, b) => 
+                ((a.x - unit.x) * Math.cos(laserAngle) + (a.y - unit.y) * Math.sin(laserAngle)) - 
+                ((b.x - unit.x) * Math.cos(laserAngle) + (b.y - unit.y) * Math.sin(laserAngle))
+            );
+        
+        for (let enemy of enemyCandidates) {
+            const proj = ((enemy.x - unit.x) * Math.cos(laserAngle) + (enemy.y - unit.y) * Math.sin(laserAngle));
+            if (proj > 0 && proj < unit.laserRange) {
+                const perp = Math.abs(-Math.sin(laserAngle) * (enemy.x - unit.x) + Math.cos(laserAngle) * (enemy.y - unit.y));
+                if (perp < 20) {
+                    if (typeof onDamage === "function") {
+                        onDamage(enemy, 50);
+                    } else {
+                        enemy.health -= 50;
+                        if (enemy.health <= 0) {
+                            if (enemy.width !== undefined) { 
+                                spawnParticles(enemy.x, enemy.y, "red"); 
+                                gameState.buildings = gameState.buildings.filter(b => b !== enemy); 
+                            } else { 
+                                gameState.units = gameState.units.filter(u => u !== enemy); 
+                                selectedUnits = selectedUnits.filter(u => u !== enemy); 
+                            }
+                        }
+                    }
+                    hits++; 
+                    if (hits >= 3) break;
+                }
+            }
+        }
+        unit.lastLaserAttack = now;
+    }
 }
 
 function checkForEnemiesAndAttack(unit) {
@@ -1964,10 +2127,7 @@ function updateShockZones(deltaTime) {
     }
   });
 }
-// ============================================================
 // Токены ресурсов (визуальное отображение переносимого ресурса)
-// ============================================================
-
 function spawnResourceToken(worker, resourceType) {
   const token = {
     type: "resourceToken",
@@ -2215,9 +2375,7 @@ function releaseUnusedMemory() {
   }
   if (quadtree) quadtree.clear();
 }
-// ============================================================
 // Продажа зданий / очередь продаж ИИ
-// ============================================================
 window.aiSaleQueue = window.aiSaleQueue || [];
 window.aiSaleCooldown = window.aiSaleCooldown || false;
 window.soldBuildings = window.soldBuildings || [];
@@ -2319,6 +2477,8 @@ function triggerSale(building) {
     x: building.x,
     y: building.y,
     type: building.type,
+    hpAtSale: building.health,       // 🔥 НОВОЕ: сколько HP было при продаже
+    maxHp: building.maxHealth,
     time: performance.now()
   });
 
@@ -2345,10 +2505,7 @@ function processAISaleQueue() {
     window.aiSaleCooldown = false;
   }, 6000);
 }
-
-// ============================================================
 // Обработка очереди производства юнитов
-// ============================================================
 let unitIdCounter = 0;
 function generateUniqueUnitId() {
   // 🔥 Используем комбинацию счётчика, времени и случайного числа
@@ -2400,7 +2557,6 @@ function processProductionQueue(building) {
     }
   }
 }
-
 // Пример: при уничтожении здания (или продаже) вызываем функцию для маркировки зоны
 function onBuildingDestroyed(building) {
   // 🛡️ Помечаем здание как уничтоженное ДО удаления из массива,
@@ -2563,7 +2719,6 @@ gameState.units.filter(unit =>
 
   gameLoopId = requestAnimationFrame(gameLoop);
 }
-
 // --- Дополнительные функции логики из твоего списка ---
 function findNearestAIBuilding(x, y) {
   let nearest = null, minDist = Infinity;
@@ -2958,8 +3113,6 @@ function fireLaserShot(shooter, target) {
   startLaserEffect(shooter, target);
 }
 
-const unitGroups = { group1: [], group2: [], group3: [] };
-
 function assignGroup(groupNumber) {
   const groupKey = `group${groupNumber}`;
   if (!unitGroups[groupKey]) unitGroups[groupKey] = [];
@@ -3104,17 +3257,7 @@ function setFormation(type) {
     });
   }
 }
-
-// ============================================================
 // ПЕРКИ: РАСШИРЕННАЯ ЛОГИКА С ВИЗУАЛОМ
-// ============================================================
-
-// Убедись, что эти переменные объявлены в начале файла или в script.js:
-// let perkAwaitingTarget = false, shockActive = false, bombActive = false, reconActive = false;
-// let perkCooldowns = [0, 0, 0], equippedPerks = [null, null, null];
-// let reconConfirmCallback = null, reconCancelCallback = null;
-// let shockZones = [], bombZones = [], reconZones = [];
-
 function showFloatingHint(text) {
   const hint = document.createElement("div");
   hint.textContent = text;

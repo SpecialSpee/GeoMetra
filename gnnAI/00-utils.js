@@ -68,6 +68,7 @@ Object.assign(window.GnnAI, {
   initialized: false,
   training: false,
   isSaving: false,
+  _saveScheduled: false,
   trainBatches: 0,
   lastTick: {},
   lastState: null,
@@ -123,6 +124,9 @@ Object.assign(window.GnnAI, {
   currentWeightStats: null,
   lastStatsUpdate: 0,
   db: null,
+  lastArmyPreservationCheck: 0,
+  lastAdaptationCheck: 0,
+  gradHistory: [],
   PREREQUISITES: {
     "turret": "barracks",
     "turret2": "barracks2",

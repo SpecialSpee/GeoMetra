@@ -198,8 +198,8 @@ Object.assign(window.GnnAI, {
   },
   // === Награда за HP базы ===
   reward: function (p, after) {
-    if (!after.playerAlive) return 500.0;
-    if (after.baseHp <= 0) return -500.0;
+    if (!after.playerAlive) return 1500.0;
+    if (after.baseHp <= 0) return -1500.0;
     const beforeHp = p.before && typeof p.before.baseHp === 'number' ? p.before.baseHp : 1.0;
     const currentHp = typeof after.baseHp === 'number' ? after.baseHp : 0;
     const delta = (currentHp - beforeHp) * 20.0;
@@ -245,7 +245,12 @@ Object.assign(window.GnnAI, {
       b.owner === "ai" && b.type === "warehouse" && b.active && (b.workers || 0) < (b.maxDeliveryWorkers || 5)
     );
     if (hasWarehouseWithSpace && can(WORKER_COST)) mask[this._AIDX.hireWorker] = 1;
-    if (warehouses >= 1 && can(REPAIR_WORKSHOP_COST) && (workshops < 2 || woundedUnits > 3)) mask[this._AIDX.build_repair] = 1;
+    if (warehouses >= 1 && can(REPAIR_WORKSHOP_COST)) {
+      // Разрешаем первую мастерскую всегда, а вторую ТОЛЬКО если есть реальный урон (>2 раненых)
+      if (workshops === 0 || woundedUnits > 2) {
+        mask[this._AIDX.build_repair] = 1;
+      }
+    }    
     const hasWorkshopWithSpace = gameState.buildings.some(b =>
       b.owner === "ai" && b.type === "repairWorkshop" && b.active && (b.repairman || 0) < (b.capacity || 3)
     );
@@ -333,13 +338,13 @@ Object.assign(window.GnnAI, {
   execute: function (action, actionIndex, state) {
     const now = performance.now();
 
-    const isUnitAvailable = (u) => {
-      if (!u || u.health <= 0) return false;
-      if (u.isRetreating) return false; // 🔥 ЗАПРЕТ: не прерывать паническое отступление
-      if (u.target && u.target.health > 0) return false; // 🔥 ЗАПРЕТ: не прерывать активный бой
-      if (!u.missionLog) return true;
-      return (now - u.missionLog.startTime) > 6000; // 6 секунд неприкосновенности
-    };
+  const isUnitAvailable = (u) => {
+    if (!u || u.health <= 0) return false;
+    if (u.isRetreating || u.forceRetreat) return false; // 🔥 ЗАПРЕТ: юнит в режиме паники/ремонта
+    if (u.target && u.target.health > 0) return false; // 🔥 ЗАПРЕТ: не прерывать активный бой
+    if (!u.missionLog) return true;
+    return (now - u.missionLog.startTime) > 6000; // 6 секунд неприкосновенности
+  };
 
     const tacticalActions = [
       "strike_weak", "focus_fire", "retreat_regroup", "flank_attack",
@@ -513,23 +518,32 @@ Object.assign(window.GnnAI, {
 
       // STRIKE_WEAK
       if (action === "strike_weak") {
-        const targets = state.nodes.filter(n => n.valid && n.owner === "player" && ["warehouse","barracks","beacon","base","base2","base3"].includes(n.type) && n.hp > 0);
+        // 🔥 ИСПРАВЛЕНО: полное объявление targets + защита от атаки своих
+        const targets = state.nodes.filter(n => 
+          n.valid && 
+          n.owner === "player" && 
+          n.owner !== "ai" && 
+          ["warehouse","barracks","beacon","base","base2","base3"].includes(n.type) && 
+          n.hp > 0
+        );
+        
         targets.forEach(target => {
-          const nearbyEnemies = state.nodes.filter(n => n.valid && n.owner === "player" && Math.hypot(n.x - target.x, n.y - target.y) < 200 && n !== target).length;
+          const nearbyEnemies = state.nodes.filter(n => 
+            n.valid && n.owner === "player" && n.owner !== "ai" && 
+            Math.hypot(n.x - target.x, n.y - target.y) < 200 && n !== target
+          ).length;
           target.isolationScore = nearbyEnemies;
           
-          // АНАЛИЗ ОПЕРАЦИИ: Сколько наших юнитов уже идет на эту цель?
           const ourUnitsAlreadyAssigned = gameState.units.filter(u => 
             u.owner === "ai" && u.health > 0 && u.commandQueue && u.commandQueue.length > 0 &&
             u.commandQueue.some(cmd => cmd.type === "attack" && cmd.target && (cmd.target.id === target.obj?.id || Math.hypot(cmd.target.x - target.x, cmd.target.y - target.y) < 50))
           ).length;
-          target.overkillPenalty = ourUnitsAlreadyAssigned * 10; // Штраф за скопление
+          target.overkillPenalty = ourUnitsAlreadyAssigned * 10;
         });
         
         targets.sort((a, b) => {
           const aPrio = {base: 10, base2: 10, base3: 10, warehouse: 8, barracks: 7, beacon: 6}[a.type] || 5;
           const bPrio = {base: 10, base2: 10, base3: 10, warehouse: 8, barracks: 7, beacon: 6}[b.type] || 5;
-          // Сортируем по приоритету, минус изоляция, минус оверкилл
           return (bPrio - b.isolationScore * 2 - b.overkillPenalty) - (aPrio - a.isolationScore * 2 - a.overkillPenalty);
         });
         
@@ -539,7 +553,6 @@ Object.assign(window.GnnAI, {
         const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0 && isUnitAvailable(u));
         if (freeUnits.length === 0) return false;
         
-        // Ограничиваем количество атакующих, чтобы не слать всю армию на один склад
         const maxAttackers = Math.min(freeUnits.length, target.type === "warehouse" ? 4 : 8);
         const attackers = freeUnits.slice(0, maxAttackers);
         
@@ -560,6 +573,11 @@ Object.assign(window.GnnAI, {
           
         attackers.forEach(u => {
           const physicalTarget = (target.obj && target.obj.units) ? target.obj.units[0] : target.obj;
+          // 🔥 УНИВЕРСАЛЬНАЯ ЗАЩИТА: не атаковать своих
+          if (physicalTarget && physicalTarget.owner === u.owner) {
+            console.warn(`[GnnAI ⚠️] БЛОКИРОВКА: юнит ${u.type} пытался атаковать своего ${physicalTarget.type}`);
+            return;
+          }
           u.commandQueue = [...waypoints, {type: "attack", target: physicalTarget}];
         });
         
@@ -569,7 +587,12 @@ Object.assign(window.GnnAI, {
 
       // FOCUS_FIRE
       if (action === "focus_fire") {
-        const enemyTargets = state.nodes.filter(n => n.valid && n.owner === "player" && n.hp > 0);
+        const enemyTargets = state.nodes.filter(n => 
+          n.valid && 
+          n.owner === "player" && 
+          n.owner !== "ai" &&  // 🔥 ЗАПРЕТ своих
+          n.hp > 0
+        );
         if (enemyTargets.length === 0) return false;
         
         enemyTargets.sort((a, b) => {
@@ -603,22 +626,60 @@ Object.assign(window.GnnAI, {
         return true;
       }
 
-      // RETREAT_REGROUP
-      if (action === "retreat_regroup") {
-        const wounded = gameState.units.filter(u =>
-          u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) &&
-          u.health > 0 && u.health < u.maxHealth * 0.5
-        );
-        const aiCombat = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0);
-        const rallyPoint = aiCombat.length >= 3
-          ? { x: aiCombat.reduce((s, u) => s + u.x, 0) / aiCombat.length, y: aiCombat.reduce((s, u) => s + u.y, 0) / aiCombat.length }
-          : aiBase;
-        wounded.forEach(u => {
-          u.commandQueue = [{type: "move", x: rallyPoint.x + (Math.random() - 0.5) * 100, y: rallyPoint.y + (Math.random() - 0.5) * 100}];
-        });
-        this.registerAction(action, state, {type: "retreat", anchor: rallyPoint}, actionIndex);
-        return true;
+  // RETREAT_REGROUP (УМНАЯ ПАНИКА)
+  if (action === "retreat_regroup") {
+    const wounded = gameState.units.filter(u =>
+      u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) &&
+      u.health > 0 && u.health < u.maxHealth * 0.65 // Отступаем при 65% HP, чтобы успеть уйти
+    );
+    
+    if (wounded.length === 0) return false;
+
+    const repairWorkshop = gameState.buildings.find(b => b.owner === "ai" && b.type === "repairWorkshop" && b.active);
+    const rallyPoint = repairWorkshop || aiBase;
+
+    wounded.forEach(u => {
+      // 1. ЖЕСТКИЙ СБРОС: уничтожаем старые команды и логи, чтобы юнит "забыл" атаку
+      u.commandQueue = [];
+      u.missionLog = null;
+      u.isRetreating = true;
+      u.forceRetreat = true; // Дополнительный флаг-страж
+
+      // 2. Находим ближайшую угрозу (вражеский юнит или турель)
+      const threats = [
+        ...gameState.units.filter(e => e.owner === "player" && e.health > 0),
+        ...gameState.buildings.filter(e => e.owner === "player" && e.type?.startsWith("turret") && e.health > 0)
+      ];
+
+      let nearestThreat = null;
+      let minDist = Infinity;
+      threats.forEach(t => {
+        const d = Math.hypot(t.x - u.x, t.y - u.y);
+        if (d < minDist) { minDist = d; nearestThreat = t; }
+      });
+
+      let escapeX = u.x;
+      let escapeY = u.y;
+
+      // 3. Если угроза близко (< 350px), сначала делаем рывок в ПРОТИВОПОЛОЖНУЮ сторону
+      if (nearestThreat && minDist < 350) {
+        const angle = Math.atan2(u.y - nearestThreat.y, u.x - nearestThreat.x); // Вектор ОТ угрозы
+        const evadeDist = 200; // Дистанция рывка из зоны прямого обстрела
+        escapeX = u.x + Math.cos(angle) * evadeDist;
+        escapeY = u.y + Math.sin(angle) * evadeDist;
       }
+
+      // 4. Формируем новую очередь: Сначала рывок в безопасность, потом движение к ремонту
+      // ВАЖНО: Команды "attack" здесь НЕТ. Только движение.
+      u.commandQueue = [
+        { type: "move", x: escapeX, y: escapeY },
+        { type: "move", x: rallyPoint.x + (Math.random() - 0.5) * 80, y: rallyPoint.y + (Math.random() - 0.5) * 80 }
+      ];
+    });
+
+    this.registerAction(action, state, {type: "retreat", anchor: rallyPoint, units: wounded.length}, actionIndex);
+    return true;
+  }
 
       // FLANK_ATTACK
       if (action === "flank_attack") {
@@ -629,8 +690,11 @@ Object.assign(window.GnnAI, {
         
         const groups = this.splitArmyIntoGroups(freeUnits, 2);
         const targetNode = state.nodes.find(n =>
-          n.valid && n.owner === "player" &&
-          (n.type.includes("base") || ["fighter","assault","elite","warehouse","barracks"].includes(n.type)) && n.hp > 0
+          n.valid && 
+          n.owner === "player" && 
+          n.owner !== "ai" &&  // 🔥 ЗАПРЕТ своих
+          (n.type.includes("base") || ["fighter","assault","elite","warehouse","barracks"].includes(n.type)) && 
+          n.hp > 0
         );
         
         // Если главная цель пропала, ищем любую другую вражескую единицу
@@ -647,7 +711,12 @@ Object.assign(window.GnnAI, {
             // АНАЛИЗ: Даем команду двигаться  точке фланга, но как только враг в радиусе атаки, движок игры сам должен переключить на атаку.
             const scale = typeof window.getWorldScale === 'function' ? window.getWorldScale() : 1.0;
             const distToTarget = Math.hypot(u.x - fallbackTarget.x, u.y - fallbackTarget.y);
-            if (distToTarget < (300 * scale)) { // 🔥 АДАПТАЦИЯ
+            if (distToTarget < (300 * scale)) { 
+              // 🔥 УНИВЕРСАЛЬНАЯ ЗАЩИТА: не атаковать своих
+              if (physicalTarget && physicalTarget.owner === u.owner) {
+                console.warn(`[GnnAI ⚠️] БЛОКИРОВКА: юнит ${u.type} пытался атаковать своего ${physicalTarget.type}`);
+                return false;
+              }
               u.commandQueue = [{type: "attack", target: physicalTarget}];
             } else {
               u.commandQueue = [
@@ -668,8 +737,11 @@ Object.assign(window.GnnAI, {
       // HARASS_ECONOMY
       if (action === "harass_economy") {
         const ecoTargets = state.nodes.filter(n =>
-          n.valid && n.owner === "player" &&
-          ["warehouse","repairWorkshop","worker"].includes(n.type) && n.hp > 0
+          n.valid && 
+          n.owner === "player" && 
+          n.owner !== "ai" &&  // 🔥 ЗАПРЕТ своих
+          ["warehouse","repairWorkshop","worker"].includes(n.type) && 
+          n.hp > 0
         );
         if (ecoTargets.length === 0) return false;
         

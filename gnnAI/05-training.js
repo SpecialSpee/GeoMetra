@@ -203,23 +203,22 @@ Object.assign(window.GnnAI, {
         // Клиппинг градиентов по общей норме.
         const gradValues = this.vars.map(v => grads[v.name]).filter(Boolean);
         let clipCoef = 1.0;
+        let normVal = 0; // 🔥 Объявляем переменную заранее
 
         if (gradValues.length > 0) {
           const sumSquares = gradValues.map(g => g.square().sum());
           const globalNorm = tf.addN(sumSquares).sqrt();
-          const normVal = globalNorm.dataSync()[0];
+          normVal = globalNorm.dataSync()[0]; // 🔥 Сохраняем значение
 
           clipCoef = Math.min(
             1.0,
             (CFG.GRADIENT_CLIP_NORM || 5.0) / (normVal + 1e-8)
           );
-
           sumSquares.forEach(t => t.dispose());
           globalNorm.dispose();
         }
 
         const finalGrads = {};
-
         this.vars.forEach(v => {
           const g = grads[v.name];
           finalGrads[v.name] = g ? g.mul(clipCoef) : tf.zerosLike(v);
@@ -234,6 +233,15 @@ Object.assign(window.GnnAI, {
 
         const lossVal = value.dataSync()[0];
         value.dispose();
+
+        // 🔥 СБОР ДАННЫХ ДЛЯ ГРАФИКА (исправлено: lossVal уже определен)
+        if (!this.gradHistory) this.gradHistory = [];
+        this.gradHistory.push({
+          batch: this.trainBatches + 1,
+          loss: isFinite(lossVal) ? lossVal : NaN,
+          gradNorm: normVal
+        });
+        if (this.gradHistory.length > 60) this.gradHistory.shift();
 
         if (!isFinite(lossVal)) {
           console.error("[GnnAI] ❌ Loss стал NaN! Сброс...");
@@ -263,28 +271,24 @@ Object.assign(window.GnnAI, {
     });
 
     // Сохранение вне tf.tidy.
-    if (shouldSave) {
+    if (shouldSave && !this._saveScheduled) {
       this.isSaving = true;
-
-      requestAnimationFrame(() => {
-        requestAnimationFrame(async () => {
-          try {
-            await this.saveWeights();
-          } catch (e) {
-            console.error("[GnnAI] save error:", e);
-          } finally {
+      this._saveScheduled = true;  // 🔥 Помечаем, что сохранение запланировано
+      setTimeout(() => {
+        Promise.resolve(this.saveWeights())
+          .catch(e => console.error("[GnnAI] save error:", e))
+          .finally(() => { 
             this.isSaving = false;
-          }
-        });
-      });
+            this._saveScheduled = false;  // 🔥 Сбрасываем флаг
+          });
+      }, 100);
     } else {
       this.isSaving = false;
     }
   },
 
   // ============================================================
-  // Лёгкий обучающий шаг по кадрам.
-  // Используется из tick(), чтобы не фризить игру.
+  // Лёгкий обучающий шаг по кадрам (ПОЛНАЯ ЗАМЕНА С ДЕТЕКТОРОМ ОШИБОК)
   // ============================================================
   _doTrainStep: function () {
     if (!this._trainStepsPending || this._trainStepsPending <= 0) return;
@@ -302,10 +306,9 @@ Object.assign(window.GnnAI, {
       try {
         const miniBatch = [];
         const miniSize = Math.min(8, this.replay.length);
-
+        
         for (let i = 0; i < miniSize; i++) {
           const sample = this.replay.getRandom();
-
           if (
             sample &&
             sample.X &&
@@ -327,133 +330,70 @@ Object.assign(window.GnnAI, {
         }
 
         const B = 8;
-
-        const xs = tf.tensor3d(
-          miniBatch.map(b => b.X),
-          [B, CFG.MAX_NODES, CFG.NODE_FEATURES]
-        );
-
-        const as_dist = tf.tensor3d(
-          miniBatch.map(b => b.A_distance),
-          [B, CFG.MAX_NODES, CFG.MAX_NODES]
-        );
-
-        const as_threat = tf.tensor3d(
-          miniBatch.map(b => b.A_threat),
-          [B, CFG.MAX_NODES, CFG.MAX_NODES]
-        );
-
-        const act = tf.tensor1d(
-          miniBatch.map(b => b.actionIndex),
-          "int32"
-        );
-
-        const rew = tf.tensor1d(
-          miniBatch.map(b => {
-            const r = isFinite(b.reward) ? Math.max(-1000, Math.min(1000, b.reward)) : 0;
-            return Math.tanh(r / 100) * 10;
-          }),
-          "float32"
-        );
-
-        const oldLogProbs = tf.tensor1d(
-          miniBatch.map(b => isFinite(b.oldLogProb) ? b.oldLogProb : -10.0),
-          "float32"
-        );
-
-        const oldValues = tf.tensor1d(
-          miniBatch.map(b => isFinite(b.value) ? b.value : 0.0),
-          "float32"
-        );
-
-        const maskTensor = tf.tensor2d(
-          miniBatch.map(b => {
-            let m = b.actionMask;
-            if (!m || m.length !== G_ACTIONS.length) {
-              m = new Array(G_ACTIONS.length).fill(1);
-            }
-            return m;
-          }),
-          [B, G_ACTIONS.length]
-        );
+        const xs = tf.tensor3d(miniBatch.map(b => b.X), [B, CFG.MAX_NODES, CFG.NODE_FEATURES]);
+        const as_dist = tf.tensor3d(miniBatch.map(b => b.A_distance), [B, CFG.MAX_NODES, CFG.MAX_NODES]);
+        const as_threat = tf.tensor3d(miniBatch.map(b => b.A_threat), [B, CFG.MAX_NODES, CFG.MAX_NODES]);
+        const act = tf.tensor1d(miniBatch.map(b => b.actionIndex), "int32");
+        const rew = tf.tensor1d(miniBatch.map(b => {
+          const r = isFinite(b.reward) ? Math.max(-1000, Math.min(1000, b.reward)) : 0;
+          return Math.tanh(r / 100) * 10;
+        }), "float32");
+        const oldLogProbs = tf.tensor1d(miniBatch.map(b => isFinite(b.oldLogProb) ? b.oldLogProb : -10.0), "float32");
+        const oldValues = tf.tensor1d(miniBatch.map(b => isFinite(b.value) ? b.value : 0.0), "float32");
+        const maskTensor = tf.tensor2d(miniBatch.map(b => {
+          let m = b.actionMask;
+          if (!m || m.length !== G_ACTIONS.length) m = new Array(G_ACTIONS.length).fill(1);
+          return m;
+        }), [B, G_ACTIONS.length]);
 
         const globalFeatures = this.getGlobalFeatures().map(v => isFinite(v) ? v : 0);
-        const globalBatch = tf.tensor2d(
-          Array(B).fill(globalFeatures),
-          [B, CFG.GLOBAL_FEATURES]
-        );
+        const globalBatch = tf.tensor2d(Array(B).fill(globalFeatures), [B, CFG.GLOBAL_FEATURES]);
 
         const { value, grads } = tf.variableGrads(() => {
           const { logits, value } = this.model.forwardBatch(xs, as_dist, as_threat, globalBatch);
-
           const clippedValue = tf.clipByValue(value, -50, 50);
-
-          // ВАЖНО: запрещённые действия уводим в -1e9.
           const inverseMask = tf.scalar(1).sub(maskTensor).mul(-1e9);
           const maskedLogits = logits.add(inverseMask);
-
           const logProbs = tf.log(tf.softmax(maskedLogits).add(1e-10));
           const oneHot = tf.oneHot(act, G_ACTIONS.length);
           const newLogProbs = logProbs.mul(oneHot).sum(1);
-
           const values = clippedValue.squeeze();
           const advantage = rew.sub(values);
-
           const ratio = tf.exp(newLogProbs.sub(oldLogProbs));
-          const clippedRatio = tf.clipByValue(
-            ratio,
-            1 - CFG.CLIP_EPSILON,
-            1 + CFG.CLIP_EPSILON
-          );
-
+          const clippedRatio = tf.clipByValue(ratio, 1 - CFG.CLIP_EPSILON, 1 + CFG.CLIP_EPSILON);
           const surrogate1 = ratio.mul(advantage);
           const surrogate2 = clippedRatio.mul(advantage);
           const actorLoss = tf.minimum(surrogate1, surrogate2).mul(-1).mean();
-
-          const valueClipped = oldValues.add(
-            tf.clipByValue(values.sub(oldValues), -0.5, 0.5)
-          );
-
+          const valueClipped = oldValues.add(tf.clipByValue(values.sub(oldValues), -0.5, 0.5));
           const criticLoss1 = values.sub(rew).square();
           const criticLoss2 = valueClipped.sub(rew).square();
           const criticLoss = tf.maximum(criticLoss1, criticLoss2).mean();
-
           const probs = tf.softmax(maskedLogits);
           const entropy = probs.mul(logProbs).mul(-1).sum(1).mean();
-
           const currentEntropyCoef = this.getEntropyCoef();
-
-          return actorLoss
-            .add(criticLoss.mul(0.5))
-            .sub(entropy.mul(currentEntropyCoef));
+          return actorLoss.add(criticLoss.mul(0.5)).sub(entropy.mul(currentEntropyCoef));
         }, this.vars);
 
         const gradValues = this.vars.map(v => grads[v.name]).filter(Boolean);
         let clipCoef = 1.0;
+        let normVal = 0;
 
         if (gradValues.length > 0) {
           const sumSquares = gradValues.map(g => g.square().sum());
           const globalNorm = tf.addN(sumSquares).sqrt();
-          const normVal = globalNorm.dataSync()[0];
-
-          clipCoef = Math.min(
-            1.0,
-            (CFG.GRADIENT_CLIP_NORM || 5.0) / (normVal + 1e-8)
-          );
-
+          normVal = globalNorm.dataSync()[0];
+          clipCoef = Math.min(1.0, (CFG.GRADIENT_CLIP_NORM || 5.0) / (normVal + 1e-8));
           sumSquares.forEach(t => t.dispose());
           globalNorm.dispose();
         }
 
         const finalGrads = {};
-
         this.vars.forEach(v => {
           const g = grads[v.name];
           finalGrads[v.name] = g ? g.mul(clipCoef) : tf.zerosLike(v);
         });
 
         this.optimizer.applyGradients(finalGrads);
-
         this.vars.forEach(v => {
           if (grads[v.name]) grads[v.name].dispose();
           if (finalGrads[v.name]) finalGrads[v.name].dispose();
@@ -462,29 +402,42 @@ Object.assign(window.GnnAI, {
         const lossVal = value.dataSync()[0];
         value.dispose();
 
+        // Сбор данных для графика
+        if (!this.gradHistory) this.gradHistory = [];
+        this.gradHistory.push({
+          batch: this.trainBatches + 1,
+          loss: isFinite(lossVal) ? lossVal : NaN,
+          gradNorm: normVal
+        });
+        if (this.gradHistory.length > 60) this.gradHistory.shift();
+
         if (isFinite(lossVal)) {
           this.trainBatches++;
-          this.updateTargetNetwork();
-
-          if (this.trainBatches % 10 === 0) {
-            console.log(`[GnnAI] Mini-batch ${this.trainBatches}, Loss: ${lossVal.toFixed(4)}`);
+          
+          // 🔥 Target network обновляем РАЗ В 20 БАТЧЕЙ (было 10)
+          if (this.trainBatches % 20 === 0) {
+            this.updateTargetNetwork();
           }
-
-          const saveEvery = CFG.SAVE_EVERY_BATCHES || 100;
-
-          if (this.trainBatches % saveEvery === 0 && !this.isSaving) {
+          
+          if (this.trainBatches % 10 === 0) {
+            console.log(`[GnnAI] Mini-batch ${this.trainBatches}, Loss: ${lossVal.toFixed(4)}, GradNorm: ${normVal.toFixed(4)}`);
+          }
+          
+          const saveEvery = CFG.SAVE_EVERY_BATCHES || 50;
+          if (this.trainBatches % saveEvery === 0 && !this.isSaving && !this._saveScheduled) {
             this.isSaving = true;
-
-            requestAnimationFrame(() => {
+            this._saveScheduled = true;  // 🔥 Помечаем, что сохранение запланировано
+            setTimeout(() => {
               Promise.resolve(this.saveWeights())
                 .catch(e => console.error("[GnnAI] mini-save error:", e))
-                .finally(() => {
+                .finally(() => { 
                   this.isSaving = false;
+                  this._saveScheduled = false;  // 🔥 Сбрасываем флаг
                 });
-            });
+            }, 100);
           }
         } else {
-          console.error("[GnnAI] ❌ Mini-batch Loss NaN/Inf. Пропуск шага.");
+          console.error("[GnnAI] ❌ Mini-batch Loss NaN/Inf.");
         }
       } catch (e) {
         console.error("[GnnAI] train step error", e);

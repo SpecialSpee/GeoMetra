@@ -7,7 +7,9 @@
 Object.assign(window.GnnAI, {
 
   // === Сохранение весов (основной метод) ===
-  saveWeights: async function () {
+saveWeights: async function() {
+  // 🔥 Даём браузеру отрисовать кадр перед блокирующим чтением
+  await new Promise(r => setTimeout(r, 50));
     if (!this.vars || this.vars.length === 0) return;
 
     // Защита: если WebGL контекст мёртв — не читаем тензоры
