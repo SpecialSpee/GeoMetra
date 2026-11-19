@@ -1,6 +1,5 @@
 // ============================================================
-// trainingBot.js — Сверхбыстрый и агрессивный тренировочный бот
-// С ВСТРОЕННЫМ АВТО-РЕСТАРТОМ ДЛЯ НЕПРЕРЫВНОГО ОБУЧЕНИЯ
+// trainingBot.js v2 — С автовосстановлением, ремонтниками и реакцией
 // ============================================================
 (function () {
   "use strict";
@@ -8,21 +7,17 @@
   if (window.TrainingBot) {
     return;
   }
-	
-  // 🔥 PBT: Профили противников для эволюционного обучения
+  
   window.OPPONENT_PROFILES = [
     { name: "Rush", aggression: 0.9, eco: 0.5, expand: 0.5 },
-    //{ name: "Turtle", aggression: 0.2, eco: 0.9, expand: 0.4 },
-    //{ name: "Balanced", aggression: 0.7, eco: 0.6, expand: 0.6 },
-    //{ name: "Macro", aggression: 0.4, eco: 0.8, expand: 0.8 }
   ];
 
   const TrainingBot = {
     active: false,
     lastActionTime: 0,
     phase: 0,
+    threatLog: [],
     
-    // 🔥 УСКОРЕНИЕ: Фазы сокращены в 2-3 раза
     phases: [
       { name: "Economy Rush", duration: 80, action: "buildEconomy" },       
       { name: "Army & Defense", duration: 80, action: "buildArmy" },   
@@ -31,70 +26,165 @@
       { name: "Tech Tier 3", duration: 80, action: "techUp3" },        
       { name: "Late Game Waves", duration: 9999, action: "largeAttacks" } 
     ],
-	  
-    // 🔥 ФУНКЦИЯ-УЧИТЕЛЬ: Передает действие бота в мозг ИИ
+    
+    // 🎯 ЦЕЛЕВЫЕ КОЛИЧЕСТВА ЗДАНИЙ ПО ФАЗАМ (для автовосстановления)
+    buildingGoalsByPhase: [
+      { warehouse: 2, repairWorkshop: 1, barracks: 0, beacon: 0, turret: 0, base2: 0, barracks2: 0, base3: 0, barracks3: 0 },
+      { warehouse: 3, repairWorkshop: 1, barracks: 2, beacon: 1, turret: 2, base2: 0, barracks2: 0, base3: 0, barracks3: 0 },
+      { warehouse: 4, repairWorkshop: 1, barracks: 2, beacon: 1, turret: 3, base2: 1, barracks2: 1, base3: 0, barracks3: 0 },
+      { warehouse: 4, repairWorkshop: 2, barracks: 2, beacon: 2, turret: 5, base2: 1, barracks2: 2, base3: 0, barracks3: 0 },
+      { warehouse: 5, repairWorkshop: 2, barracks: 2, beacon: 2, turret: 6, base2: 1, barracks2: 2, base3: 1, barracks3: 1 },
+      { warehouse: 5, repairWorkshop: 3, barracks: 3, beacon: 3, turret: 8, base2: 1, barracks2: 3, base3: 1, barracks3: 2 }
+    ],
+    
     teachAction: function(actionName, intent) {
       if (!window.GnnAI || !window.gameState) return;
-      
       const fakeState = window.GnnAI.buildGraphState(); 
       if (!fakeState) return;
-
       const actionIndex = window.AIDX ? window.AIDX[actionName] : -1;
       if (actionIndex === -1) return;
-
-      window.GnnAI.registerAction(actionName, fakeState, intent, actionIndex, true); // true = isExpert
-      
+      window.GnnAI.registerAction(actionName, fakeState, intent, actionIndex, true);
       const lastEntry = window.GnnAI.replay.buffer[(window.GnnAI.replay.head - 1 + window.GnnAI.replay.capacity) % window.GnnAI.replay.capacity];
       if (lastEntry) {
-        lastEntry.reward += 10.0; // Огромный бонус за копирование учителя (Behavior Cloning)
+        lastEntry.reward += 10.0;
       }
     },
-
-    // 🔥 НОВОЕ: Проверка конца игры и авто-перезапуск
+    
     checkAndRestart: async function () {
       if (!gameState.gameEnded) return;
-      
       console.log("[TrainingBot] 🏁 Игра завершена. Подготовка к перезапуску...");
-      
-      // 1. Сохраняем веса GNN перед перезагрузкой
       if (window.GnnAI && typeof window.GnnAI.saveWeights === "function") {
         try {
           await window.GnnAI.saveWeights();
-          console.log("[TrainingBot] ✅ Веса GNN успешно сохранены в IndexedDB.");
+          console.log("[TrainingBot] ✅ Веса сохранены.");
         } catch (e) {
-          console.error("[TrainingBot] ❌ Ошибка сохранения весов:", e);
+          console.error("[TrainingBot] ❌ Ошибка сохранения:", e);
         }
       }
-
-      // 2. Даем браузеру 500мс на завершение транзакции IndexedDB
       await new Promise(r => setTimeout(r, 500));
-
-      // 3. Устанавливаем флаг авто-перезапуска (чтобы 09-ui.js подхватил его)
       localStorage.setItem('gnn_auto_restart', 'true');
-      
-      // 4. Перезагружаем страницу для 100% чистой новой игры
-      console.log("[TrainingBot] 🔄 Перезагрузка страницы для новой игры...");
+      console.log("[TrainingBot] 🔄 Перезагрузка...");
       window.location.reload();
     },
-
+    
     init: function () {
       this.active = true;
       this.phase = 0;
       this.startTime = performance.now();
       this.lastActionTime = performance.now();
+      this.threatLog = [];
       this.profile = window.OPPONENT_PROFILES[Math.floor(Math.random() * window.OPPONENT_PROFILES.length)];
-      console.log(`[TrainingBot] 🎭 Загружен профиль: ${this.profile.name} (Agg: ${this.profile.aggression}, Eco: ${this.profile.eco})`);
+      console.log(`[TrainingBot] 🎭 Профиль: ${this.profile.name} (Agg: ${this.profile.aggression}, Eco: ${this.profile.eco})`);
+      
+      // 🔥 Устанавливаем перехват урона
+      this.installDamageHook();
     },
-	  
+    
+    // 🔥 ПЕРЕХВАТ УРОНА: подписываемся на хуки урона
+    installDamageHook: function() {
+      const self = this;
+      
+      // 1. Подписка на GNN-хуки (основной путь)
+      if (window.GnnEventHooks) {
+        const orig = window.GnnEventHooks.onUnitDamaged;
+        window.GnnEventHooks.onUnitDamaged = function(unit, damage, source) {
+          if (unit && unit.owner === "player" && source && source.owner !== "player" && damage > 0) {
+            self.handleThreat(unit, source, damage);
+          }
+          if (typeof orig === "function") return orig.call(this, unit, damage, source);
+        };
+      }
+      
+      // 2. Оборачиваем onDamage (для не-GNN режима)
+      if (typeof window.onDamage === "function" && !window.onDamage.__trainingBotHooked) {
+        const origOnDamage = window.onDamage;
+        window.onDamage = function(entity, damage, source) {
+          if (entity && entity.owner === "player" && source && source.owner !== "player") {
+            self.handleThreat(entity, source, damage);
+          }
+          return origOnDamage(entity, damage, source);
+        };
+        window.onDamage.__trainingBotHooked = true;
+      }
+      
+      console.log("[TrainingBot] 🛡️ Перехват урона установлен.");
+    },
+    
+    // 🔥 ОБРАБОТКА УГРОЗЫ
+    handleThreat: function(victim, source, damage) {
+      if (!source || !victim) return;
+      
+      // Лог угрозы (оставляем последние 20)
+      this.threatLog.push({
+        time: performance.now(),
+        victim: victim.type,
+        victimPos: { x: victim.x, y: victim.y },
+        source: source.type,
+        sourceId: source.id,
+        damage: damage
+      });
+      if (this.threatLog.length > 20) this.threatLog.shift();
+      
+      // Немедленная контратака ближайшими свободными бойцами
+      this.counterAttack(victim, source);
+      
+      // Если атакуют здание — массовая мобилизация
+      const isBuilding = (typeof Building !== "undefined" && victim instanceof Building) || 
+                         (victim.type && typeof victim.type === "string" && 
+                          ["barracks","barracks2","barracks3","warehouse","repairWorkshop","turret","turret2","turret3","base","base2","base3","beacon"].includes(victim.type));
+      if (isBuilding) {
+        this.massMobilize(victim);
+      }
+    },
+    
+    // ⚔️ Немедленная контратака агрессора
+    counterAttack: function(victim, aggressor) {
+      if (!aggressor || aggressor.health <= 0) return;
+      
+      const freeUnits = gameState.units.filter(u => 
+        u.owner === "player" && 
+        ["fighter", "assault", "elite"].includes(u.type) &&
+        u.health > 0 &&
+        !u.isRetreating &&
+        (!u.commandQueue || u.commandQueue.length === 0) &&
+        Math.hypot(u.x - victim.x, u.y - victim.y) < 600
+      );
+      
+      const count = Math.min(freeUnits.length, Math.floor(3 * this.profile.aggression) + 1);
+      freeUnits.slice(0, count).forEach(u => {
+        u.suspendedQueue = null;
+        u.commandQueue = [{ type: "attack", target: aggressor }];
+        u.target = aggressor;
+        if (typeof processCommandQueue === "function") processCommandQueue(u);
+      });
+    },
+    
+    // 🛡️ Массовая мобилизация при атаке здания
+    massMobilize: function(victimBuilding) {
+      const defenders = gameState.units.filter(u => 
+        u.owner === "player" && 
+        ["fighter", "assault", "elite"].includes(u.type) &&
+        u.health > 0 &&
+        !u.isRetreating &&
+        (!u.commandQueue || u.commandQueue.length === 0)
+      );
+      
+      const count = Math.ceil(defenders.length * 0.5);
+      defenders.slice(0, count).forEach(u => {
+        u.suspendedQueue = null;
+        u.commandQueue = [
+          { type: "move", x: victimBuilding.x + (Math.random()-0.5)*80, y: victimBuilding.y + (Math.random()-0.5)*80 },
+        ];
+        if (typeof processCommandQueue === "function") processCommandQueue(u);
+      });
+    },
+    
     stop: function () {
       this.active = false;
     },
 
-    // 🔥 ИЗМЕНЕНО: Теперь перехватывает gameState.gameEnded
     tick: async function () {
-      // Если игра не запущена или режим не GNN
       if (!this.active || !gameStarted || gameMode !== "gnn") {
-        // НО если игра закончилась, запускаем процедуру рестарта!
         if (gameState.gameEnded) {
           await this.checkAndRestart();
         }
@@ -113,19 +203,109 @@
         }
       }
 
-      // 🔥 УСКОРЕНИЕ: Действуем каждые 200 мс
       if (now - this.lastActionTime < 200) return; 
       this.lastActionTime = now;
+
+      // 🔄 ПОСТОЯННЫЕ ЗАДАЧИ (выполняются каждый тик независимо от фазы)
+      this.restoreDestroyedBuildings();
+      this.hireWorkersEverywhere();
+      this.hireRepairmen();
 
       const action = this.phases[this.phase].action;
       this[action]();
     },
-	  
+    
+    // 🔄 ВОССТАНОВЛЕНИЕ УНИЧТОЖЕННЫХ ЗДАНИЙ
+    restoreDestroyedBuildings: function() {
+      const goals = this.buildingGoalsByPhase[this.phase] || {};
+      const inQueue = (window.buildQueue || []).map(q => q.type);
+      
+      for (const [type, goalCount] of Object.entries(goals)) {
+        if (goalCount <= 0) continue;
+        
+        const currentCount = gameState.buildings.filter(b => b.owner === "player" && b.type === type).length;
+        const queued = inQueue.filter(t => t === type).length;
+        const missing = goalCount - currentCount - queued;
+        
+        if (missing > 0) {
+          const costKey = type.toUpperCase() + "_COST";
+          const cost = typeof window[costKey] !== "undefined" ? window[costKey] : null;
+          
+          if (cost && typeof canSpendResources === "function" && canSpendResources(cost, "player")) {
+            const pos = this.findBuildPos(type);
+            if (pos) {
+              if (typeof placeBuilding === "function") {
+                placeBuilding(pos.x, pos.y, type, "player");
+              } else if (typeof scheduleAIBuilding === "function") {
+                scheduleAIBuilding(type, pos.x, pos.y, 0);
+              }
+              this.teachAction("restore_" + type, { type: "build", buildingType: type });
+              console.log(`[TrainingBot] 🔧 Восстанавливаю ${type} (было ${currentCount}, цель ${goalCount})`);
+            }
+          }
+        }
+      }
+    },
+    
+    // 👷 НАЙМ РАБОЧИХ НА ВСЕ СКЛАДЫ (до maxDeliveryWorkers на каждом)
+    hireWorkersEverywhere: function() {
+      const warehouses = gameState.buildings.filter(b => 
+        b.owner === "player" && 
+        b.type === "warehouse" && 
+        b.active && 
+        (b.workers || 0) < (b.maxDeliveryWorkers || 5)
+      );
+      
+      if (warehouses.length === 0) return;
+      
+      for (const wh of warehouses) {
+        const slotsAvailable = (wh.maxDeliveryWorkers || 5) - (wh.workers || 0);
+        for (let i = 0; i < slotsAvailable; i++) {
+          if (typeof canSpendResources === "function" && canSpendResources(WORKER_COST, "player")) {
+            if (typeof hireWorkerForPlayer === "function") {
+              hireWorkerForPlayer(wh);
+              this.teachAction("hireWorker", { type: "hire", unitType: "worker" });
+            } else {
+              return;
+            }
+          } else {
+            return; // Нет ресурсов — выходим
+          }
+        }
+      }
+    },
+    
+    // 🔧 НАЙМ РЕМОНТНИКОВ НА ВСЕ РЕМ.МАСТЕРСКИЕ
+    hireRepairmen: function() {
+      const workshops = gameState.buildings.filter(b => 
+        b.owner === "player" && 
+        b.type === "repairWorkshop" && 
+        b.active &&
+        (b.repairman || 0) < (b.capacity || 3)
+      );
+      
+      if (workshops.length === 0) return;
+      
+      for (const ws of workshops) {
+        const slotsAvailable = (ws.capacity || 3) - (ws.repairman || 0);
+        for (let i = 0; i < slotsAvailable; i++) {
+          if (typeof canSpendResources === "function" && canSpendResources(REPAIRMAN_COST, "player")) {
+            if (typeof hireRepairmanForPlayer === "function") {
+              hireRepairmanForPlayer(ws);
+              this.teachAction("hireRepairman", { type: "hire", unitType: "repairman" });
+            } else {
+              return;
+            }
+          } else {
+            return;
+          }
+        }
+      }
+    },
+    
     buildEconomy: function () {
       const warehouses = gameState.buildings.filter(b => b.owner === "player" && b.type === "warehouse").length;
       const workshops = gameState.buildings.filter(b => b.owner === "player" && b.type === "repairWorkshop").length;
-      const workers = gameState.units.filter(u => u.owner === "player" && u.type === "worker").length;
-      const repairman = gameState.units.filter(u => u.owner === "player" && u.type === "repairman").length;
 
       if (warehouses < 4 && typeof canSpendResources === "function" && canSpendResources(WAREHOUSE_COST, "player")) {
         const pos = this.findBuildPos("warehouse");
@@ -142,11 +322,6 @@
           this.teachAction("build_repair", { type: "build", buildingType: "repairWorkshop" });
         }
       } 
-      
-      const targetWorkers = Math.floor(15 * this.profile.eco);
-      if (workers < targetWorkers) {
-        this.hireWorker();
-      }
     },
 
     buildArmy: function () {
@@ -164,9 +339,6 @@
             if (typeof placeBuilding === "function") {
               placeBuilding(pos.x, pos.y, "barracks", "player");
               this.teachAction("build_barracks", { type: "build", buildingType: "barracks" });
-            } else if (typeof window.scheduleAIBuilding === "function") {
-              window.scheduleAIBuilding("barracks", pos.x, pos.y, 0);
-              this.teachAction("build_barracks", { type: "build", buildingType: "barracks" });
             }
           }
         }
@@ -175,7 +347,7 @@
       if (beacons === 0 && typeof canSpendResources === "function" && canSpendResources(BEACON_COST, "player")) {
         const pos = this.findBuildPos("beacon");
         if (pos) { 
-          typeof placeBuilding === "function" ? placeBuilding(pos.x, pos.y, "beacon", "player") : window.scheduleAIBuilding("beacon", pos.x, pos.y, 0); 
+          typeof placeBuilding === "function" ? placeBuilding(pos.x, pos.y, "beacon", "player") : null;
           this.teachAction("build_beacon", { type: "build", buildingType: "beacon" });
         }
       } 
@@ -183,7 +355,7 @@
       if (turrets < maxTurrets && turrets < 3 && typeof canSpendResources === "function" && canSpendResources(TURRET_COST, "player")) {
         const pos = this.findBuildPos("turret");
         if (pos) { 
-          typeof placeBuilding === "function" ? placeBuilding(pos.x, pos.y, "turret", "player") : window.scheduleAIBuilding("turret", pos.x, pos.y, 0); 
+          typeof placeBuilding === "function" ? placeBuilding(pos.x, pos.y, "turret", "player") : null;
         }
       } 
       
@@ -191,7 +363,7 @@
         this.hireFighter();
       }
     },
-												 
+    
     techUp2: function () {
       const hasBeacon = gameState.buildings.some(b => b.owner === "player" && b.type === "beacon");
       const hasBase2 = gameState.buildings.some(b => b.owner === "player" && b.type === "base2");
@@ -199,31 +371,17 @@
 
       if (!hasBeacon && typeof canSpendResources === "function" && canSpendResources(BEACON_COST, "player")) {
         const pos = this.findBuildPos("beacon");
-        if (pos) { 
-          placeBuilding(pos.x, pos.y, "beacon", "player"); 
-          this.teachAction("build_beacon", { type: "build", buildingType: "beacon" });
-        }
+        if (pos) { placeBuilding(pos.x, pos.y, "beacon", "player"); }
       } 
-      
       if (hasBeacon && !hasBase2 && typeof canSpendResources === "function" && canSpendResources(BASE2_COST, "player")) {
         const pos = this.findBuildPos("base2");
-        if (pos) { 
-          placeBuilding(pos.x, pos.y, "base2", "player"); 
-          this.teachAction("build_base2", { type: "build", buildingType: "base2" });
-        }
+        if (pos) { placeBuilding(pos.x, pos.y, "base2", "player"); }
       } 
-      
       if (hasBase2 && !hasBarracks2 && typeof canSpendResources === "function" && canSpendResources(BARRACKS2_COST, "player")) {
         const pos = this.findBuildPos("barracks2");
-        if (pos) { 
-          placeBuilding(pos.x, pos.y, "barracks2", "player"); 
-          this.teachAction("build_barracks2", { type: "build", buildingType: "barracks2" });
-        }
+        if (pos) { placeBuilding(pos.x, pos.y, "barracks2", "player"); }
       }
-      
-      if (hasBarracks2) {
-        this.hireAssault();
-      }
+      if (hasBarracks2) this.hireAssault();
     },
 
     buildMidArmy: function () {
@@ -237,15 +395,11 @@
         const pos = this.findBuildPos("turret");
         if (pos) { placeBuilding(pos.x, pos.y, "turret", "player"); }
       } 
-      
       if (turrets >= maxTurrets && turrets < 6 && beacons < 2 && typeof canSpendResources === "function" && canSpendResources(BEACON_COST, "player")) {
         const pos = this.findBuildPos("beacon");
         if (pos) { placeBuilding(pos.x, pos.y, "beacon", "player"); }
       }
-      
-      if (hasBarracks2 && assaults < 5) {
-        this.hireAssault();
-      }
+      if (hasBarracks2 && assaults < 5) this.hireAssault();
     },
 
     techUp3: function () {
@@ -256,23 +410,13 @@
 
       if (hasBase2 && hasBarracks2 && !hasBase3 && typeof canSpendResources === "function" && canSpendResources(BASE3_COST, "player")) {
         const pos = this.findBuildPos("base3");
-        if (pos) { 
-          placeBuilding(pos.x, pos.y, "base3", "player"); 
-          this.teachAction("build_base3", { type: "build", buildingType: "base3" });
-        }
+        if (pos) { placeBuilding(pos.x, pos.y, "base3", "player"); }
       } 
-      
       if (hasBase3 && !hasBarracks3 && typeof canSpendResources === "function" && canSpendResources(BARRACKS3_COST, "player")) {
         const pos = this.findBuildPos("barracks3");
-        if (pos) { 
-          placeBuilding(pos.x, pos.y, "barracks3", "player"); 
-          this.teachAction("build_barracks3", { type: "build", buildingType: "barracks3" });
-        }
+        if (pos) { placeBuilding(pos.x, pos.y, "barracks3", "player"); }
       }
-      
-      if (hasBarracks3) {
-        this.hireElite();
-      }
+      if (hasBarracks3) this.hireElite();
     },
 
     largeAttacks: function () {
@@ -289,16 +433,6 @@
       const attackThreshold = Math.max(4, Math.floor(12 * (1.2 - this.profile.aggression)));
       if (army.length >= attackThreshold) {
         this.sendAttackGroup(army.slice(0, Math.floor(10 * this.profile.aggression) + 2));
-      }
-    },
-
-    hireWorker: function () {
-      for (let i = 0; i < 3; i++) {
-        const warehouse = gameState.buildings.find(b => b.owner === "player" && b.type === "warehouse" && b.active && (b.workers || 0) < (b.maxDeliveryWorkers || 5));
-        if (warehouse && typeof canSpendResources === "function" && canSpendResources(WORKER_COST, "player") && typeof hireWorkerForPlayer === "function") {
-          hireWorkerForPlayer(warehouse);
-          this.teachAction("hireWorker", { type: "hire", unitType: "worker" });
-        } else { break; }
       }
     },
 
@@ -342,6 +476,7 @@
 
     findBuildPos: function (type) {
       const anchor = playerBase;
+      if (!anchor) return null;
       for (let i = 0; i < 80; i++) {
         const angle = Math.random() * Math.PI * 2;
         const r = 100 + Math.random() * 300;
@@ -368,7 +503,6 @@
   window.startTrainingBot = function () { TrainingBot.init(); };
   window.stopTrainingBot = function () { TrainingBot.stop(); };
 
-  // Интеграция с gameLoop
   const origGameLoop = window.gameLoop;
   if (typeof origGameLoop === "function") {
     window.gameLoop = function (timestamp) {
@@ -379,5 +513,5 @@
     setInterval(() => { if (TrainingBot.active) TrainingBot.tick(); }, 200);
   }
 
-  console.log("[TrainingBot] 🤖 Загружен с поддержкой авто-рестарта.");
+  console.log("[TrainingBot] 🤖 v2 активен: восстановление + ремонтники + реакция на атаку.");
 })();

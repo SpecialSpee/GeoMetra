@@ -1598,34 +1598,29 @@ function renderGame() {
 function renderFragments() {
   if (!gameState.fragments || gameState.fragments.length === 0) return;
   
-  ctx.save();
-  ctx.translate(camera.offsetX, camera.offsetY);
-  ctx.scale(camera.scale, camera.scale);
+  // 🔥 ИСПРАВЛЕНИЕ: Убираем ctx.save/translate/scale/restore
+  // Контекст уже преобразован в renderGame() — двойное преобразование ломало координаты
   
   gameState.fragments.forEach(f => {
     ctx.save();
     ctx.translate(f.x, f.y);
     ctx.rotate(f.angle);
     ctx.fillStyle = f.color;
-    ctx.globalAlpha = Math.max(0, f.life / f.maxLife); // Плавное исчезновение
+    ctx.globalAlpha = Math.max(0, f.life / f.maxLife);
     
     ctx.beginPath();
     if (f.points && f.points.length > 0) {
-      // Рисуем сложную форму осколка
       ctx.moveTo(f.points[0].x, f.points[0].y);
       for (let i = 1; i < f.points.length; i++) {
         ctx.lineTo(f.points[i].x, f.points[i].y);
       }
     } else {
-      // Запасной вариант (простой квадрат)
       ctx.rect(-4, -4, 8, 8);
     }
     ctx.closePath();
     ctx.fill();
     ctx.restore();
   });
-  
-  ctx.restore();
 }
 
 function updateResourceUI() {

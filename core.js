@@ -8,10 +8,6 @@ let particleUpdateAccumulator = 0;
 let idCollisionCount = 0;
 const PARTICLE_UPDATE_INTERVAL = 0.033;
 
-
-
-
-
 // ==========================================
 // 🧱 ФУНДАМЕНТ ФИКСОВ — состояние и хелперы
 // ==========================================
@@ -23,9 +19,11 @@ const FX_STATE = {
 };
 
 function fxNum(v, d) { return (typeof v === "number" && isFinite(v)) ? v : d; }
+
 function fxClamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
 
 function fxInvalidate() { FX_STATE._ts = -1e9; }
+
 function fxSets() {
   const t = performance.now();
   if (t - FX_STATE._ts > 100) {
@@ -37,9 +35,13 @@ function fxSets() {
 function fxInGame(o) { fxSets(); return FX_STATE._bs.has(o) || FX_STATE._us.has(o); }
 
 function fxValidTarget(t) {
-  if (!t || !(fxNum(t.health, 0) > 0) || t.destroyed || t.isSelling) return false;
-  fxSets();
-  return FX_STATE._bs.has(t) || (FX_STATE._us.has(t) && t.alive !== false);
+  // 🔥 УПРОЩЕНО: убираем проверку в кэшированном Set (он обновляется раз в 100мс,
+  // из-за чего свежезаспавненные юниты не видятся как валидные цели)
+  // Проверка health > 0 + флаги destroyed/isSelling достаточны
+  if (!t) return false;
+  if (!(fxNum(t.health, 0) > 0)) return false;
+  if (t.destroyed || t.isSelling) return false;
+  return true;
 }
 
 function fxBaseFor(owner) {
@@ -153,11 +155,6 @@ function fxSanitizeOrders(u) {
   if (u.type === "repairman" && u.busyRepair && !u.repairIntervalId && !u.moveTarget &&
       !(u.commandQueue || []).some(c => c.type === "repair")) u.busyRepair = false;
 }
-
-
-
-
-
 
 // ==========================================
 // 🔥 GNN СОБЫТИЙНЫЕ ХУКИ (Mission Logging)
@@ -1585,10 +1582,6 @@ function updateUnits(deltaTime) {
   if (swarmFrameCounter % 5 === 0) updateSwarmBehavior(deltaTime);
   if (swarmFrameCounter > 1000) swarmFrameCounter = 0;
 }
-
-
-
-
 // 🔥 ЕДИНАЯ ТОЧКА НАНЕСЕНИЯ УРОНА (пули + сплэш)
 function fxApplyDamage(entity, damage, source) {
   if (!entity || !(entity.health > 0) || !(damage > 0) || entity.destroyed) return;
@@ -1612,11 +1605,6 @@ function fxApplyDamage(entity, damage, source) {
     }
   }
 }
-
-
-
-
-
 // ОПТИМИЗИРОВАННЫЙ ГОРЯЧИЙ ЦИКЛ ПУЛЬ ===
 function updateBullets(deltaTime) {
   // Обратный цикл позволяет безопасно удалять элементы через splice
@@ -2551,8 +2539,14 @@ function gameLoop(time) {
   updateResourceUI();
     // 🔥 Раз в кадр подчищаем selectedUnits от мёртвых и чужих
   if (selectedUnits.length > 0) sanitizeSelectedUnits();
-  gameState.units.filter(unit => unit.owner === playerId && ["fighter", "assault", "elite"].includes(unit.type)).forEach(unit => checkForEnemiesAndAttack(unit));
-  updateGameState(deltaTime);
+// 🔥 ИСПРАВЛЕНИЕ: СКАНИРОВАНИЕ ВРАГОВ ДЛЯ ВСЕХ ВОЕННЫХ ЮНИТОВ (игрок + ИИ)
+// Раньше работало только для игрока — юниты ИИ летели по commandQueue и игнорировали встречных
+gameState.units.filter(unit => 
+  (unit.owner === playerId || unit.owner === "ai") && 
+  ["fighter", "assault", "elite"].includes(unit.type) &&
+  !unit.isRetreating &&
+  unit.health > 0
+).forEach(unit => checkForEnemiesAndAttack(unit));  updateGameState(deltaTime);
   try {
     renderGame(); // Основная отрисовка игры
   } catch (err) {

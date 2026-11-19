@@ -32,7 +32,7 @@ window.gameMode = "single"; // или просто: gameMode = "single";
     MIN_COMMIT_MS: 30000,
     WORLD_WIDTH: 2200,
     WORLD_HEIGHT: 2200,
-    BUILD_QUEUE_MS: 500,
+    BUILD_QUEUE_MS: 400,
     ECO_MS: 1500,
     TRAIN_MS: 6000,
     SAVE_EVERY_BATCHES: 50,
@@ -41,8 +41,8 @@ window.gameMode = "single"; // или просто: gameMode = "single";
     REPLAY_SIZE: 2000,
     BATCH_SIZE: 64,
     AUTO_ECONOMY: false,
-    BC_MODE:  false,
-    BC_TRANSITION_BATCHES: 5000,
+    BC_MODE:  true,
+    BC_TRANSITION_BATCHES: 250,
     STORAGE_KEY: "geomestra_gnn_weights_v7_7",
     STATS_KEY: "geomestra_gnn_benchmark_v7_7",
     GAMMA: 0.99,
@@ -269,7 +269,7 @@ const TURRET3_COST = { gold: 27, silicon: 46, plasma: 19 };
 const FOG_CELL_SIZE = 45;   // размер ячейки тумана (в мировых единицах)
 const VISION_RADIUS = 250;     // радиус видимости юнита игрока (в мировых единицах)
 const WORKER_SPEED = 50;
-const FIGHTER_BULLET_CONFIG = { speed: 200, lifetime: 0.8, damage: 10 };
+const FIGHTER_BULLET_CONFIG = { speed: 200, lifetime: 1.3, damage: 10 };
 const TURRET_BULLET_CONFIG = { speed: 300, lifetime: 1.3, damage: 29 };
 const TURRET_LASER_CONFIG = { lifetime: 0.3, damage: 61 };
 const AUTO_COLLECT_ENABLED = true;
@@ -288,7 +288,7 @@ const MISSILE_CONFIG = {
 const MELEE_BULLET_CONFIG = {
   speed: 270,     // скорость пули (можно настроить)
   lifetime: 0.8,  // время жизни пули (короткое, так как это ближний бой)
-  damage: 8       // урон одной пули
+  damage: 18       // урон одной пули
 };
 // Дополнительная константа для артиллерии
 const ARTILLERY_BULLET_CONFIG = {
