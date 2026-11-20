@@ -50,8 +50,19 @@ Object.assign(window.GnnAI, {
     const techGap = (tech - enemyTech) / 2;
     const myPowerScore = (tech * 10) + myArmyValue + (m.aiTurrets * 5);
     const enemyPowerScore = (enemyTech * 10) + enemyArmyValue + (enemyTurrets * 5);
-    const momentum = Math.tanh((myPowerScore - enemyPowerScore) / 50);
-    const progressToWin = Math.min(1, myPowerScore / 200);
+    
+    // 🔥 УЛУЧШЕННЫЙ MOMENTUM: Учитываем не только текущую силу, но и темпы
+    const myIncomeRate = myWorkers * 0.5; // Примерный доход в сек
+    const enemyIncomeRate = enemyWorkers * 0.5;
+    const ecoMomentum = Math.tanh((myIncomeRate - enemyIncomeRate) / 2.0); // Кто быстрее развивается?
+    const armyMomentum = Math.tanh((myArmyValue - enemyArmyValue) / 300);
+    
+    // 🔥 ЯВНАЯ ФАЗА ИГРЫ (КРАСНАЯ ЛИНИЯ): 0.0 (Ранняя), 0.5 (Средняя), 1.0 (Поздняя)
+    // Это помогает модели понять, ЧТО именно сейчас важно (рабочие или элита)
+    const macroPhase = gameTimeMinutes < 2.0 ? 0.0 : (gameTimeMinutes < 5.0 ? 0.5 : 1.0);
+    
+    const momentum = (ecoMomentum * 0.4) + (armyMomentum * 0.6); // Баланс экономики и армии
+    const progressToWin = Math.min(1.0, myPowerScore / (enemyPowerScore + 100)); // Относительный прогресс
 
     // Экономическая математика
     const totalResources = m.res.gold + m.res.silicon + m.res.plasma;
@@ -105,14 +116,10 @@ Object.assign(window.GnnAI, {
     }
 
     return [
-      threat, baseHp, enemyNear, myArmy, enemyArmy, armyBalance, techLevel,
-      resTotal, warehouseCount, turretCount, timeNorm, enemyTurrets, enemyElites,
-      buildingDiversity, resourceEfficiency, expansionProgress, defenseStrength,
-      gameTimeMinutes / 30.0, techStagnationPenalty, economyGap, armyGap, techGap, momentum, progressToWin,
-      Math.min(1, estimatedIncomePerSec / 5.0),
-      Math.min(1, 60 / timeToAffordWarehouse), isRichEnoughToExpand, isEconomyChoked,
-      emptyWh, emptyRatio, income, enemyClusterThreat, ourClusterStrength,
-      nearestEnemyClusterDist, flankOpportunity, localPowerBalance
+      threat, baseHp, enemyNear, myArmy, enemyArmy, armyBalance, techLevel, resTotal, warehouseCount, turretCount, timeNorm, enemyTurrets, enemyElites,
+      buildingDiversity, resourceEfficiency, expansionProgress, defenseStrength, gameTimeMinutes / 30.0, techStagnationPenalty, economyGap, armyGap, techGap, 
+      Math.min(1, estimatedIncomePerSec / 5.0), Math.min(1, 60 / timeToAffordWarehouse), isRichEnoughToExpand, isEconomyChoked, momentum, progressToWin,
+      emptyWh, emptyRatio, income, enemyClusterThreat, ourClusterStrength, nearestEnemyClusterDist, flankOpportunity, localPowerBalance, ecoMomentum, macroPhase, progressToWin 
     ];
   },
 
@@ -461,8 +468,18 @@ Object.assign(window.GnnAI, {
       else if (t === "base") buildingCategory = 6;
     }
     let workersOnBuilding = 0;
-    if (t === "warehouse" && n.obj) workersOnBuilding = (n.obj.workers || 0) / (n.obj.maxDeliveryWorkers || 5);
-    else if (t === "repairWorkshop" && n.obj) workersOnBuilding = (n.obj.repairman || 0) / (n.obj.capacity || 3);
+    let isProducing = 0; // 🔥 НОВЫЙ ПРИЗНАК: Строит ли здание что-то прямо сейчас?
+    
+    if (t === "warehouse" && n.obj) {
+      workersOnBuilding = (n.obj.workers || 0) / (n.obj.maxDeliveryWorkers || 5);
+    } else if (t === "repairWorkshop" && n.obj) {
+      workersOnBuilding = (n.obj.repairman || 0) / (n.obj.capacity || 3);
+    }
+    
+    // Проверяем очередь производства для казарм и баз
+    if (n.obj && n.obj.productionQueue && n.obj.productionQueue.length > 0) {
+      isProducing = 1.0;
+    }
 
     let nearestEnemyDist = 1.0;
     let enemyClusterNear = 0;
@@ -564,7 +581,7 @@ Object.assign(window.GnnAI, {
       (n.obj && n.obj.commandQueue && n.obj.commandQueue.length > 0) ? 1 : 0,
       (n.obj && n.obj.attackCooldown !== undefined && n.obj.attackCooldownMax && n.obj.attackCooldownMax > 0)
         ? 1.0 - (n.obj.attackCooldown / n.obj.attackCooldownMax) : 1.0,
-      workersOnBuilding, nearestEnemyDist, enemyClusterNear, ourClusterStrength, hpRatio,
+      workersOnBuilding, isProducing, nearestEnemyDist, enemyClusterNear, ourClusterStrength, hpRatio,
       cooldownProgress, hasTarget, targetIsBuilding, targetHP,
       surrounded, targetPriority,
       missionProgress, missionStuck, missionHitByTurret, missionEfficiency,
@@ -659,6 +676,30 @@ Object.assign(window.GnnAI, {
         });
       }
     }
+
+    // 🔥 4. ЦЕЛИ ДЛЯ ЭКСПАНСИИ (КРАСНАЯ ЛИНИЯ: Экономика)
+    // Если у ИИ мало складов, создаем виртуальные цели рядом с ресурсами
+    const aiWarehouses = aiNodes.filter(n => n.type === "warehouse").length;
+    if (aiWarehouses < 3) { 
+      const resources = gameState.resources.filter(r => r.amount > 30);
+      // Берем до 2-х лучших кластеров ресурсов, где еще нет нашего склада
+      let targetsAdded = 0;
+      for (const r of resources) {
+        if (targetsAdded >= 2) break;
+        const hasWh = aiNodes.some(n => n.type === "warehouse" && Math.hypot(n.x - r.x, n.y - r.y) < 350);
+        if (!hasWh) {
+          virtualNodes.push({
+            obj: null, type: "expansion_target", owner: "ai",
+            x: r.x, y: r.y, hp: 1.0, valid: 1,
+            isVirtual: true, virtualType: "expansion",
+            resourceType: r.type,
+            freshness: 1.0, isStale: false
+          });
+          targetsAdded++;
+        }
+      }
+    }
+
     return virtualNodes;
   },
 
