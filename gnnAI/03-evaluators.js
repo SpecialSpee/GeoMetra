@@ -305,9 +305,9 @@ Object.assign(window.GnnAI, {
             const rewards = {
               "worker": 3.0,
               "repairman": 1.0,
-              "fighter": 5.0,
-              "assault": 8.0,
-              "elite": 12.0
+              "fighter": 10.0,
+              "assault": 15.0,
+              "elite": 20.0
             };
             rewardDelta = rewards[type] || 2.0;
             

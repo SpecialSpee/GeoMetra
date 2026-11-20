@@ -52,21 +52,15 @@ function fxBaseFor(owner) {
 }
 
 function fxResetTransient(u) {
-  u.__epoch = (u.__epoch || 0) + 1;
-  u.__phaseInit = false; u.__physFrame = -1; u.__eliteFrame = -1;
-  u.suspendedQueue = null;
-  u.moveTarget = null; u.moveCallback = null;
-  u.commandQueue = []; u.target = null;
-  u.isRetreating = false; u.isDashing = false;
-  u.dashEndTime = 0; u.postDashTimer = 0; u.dashVector = { x: 0, y: 0 };
+  u.__epoch = (u.__epoch || 0) + 1; u.__phaseInit = false; u.__physFrame = -1; u.__eliteFrame = -1;
+  u.suspendedQueue = null; u.moveTarget = null; u.moveCallback = null;
+  u.commandQueue = []; u.target = null; u.isRetreating = false; u.isDashing = false;
+  u.retreatTarget = null; u.returnToBattleCooldown = 0; u.dashEndTime = 0; u.postDashTimer = 0; u.dashVector = { x: 0, y: 0 };
   u.lastAutonomousActionTime = 0; u.lastBurnTick = 0; u.lastShockEffect = 0;
   u.sparkTimer = 0; u.isRepairing = false; u.busyRepair = false; u.__repairTarget = null;
-  u.missionLog = null; u.shockedUntil = 0; u.shocked = false;
-  u.burning = false; u.burnTime = 0; u.burnStartTime = 0; u.burnDuration = 0;
-  u.hidden = false; u.hiding = false; u.inWorkshop = null;
-  u.delivering = false; u.carrying = 0; u.carriedResourceToken = null;
-  u.assignedResource = null; u.assignedResourceType = null;
-  u.laserBeam = null; u.vx = 0; u.vy = 0;
+  u.missionLog = null; u.shockedUntil = 0; u.shocked = false; u.burning = false; u.burnTime = 0; u.burnStartTime = 0; u.burnDuration = 0;
+  u.hidden = false; u.hiding = false; u.inWorkshop = null; u.delivering = false; u.carrying = 0; u.carriedResourceToken = null;
+  u.assignedResource = null; u.assignedResourceType = null; u.laserBeam = null; u.vx = 0; u.vy = 0;
   if (u.repairIntervalId) { clearInterval(u.repairIntervalId); u.repairIntervalId = null; }
   if (u.burningIntervalId) { clearInterval(u.burningIntervalId); u.burningIntervalId = null; }
   if (u.currentMovementAnimation) { cancelAnimationFrame(u.currentMovementAnimation); u.currentMovementAnimation = null; }
@@ -484,51 +478,69 @@ function moveUnit(unit, targetX, targetY, callback) {
 function applyUnitMovement(unit, deltaTime) {
   if (unit.shocked || unit.health <= 0) return;
 
-  // 🔥 ПРИОРИТЕТ 0: ОТСТУПЛЕНИЕ (единственный источник движения при отступлении)
-  if (unit.isRetreating) {
-    const base = unit.owner === "player" ? playerBase : aiBase;
+// 🔥 ПРИОРИТЕТ 0: ОТСТУПЛЕНИЕ (теперь летит к МАСТЕРСКОЙ, а не к базе!)
+if (unit.isRetreating) {
+  // 🔥 ИСПОЛЬЗУЕМ СОХРАНЁННУЮ ЦЕЛЬ (мастерская или fallback на базу)
+  let target = unit.retreatTarget;
+  
+  // Проверка валидности цели (вдруг мастерскую уничтожили, пока мы летели)
+  if (!target || target.health <= 0 || !target.active) {
+    // Ищем новую мастерскую
+    const workshops = gameState.buildings.filter(b => 
+      b.owner === unit.owner && 
+      b.type === 'repairWorkshop' && 
+      b.active && 
+      b.health > 0
+    );
     
-    // 🔥 КРИТИЧНЫЙ ФИКС: Если база уничтожена — снимаем флаг и ищем ближайшую свою постройку
-    if (!base) {
-      const fallbackBase = gameState.buildings.find(b => 
-        b.owner === unit.owner && b.health > 0 && 
-        (b.type === "base" || b.type === "base2" || b.type === "base3" || b.type === "warehouse")
-      );
-      if (fallbackBase) {
-        const dx = fallbackBase.x - unit.x;
-        const dy = fallbackBase.y - unit.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist > 10) {
-          unit.angle = Math.atan2(dy, dx);
-          const speed = 50; // Ускорение при панике
-          unit.x += (dx / dist) * speed * deltaTime;
-          unit.y += (dy / dist) * speed * deltaTime;
-        } else {
-          unit.isRetreating = false;
-          unit.target = null;
-        }
-      } else {
-        // Своих построек нет вообще — выходим из режима отступления, чтобы не висеть
-        unit.isRetreating = false;
-        unit.target = null;
-      }
+    if (workshops.length > 0) {
+      target = workshops.sort((a, b) => 
+        Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
+      )[0];
+      unit.retreatTarget = target;
     } else {
-      const dx = base.x - unit.x;
-      const dy = base.y - unit.y;
-      const dist = Math.hypot(dx, dy);
-      
-      if (dist > 15) {
-        unit.angle = Math.atan2(dy, dx);
-        const speed = 50; // Ускорение при панике
-        unit.x += (dx / dist) * speed * deltaTime;
-        unit.y += (dy / dist) * speed * deltaTime;
-      } else {
-        unit.isRetreating = false;
-        unit.target = null;
-      }
+      // Fallback на базу
+      target = unit.owner === "player" ? playerBase : aiBase;
+      unit.retreatTarget = target;
     }
-    return; // Прерываем, чтобы боевая логика не перехватила управление
   }
+  
+  if (!target) {
+    // Своих построек нет вообще — выходим из отступления
+    unit.isRetreating = false;
+    unit.retreatTarget = null;
+    unit.target = null;
+    return;
+  }
+  
+  const dx = target.x - unit.x;
+  const dy = target.y - unit.y;
+  const dist = Math.hypot(dx, dy);
+  
+  // 🔥 РАЗНЫЕ ПОРОГИ ДОСТИЖЕНИЯ для мастерской и базы
+  const arrivalThreshold = target.type === 'repairWorkshop' ? 40 : 15;
+  
+  if (dist > arrivalThreshold) {
+    unit.angle = Math.atan2(dy, dx);
+    const speed = 70; // 🔥 Увеличили скорость отступления с 50 до 70 — юнит быстрее доберётся до лечения
+    unit.x += (dx / dist) * speed * deltaTime;
+    unit.y += (dy / dist) * speed * deltaTime;
+  } else {
+    // 🔥 ДОСТИГЛИ ЦЕЛИ!
+    if (target.type === 'repairWorkshop') {
+      // У мастерской просто останавливаемся и ждём лечения
+      // Мастерская сама найдёт нас через startRepairmanCycle
+      unit.vx = 0;
+      unit.vy = 0;
+    } else {
+      // У базы — выходим из отступления
+      unit.isRetreating = false;
+      unit.retreatTarget = null;
+      unit.target = null;
+    }
+  }
+  return; // Прерываем, чтобы боевая логика не перехватила управление
+}
 
 // ПРИОРИТЕТ 1: Боевая физика
 if (["fighter", "assault", "elite"].includes(unit.type) && unit.target && unit.target.health > 0) {
@@ -663,23 +675,34 @@ function processCommandQueue(unit, overrideDelta) {
       });
     }
   }
-  else if (command.type === "repair") {
-    // Логика ремонта остается без изменений, но использует новый moveUnit
-    const { workshop, target } = command;
-    if (!workshop || !target || target.health >= target.maxHealth) { 
-      unit.commandQueue.shift(); 
-      processCommandQueue(unit); 
-      return; 
-    }
-    
-    if (!unit.moveTarget || Math.hypot(unit.moveTarget.x - target.x, unit.moveTarget.y - target.y) > 5) {
-       moveUnit(unit, target.x, target.y, () => {
-         unit.commandQueue.shift();
-         startRepairProcess(unit, command);
-         processCommandQueue(unit);
-       });
-    }
+else if (command.type === "repair") {
+  const { workshop, target } = command;
+  
+  // 🔥 ЖЕСТКАЯ ПРОВЕРКА: Цель мертва, уничтожена, продается или уже полностью здорова?
+  if (!target || !fxValidTarget(target) || target.health >= target.maxHealth) {
+    unit.commandQueue.shift(); // Удаляем бессмысленную команду к "призраку"
+    unit.busyRepair = false;   // Сбрасываем флаг занятости
+    processCommandQueue(unit); // Ищем новую, реальную задачу
+    return;
   }
+  
+  // Если мы еще не движемся к этой цели или цель сдвинулась
+  if (!unit.moveTarget || Math.hypot(unit.moveTarget.x - target.x, unit.moveTarget.y - target.y) > 5) {
+     moveUnit(unit, target.x, target.y, () => {
+       // 🔥 ПОВТОРНАЯ ПРОВЕРКА ПОСЛЕ ПРИБЫТИЯ: вдруг цель умерла, пока мы летели?
+       if (!target || !fxValidTarget(target) || target.health >= target.maxHealth) {
+         unit.commandQueue.shift();
+         unit.busyRepair = false;
+         processCommandQueue(unit);
+         return;
+       }
+       
+       unit.commandQueue.shift(); // Команда выполнена, удаляем
+       startRepairProcess(unit, command);
+       processCommandQueue(unit);
+     });
+  }
+}
 }
 // 4. ЕДИНАЯ ФИЗИКА ДЛЯ ВОЕННЫХ: Сближение + Орбита
 function updateFighterPhysics(unit, target, mode, deltaTime) {
@@ -1254,6 +1277,10 @@ function dynamicAttackElite(unit, target, deltaTime) {
 
 function checkForEnemiesAndAttack(unit) {
   if (!unit || !unit.range || unit.isRetreating || unit.health <= 0) return;
+    // Это разрывает злосчастный цикл
+  if (unit.returnToBattleCooldown && performance.now() < unit.returnToBattleCooldown) {
+    return; // Юнит ещё "остывает" — не ищем врагов
+  }
   fxSanitizeOrders(unit); // 🔥 Чистим призрачные приказы перед поиском
   const enemiesInRange = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
     .filter(e => e.owner !== unit.owner && e.health > 0 && fxValidTarget(e));
@@ -1303,76 +1330,94 @@ function checkForEnemiesAndAttack(unit) {
 
 function startRepairmanCycle(repairman) {
   let idleStartTime = performance.now();
+  
   function loop() {
     if (!gameState.units.includes(repairman)) return;
+    
     const isIdle = !repairman.busyRepair && repairman.commandQueue.length === 0;
     const isOutside = !repairman.hidden;
     
     if (isIdle) {
-      // 🔥 ИСПРАВЛЕНИЕ: Сначала ищем раненых СОЮЗНЫХ ЮНИТОВ в радиусе видимости
-      const repairRadius = repairman.engagementRadius || 500;
-      const damagedUnit = gameState.units.find(u => 
-        u.owner === repairman.owner && 
-        u.health > 0 && 
-        u.health < u.maxHealth * 0.9 && 
-        u !== repairman &&
-        Math.hypot(u.x - repairman.x, u.y - repairman.y) < repairRadius
-      );
-      
-      if (damagedUnit) {
-        const distance = Math.hypot(damagedUnit.x - repairman.x, damagedUnit.y - repairman.y);
-        if (distance > 10) { 
-          repairman.commandQueue = [{ type: "repair", target: damagedUnit, workshop: repairman.homeWorkshop }]; 
-          processCommandQueue(repairman); 
-        } else { 
-          startRepairProcess(repairman, { target: damagedUnit, workshop: repairman.homeWorkshop }); 
-        }
-        repairman.busyRepair = true;
-      } else {
-        // Если раненых юнитов нет — ищем поврежденные здания (старая логика)
-        const damaged = gameState.buildings.find(b => 
-          b.owner === repairman.owner && 
-          b.health < b.maxHealth && 
-          (!b.repairmen || b.repairmen.length < 3 || b.repairmen.includes(repairman))
-        );
-        if (damaged) {
-          if (!damaged.repairmen) damaged.repairmen = [];
-          if (!damaged.repairmen.includes(repairman)) damaged.repairmen.push(repairman);
-          const distance = Math.hypot(damaged.x - repairman.x, damaged.y - repairman.y);
-          if (distance > 10) { 
-            repairman.commandQueue = [{ type: "repair", target: damaged, workshop: repairman.homeWorkshop }]; 
-            processCommandQueue(repairman); 
-          } else { 
-            startRepairProcess(repairman, { target: damaged, workshop: repairman.homeWorkshop }); 
-          }
-          repairman.busyRepair = true;
-        } else if (isOutside && performance.now() - idleStartTime > 5000) {
-          const w = repairman.homeWorkshop;
-          if (w) {
-            animateMoveAndScale(repairman, w.x, w.y, 0.1, 700, () => { 
-              repairman.hidden = true; 
-              repairman.inWorkshop = w; 
-            });
-          }
-        }
-      }
-    } else { 
-      idleStartTime = performance.now(); 
-    }
-    requestAnimationFrame(loop);
+       // 🔥 ИСПРАВЛЕНИЕ 1: Жесткий радиус поиска 250 (как ты и хотел)
+       const repairRadius = 250; 
+       
+       // 🔥 ИСПРАВЛЕНИЕ 2: Ищем ВСЕХ раненых в радиусе, фильтруем "призраков" и сортируем по близости!
+       const damagedUnits = gameState.units.filter(u => 
+         u.owner === repairman.owner && 
+         fxValidTarget(u) && // <-- Ключевое: цель должна быть живой и валидной!
+         u.health > 0 && 
+         u.health < u.maxHealth * 0.95 && 
+         u !== repairman &&
+         Math.hypot(u.x - repairman.x, u.y - repairman.y) <= repairRadius
+       ).sort((a, b) => 
+         // Сортируем: сначала самые близкие
+         Math.hypot(a.x - repairman.x, a.y - repairman.y) - Math.hypot(b.x - repairman.x, b.y - repairman.y)
+       );
+       
+       const damagedUnit = damagedUnits[0]; // Берем ближайшего живого раненого
+       
+       if (damagedUnit) {
+         const distance = Math.hypot(damagedUnit.x - repairman.x, damagedUnit.y - repairman.y);
+         if (distance > 10) { 
+           repairman.commandQueue = [{ type: "repair", target: damagedUnit, workshop: repairman.homeWorkshop }]; 
+           processCommandQueue(repairman); 
+         } else { 
+           startRepairProcess(repairman, { target: damagedUnit, workshop: repairman.homeWorkshop }); 
+         }
+         repairman.busyRepair = true;
+       } else {
+         // Если раненых юнитов в радиусе 250 НЕТ — ищем поврежденные здания (тоже с проверкой валидности)
+         const damaged = gameState.buildings.find(b => 
+           b.owner === repairman.owner && 
+           fxValidTarget(b) && // <-- Здание не должно быть уничтожено или продано
+           b.health < b.maxHealth * 0.95 && 
+           (!b.repairmen || b.repairmen.length < 3 || b.repairmen.includes(repairman))
+         );
+         
+         if (damaged) {
+           if (!damaged.repairmen) damaged.repairmen = [];
+           if (!damaged.repairmen.includes(repairman)) damaged.repairmen.push(repairman);
+           
+           const distance = Math.hypot(damaged.x - repairman.x, damaged.y - repairman.y);
+           if (distance > 10) { 
+             repairman.commandQueue = [{ type: "repair", target: damaged, workshop: repairman.homeWorkshop }]; 
+             processCommandQueue(repairman); 
+           } else { 
+             startRepairProcess(repairman, { target: damaged, workshop: repairman.homeWorkshop }); 
+           }
+           repairman.busyRepair = true;
+         } else if (isOutside && performance.now() - idleStartTime > 5000) {
+           // Возврат в мастерскую, если делать нечего
+           const w = repairman.homeWorkshop;
+           if (w && fxValidTarget(w)) {
+             animateMoveAndScale(repairman, w.x, w.y, 0.1, 700, () => { 
+               repairman.hidden = true; 
+               repairman.inWorkshop = w; 
+             });
+           }
+         }
+       }
+     } else { 
+       idleStartTime = performance.now(); 
+     }
+     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);
 }
 
 function startRepairProcess(repairman, command) {
   const target = command.target;
-
-  if (!target || target.health >= target.maxHealth || target.health <= 0) {
+  
+  // 🔥 ДОБАВЛЕНО: !fxValidTarget(target)
+  if (!target || !fxValidTarget(target) || target.health >= target.maxHealth || target.health <= 0) {
     repairman.busyRepair = false;
+    if (target && target.repairmen) {
+      target.repairmen = target.repairmen.filter(r => r !== repairman);
+    }
     processCommandQueue(repairman);
     return;
   }
-
+  
   const repairRate = 15;
   const intervalTime = 100;
   const REPAIR_COST = { gold: 1, silicon: 4, plasma: 3 };
@@ -1380,68 +1425,66 @@ function startRepairProcess(repairman, command) {
   const costGoldPerInterval = REPAIR_COST.gold / intervalsPerCycle;
   const costSiliconPerInterval = REPAIR_COST.silicon / intervalsPerCycle;
   const costPlasmaPerInterval = REPAIR_COST.plasma / intervalsPerCycle;
-
+  
   repairman.repairIntervalId = setInterval(() => {
-    // 🔥 ПРОВЕРКА ДИСТАНЦИИ: если юнит улетел, прекращаем ремонт
+    // 🔥 ПРОВЕРКА ДИСТАНЦИИ И ВАЛИДНОСТИ: если юнит улетел ИЛИ умер/уничтожен
     const distToTarget = Math.hypot(repairman.x - target.x, repairman.y - target.y);
-    if (distToTarget > 50) {
+    
+    if (distToTarget > 50 || !fxValidTarget(target) || target.health <= 0) {
       clearInterval(repairman.repairIntervalId);
       repairman.repairIntervalId = null;
       repairman.busyRepair = false;
-      if (target.repairmen) {
+      if (target && target.repairmen) {
         target.repairmen = target.repairmen.filter(r => r !== repairman);
       }
       processCommandQueue(repairman);
       return;
     }
-
+    
     if (target.health >= target.maxHealth || target.health <= 0) {
-      clearInterval(repairman.repairIntervalId);
-      repairman.repairIntervalId = null;
-      repairman.busyRepair = false;
-      if (target.repairmen) {
-        target.repairmen = target.repairmen.filter(r => r !== repairman);
-      }
-      processCommandQueue(repairman);
-      return;
-    }
-
-    const resources = target.owner === playerId ? gameState.playerResources : gameState.aiResources;
-
-    if (resources.gold < costGoldPerInterval || resources.silicon < costSiliconPerInterval || resources.plasma < costPlasmaPerInterval) {
-      if (target.owner === playerId) showWarning("Недостаточно ресурсов для ремонта");
-      clearInterval(repairman.repairIntervalId);
-      repairman.repairIntervalId = null;
-      repairman.busyRepair = false;
-      if (target.repairmen) {
-        target.repairmen = target.repairmen.filter(r => r !== repairman);
-      }
-      processCommandQueue(repairman);
-      return;
-    }
-
-    resources.gold -= costGoldPerInterval;
-    resources.silicon -= costSiliconPerInterval;
-    resources.plasma -= costPlasmaPerInterval;
-    updateResourceUI();
-
-    target.health += (repairRate * intervalTime) / 5000;
-
-    if (target.health > target.maxHealth) {
-      target.health = target.maxHealth;
-    }
-
-    if (!repairman.sparkTimer) repairman.sparkTimer = 0;
-    repairman.sparkTimer += intervalTime;
-    if (repairman.sparkTimer >= 1000) {
-      const dist = Math.hypot(repairman.x - target.x, repairman.y - target.y);
-      if (dist <= 50) {
-        spawnSparkEffect(target.x, target.y);
-        spawnSparkEffect(target.x, target.y);
-      }
-      repairman.sparkTimer = 0;
-    }
-
+       clearInterval(repairman.repairIntervalId);
+       repairman.repairIntervalId = null;
+       repairman.busyRepair = false;
+       if (target.repairmen) {
+         target.repairmen = target.repairmen.filter(r => r !== repairman);
+       }
+       processCommandQueue(repairman);
+       return;
+     }
+     
+     const resources = target.owner === playerId ? gameState.playerResources : gameState.aiResources;
+     if (resources.gold < costGoldPerInterval || resources.silicon < costSiliconPerInterval || resources.plasma < costPlasmaPerInterval) {
+       if (target.owner === playerId) showWarning("Недостаточно ресурсов для ремонта");
+       clearInterval(repairman.repairIntervalId);
+       repairman.repairIntervalId = null;
+       repairman.busyRepair = false;
+       if (target.repairmen) {
+         target.repairmen = target.repairmen.filter(r => r !== repairman);
+       }
+       processCommandQueue(repairman);
+       return;
+     }
+     
+     resources.gold -= costGoldPerInterval;
+     resources.silicon -= costSiliconPerInterval;
+     resources.plasma -= costPlasmaPerInterval;
+     updateResourceUI();
+     
+     target.health += (repairRate * intervalTime) / 5000;
+     if (target.health > target.maxHealth) {
+       target.health = target.maxHealth;
+     }
+     
+     if (!repairman.sparkTimer) repairman.sparkTimer = 0;
+     repairman.sparkTimer += intervalTime;
+     if (repairman.sparkTimer >= 1000) {
+       const dist = Math.hypot(repairman.x - target.x, repairman.y - target.y);
+       if (dist <= 50) {
+         spawnSparkEffect(target.x, target.y);
+         spawnSparkEffect(target.x, target.y);
+       }
+       repairman.sparkTimer = 0;
+     }
   }, intervalTime);
 }
 
@@ -1634,31 +1677,55 @@ function applyUnitMicroReflexes(unit, now) {
     unit.lastAutonomousActionTime = now;
   }
 
-  // 2. ПАНИЧЕСКОЕ ОТСТУПЛЕНИЕ (< 15% HP) — ТОЛЬКО УСТАНОВКА ФЛАГА
-  if (unit.health < unit.maxHealth * 0.15 && !unit.isRetreating) {
-    const base = unit.owner === "player" ? playerBase : aiBase;
-    
-    // 🔥 ФИКС: Если базы нет — не входим в режим отступления, иначе юнит застрянет навсегда
-    if (!base) {
-      unit.isRetreating = false;
-      return; 
-    }
-
-    const nearWorkshop = gameState.buildings.some(b => 
-      b.owner === unit.owner && b.type === 'repairWorkshop' && 
-      Math.hypot(b.x - unit.x, b.y - unit.y) < 300 && b.active
+  // 2. ВКЛЮЧЕНИЕ ОТСТУПЛЕНИЯ (< 20% HP) — с поиском БЛИЖАЙШЕЙ мастерской
+  if (unit.health < unit.maxHealth * 0.20 && !unit.isRetreating) {
+    // 🔥 ИЩЕМ БЛИЖАЙШУЮ АКТИВНУЮ МАСТЕРСКУЮ (а не базу!)
+    const workshops = gameState.buildings.filter(b => 
+      b.owner === unit.owner && 
+      b.type === 'repairWorkshop' && 
+      b.active && 
+      b.health > 0
     );
     
-    if (!nearWorkshop) {
-      unit.isRetreating = true;
-      unit.commandQueue = []; 
-      unit.target = null;
-      unit.lastAutonomousActionTime = now;
-      // 🔥 ФИКС: Убрали физическое движение отсюда! Пусть applyUnitMovement занимается движением.
-      return; 
+    let retreatTarget = null;
+    if (workshops.length > 0) {
+      // Сортируем по расстоянию и берём ближайшую
+      retreatTarget = workshops.sort((a, b) => 
+        Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
+      )[0];
+    } else {
+      // 🔥 FALLBACK: Если мастерских нет — летим к базе
+      retreatTarget = unit.owner === "player" ? playerBase : aiBase;
     }
-  } else if (unit.health >= unit.maxHealth * 0.25) {
-    unit.isRetreating = false; 
+    
+    if (!retreatTarget) {
+      // Своих построек нет вообще — не входим в отступление, чтобы не застрять
+      return;
+    }
+    
+    // 🔥 СОХРАНЯЕМ ЦЕЛЬ ОТСТУПЛЕНИЯ ПРЯМО В ЮНИТЕ
+    unit.retreatTarget = retreatTarget;
+    unit.isRetreating = true;
+    unit.commandQueue = []; 
+    unit.target = null;
+    unit.lastAutonomousActionTime = now;
+    
+    // 🔥 НОВОЕ: Кулдаун на возвращение в бой (5 секунд после выхода из отступления)
+    unit.returnToBattleCooldown = 0;
+    
+    return;
+  }
+
+  // 3. ВЫХОД ИЗ ОТСТУПЛЕНИЯ — только когда юнит ПОЧТИ ЗДОРОВ (>80% HP)
+  // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: порог поднят с 25% до 80%!
+  if (unit.isRetreating && unit.health >= unit.maxHealth * 0.80) {
+    unit.isRetreating = false;
+    unit.retreatTarget = null;
+    
+    // 🔥 НОВОЕ: Даём юниту 5 секунд "остыть" перед возвращением в бой
+    // Это разрывает цикл "вылечился → сразу атаковал → снова ранен → снова отступил"
+    unit.returnToBattleCooldown = performance.now() + 5000;
+    unit.lastAutonomousActionTime = performance.now() + 5000;
   }
 }
 
