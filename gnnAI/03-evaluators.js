@@ -87,14 +87,21 @@ Object.assign(window.GnnAI, {
           return u ? u.missionLog : null;
         }).filter(Boolean);
         
-        if (logs.length > 0) {
+        const elapsed = (performance.now() - mission.snapshot.time) / 1000;
+        
+        // ФИКС: Если юниты умерли и удалены
+        if (logs.length === 0 && unitIds.length > 0 && elapsed >= 5) {
+            isResolved = true;
+            rewardDelta = -3.0; 
+            reason = "TOTAL_WIPEOUT_GHOST: отряд уничтожен";
+        }
+        else if (logs.length > 0) {
           const alive = logs.filter(l => l.alive);
           const dead = logs.filter(l => !l.alive);
           const completed = logs.filter(l => l.completedMission);
           const reached = logs.filter(l => l.reachedTarget);
           const totalDamageDealt = logs.reduce((s, l) => s + l.damageDealt, 0);
           const totalDamageTaken = logs.reduce((s, l) => s + l.damageTaken, 0);
-          const hitByTurret = logs.some(l => l.hitByTurret);
           const diedToTurret = dead.some(l => l.killedBy && l.killedBy.type && l.killedBy.type.startsWith("turret"));
 
           const target = gameState.units.find(u => u.id === mission.snapshot.targetId) ||
@@ -115,21 +122,13 @@ Object.assign(window.GnnAI, {
             return 10;
           };
           const targetImportance = getTargetImportance(targetType);
-          
-          const elapsed = (performance.now() - mission.snapshot.time) / 1000;
 
-          // Кешируем начальное расстояние к цели
           if (mission.snapshot.distToTarget === undefined && target && logs.length > 0) {
-            const firstUnitId = unitIds[0];
-            const fu = gameState.units.find(x => x.id === firstUnitId);
-            if (fu) {
-              mission.snapshot.distToTarget = Math.hypot(fu.x - target.x, fu.y - target.y);
-            } else {
-              mission.snapshot.distToTarget = 9999;
-            }
+            const fu = gameState.units.find(x => x.id === unitIds[0]);
+            mission.snapshot.distToTarget = fu ? Math.hypot(fu.x - target.x, fu.y - target.y) : 9999;
           }
 
-          // Промежуточные награды за прогресс
+          // Промежуточные награды
           if (elapsed > 3 && alive.length > 0 && target && target.health > 0) {
             const firstAliveUnit = gameState.units.find(x => x.id === unitIds[0] && x.health > 0);
             if (firstAliveUnit) {
@@ -137,85 +136,45 @@ Object.assign(window.GnnAI, {
               const initialDist = mission.snapshot.distToTarget || 9999;
               const progress = Math.max(0, Math.min(1, (initialDist - currentDist) / Math.max(1, initialDist)));
 
-              if (progress > 0.05) {
-                const progressReward = progress * 2.0;
-                mission.replayEntry.reward += progressReward;
-              }
-              if (totalDamageDealt > 0) {
-                const dmgReward = Math.min(2.0, totalDamageDealt * 0.01);
-                mission.replayEntry.reward += dmgReward;
-              }
-              if (progress < 0.02 && elapsed > 10) {
-                mission.replayEntry.reward += -1.0;
-              }
+              if (progress > 0.05) mission.replayEntry.reward += progress * 2.0;
+              if (totalDamageDealt > 0) mission.replayEntry.reward += Math.min(2.0, totalDamageDealt * 0.01);
             }
           }
 
-          // Минимальное время жизни миссии
-          const MIN_MISSION_LIFE = 15;
-          const MIN_MISSION_LIFE_WIPEOUT = 5;
-          const canResolve = (alive.length === 0 && elapsed >= MIN_MISSION_LIFE_WIPEOUT) || elapsed >= MIN_MISSION_LIFE;
+          const canResolve = (alive.length === 0 && elapsed >= 5) || elapsed >= 15;
 
           if (canResolve) {
             isResolved = true;
             
             if (completed.length > 0) {
               const baseReward = targetImportance >= 50 ? 20.0 : 8.0;
-              const damageBonus = totalDamageDealt * 0.05;
               const lossRatio = dead.length / logs.length;
-              const lossPenalty = lossRatio * 10.0;
+              rewardDelta = baseReward + (totalDamageDealt * 0.05) - (lossRatio * 10.0);
+              reason = `TARGET_DESTROYED: ${targetType}`;
               
-              rewardDelta = baseReward + damageBonus - lossPenalty;
-              reason = `TARGET_DESTROYED: ${targetType} (важность: ${targetImportance}, потери: ${Math.round(lossRatio*100)}%)`;
-              
-              // Бонусы
-              if (diedToTurret && dead.length > 0) {
-                rewardDelta -= 8.0;
-                reason += " +FRONTAL_TURRET_ASSAULT";
-              }
-              if (mission.snapshot.targetStartHP && mission.snapshot.targetStartHP < 100) {
-                rewardDelta += 5.0;
-                reason += " +FINISHING_BLOW";
-              }
-              const efficiency = totalDamageDealt / Math.max(1, totalDamageTaken);
-              if (efficiency > 3 && targetImportance >= 50) {
-                rewardDelta += 8.0;
-                reason += ` +EFFICIENT_${efficiency.toFixed(1)}x`;
-              }
-              if (targetType === "worker" && completed.length > 0) {
-                rewardDelta -= 3.0;
-                reason += " +WORKER_HARASS_PENALTY";
-              }
-              if (elapsed < 15) {
-                rewardDelta += 10.0;
-                reason += " +BLITZ_EXECUTION";
-              }
-            } else if (alive.length === 0) {
+              if (diedToTurret && dead.length > 0) { rewardDelta -= 5.0; reason += " +FRONTAL_TURRET"; }
+              if (elapsed < 15) { rewardDelta += 5.0; reason += " +BLITZ"; }
+            } 
+            else if (alive.length === 0) {
+              // 🔥 МЯГКИЕ ШТРАФЫ ЗА ПОТЕРЮ
               if (reached.length > 0) {
-                rewardDelta = -5.0 + totalDamageDealt * 0.02;
-                reason = "REACHED_BUT_DIED: дошли, но не уничтожили";
+                rewardDelta = -2.0 + (totalDamageDealt * 0.05);
+                reason = "REACHED_BUT_DIED";
               } else if (diedToTurret) {
-                rewardDelta = -10.0;
-                reason = "DIED_TO_TURRETS: попали под турели";
+                rewardDelta = -3.0;
+                reason = "DIED_TO_TURRETS";
               } else {
-                rewardDelta = -8.0;
-                reason = "TOTAL_WIPEOUT: армия уничтожена без результата";
+                rewardDelta = -4.0;
+                reason = "TOTAL_WIPEOUT";
               }
-            } else if (reached.length > 0 && alive.length > 0) {
-              if (elapsed > 5 && totalDamageDealt > 20) {
-                rewardDelta = 2.0 + totalDamageDealt * 0.02;
-                reason = "HOLDING_POSITION_AND_DEALING_DAMAGE";
-              } else {
-                rewardDelta = totalDamageDealt * 0.02;
-                reason = "IN_PROGRESS: бой идёт";
-              }
-            } else if (alive.length === logs.length && reached.length === 0) {
-              const stuckTime = (performance.now() - mission.snapshot.time) / 1000;
-              if (stuckTime > 20) {
-                isResolved = true;
-                rewardDelta = -5.0;
-                reason = `STUCK_NO_PROGRESS: ${stuckTime.toFixed(0)}с без достижения цели`;
-              }
+            } 
+            else if (reached.length > 0 && alive.length > 0) {
+              rewardDelta = 1.0 + (totalDamageDealt * 0.02);
+              reason = "HOLDING_POSITION";
+            } 
+            else {
+              rewardDelta = -2.0;
+              reason = "STUCK_NO_PROGRESS";
             }
           }
         }
@@ -249,40 +208,36 @@ Object.assign(window.GnnAI, {
           const totalDamageDealt = logs.reduce((s, l) => s + (l.damageDealt || 0), 0);
           const totalDamageTaken = logs.reduce((s, l) => s + (l.damageTaken || 0), 0);
           const lostDefenders = totalDefendersAtStart - aliveDefenders;
-          
           const elapsed = (performance.now() - mission.snapshot.time) / 1000;
           
-          if (elapsed >= 10 || (enemiesAtStart > 0 && enemiesNow === 0)) {
+          // 🔥 ЖЕСТКИЙ ТАЙМАУТ: миссия не может длиться вечно и копить ошибки
+          if (elapsed >= 30) {
+            isResolved = true;
+            rewardDelta = -2.0; 
+            reason = "DEFENSE_TIMEOUT: миссия длилась > 30 сек";
+          }
+          else if (elapsed >= 10 || (enemiesAtStart > 0 && enemiesNow === 0)) {
             isResolved = true;
             
             if (enemiesAtStart > 0 && enemiesNow === 0 && aliveDefenders > 0) {
               const hadRealCombat = totalDamageDealt > 50 || totalDamageTaken > 30 || lostDefenders > 0;
               if (hadRealCombat) {
                 const efficiency = totalDamageDealt / Math.max(1, totalDamageTaken);
-                rewardDelta = Math.min(30.0, 10.0 + efficiency * 5.0 + lostDefenders * 3.0);
-                reason = `DEFENSE_SUCCESS: отбили атаку, урон ${totalDamageDealt.toFixed(0)}, потери ${lostDefenders}`;
+                rewardDelta = Math.min(15.0, 5.0 + efficiency * 2.0); // 🔥 Смягчили потолок
+                reason = `DEFENSE_SUCCESS: отбили атаку`;
               } else {
-                rewardDelta = -3.0;
-                reason = "DEFEND_WITHOUT_COMBAT: защитники не вступили в бой";
-              }
-            } else if (enemiesAtStart === 0 && enemiesNow === 0) {
-              const recentEnemyPresence = gameState.units.some(u =>
-                u.owner === "player" && u.health > 0 && anchor &&
-                Math.hypot(u.x - anchor.x, u.y - anchor.y) < 500
-              );
-              if (recentEnemyPresence) {
-                rewardDelta = 3.0;
-                reason = "PREVENTIVE_DEFENSE: враг был рядом, но ушёл";
-              } else {
-                rewardDelta = -5.0;
-                reason = "DEFENSE_NO_THREAT: защитники отправлены, но врага нет и не было";
+                rewardDelta = -1.0;
+                reason = "DEFEND_WITHOUT_COMBAT";
               }
             } else if (totalDefendersAtStart > 0 && aliveDefenders === 0) {
-              rewardDelta = -10.0;
+              rewardDelta = -5.0; // 🔥 Смягчили с -10.0
               reason = "DEFENSE_FAILED: все защитники погибли";
             } else if (enemiesNow > 0 && aliveDefenders > 0) {
-              rewardDelta = 0.3 + (totalDamageDealt > 0 ? 0.2 : 0);
-              reason = "DEFENSE_ONGOING";
+              rewardDelta = 1.0; // 🔥 Небольшой плюс за удержание позиции
+              reason = "DEFENSE_ONGOING: удерживаем позицию";
+            } else {
+              rewardDelta = -1.0;
+              reason = "DEFENSE_NO_THREAT";
             }
           }
         }
@@ -293,150 +248,80 @@ Object.assign(window.GnnAI, {
         const type = mission.intent.unitType;
         const elapsed = performance.now() - mission.snapshot.time;
         
+        // 🔥 УВЕЛИЧИЛИ ОКНО до 30 секунд (тяжелые юниты строятся долго)
         const unitAppeared = gameState.units.some(u => 
           u.owner === "ai" && u.type === type && u.health > 0 &&
-          (performance.now() - (u.builtAt || 0)) < 10000
+          (performance.now() - (u.builtAt || 0)) < 30000 
         );
         
-        if (unitAppeared || elapsed > 15000) {
+        if (unitAppeared || elapsed > 20000) { // 🔥 Таймаут увеличен до 20 сек
           isResolved = true;
           
           if (unitAppeared) {
-            const rewards = {
-              "worker": 3.0,
-              "repairman": 1.0,
-              "fighter": 10.0,
-              "assault": 15.0,
-              "elite": 20.0
+            const baseRewards = {
+              "worker": 5.0,      // 🔥 Подняли базовую награду
+              "repairman": 3.0,
+              "fighter": 6.0,
+              "assault": 8.0,
+              "elite": 12.0
             };
-            rewardDelta = rewards[type] || 2.0;
+            rewardDelta = baseRewards[type] || 3.0; 
+            reason = `UNIT_HIRED_SUCCESS: ${type} успешно создан`;
             
-            // Дополнительная проверка: нужен ли был этот юнит
             if (type === "worker") {
               const totalWarehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type === "warehouse" && b.active).length;
               const totalWorkshops = gameState.buildings.filter(b => b.owner === "ai" && b.type === "repairWorkshop" && b.active).length;
-              const neededWorkers = totalWarehouses * 5 + totalWorkshops * 5;
+              const neededWorkers = (totalWarehouses * 5) + (totalWorkshops * 5);
               const currentWorkers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
+              
               if (currentWorkers < neededWorkers) {
-                rewardDelta += 2.0;
-                reason = `WORKER_FILLED_DEFICIT: ${type}`;
-              } else {
-                reason = `UNIT_HIRED: ${type} (дефицита нет)`;
+                rewardDelta += 3.0; 
+                reason += " +ЗАКРЫЛ ДЕФИЦИТ";
               }
-            } else {
-              reason = `UNIT_HIRED: ${type}`;
             }
           } else {
-            rewardDelta = -2.0;
-            reason = "HIRE_TIMEOUT";
+            rewardDelta = -1.0; 
+            reason = "HIRE_TIMEOUT: юнит не появился";
           }
         }
       }
-      
       // 4. СТРОИТЕЛЬСТВО
       else if (mission.intent.type === "build") {
         const bt = mission.intent.buildingType;
         const isBuilt = gameState.buildings.some(b => 
           b.owner === "ai" && b.type === bt && b.active
         );
-        
         const elapsed = performance.now() - mission.snapshot.time;
         
-        if (isBuilt || elapsed > 20000) {
+        if (isBuilt || elapsed > 25000) {
           isResolved = true;
           
           if (isBuilt) {
-            // Льготный период для складов/мастерских
-        if (bt === "warehouse" || bt === "repairWorkshop") {
-            const totalWorkers = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
-            const totalWarehouses = gameState.buildings.filter(b => b.owner === "ai" && b.type === "warehouse" && b.active).length;
-            const totalWorkshops = gameState.buildings.filter(b => b.owner === "ai" && b.type === "repairWorkshop" && b.active).length;
-            const neededWorkers = totalWarehouses * 5 + totalWorkshops * 5;
-            const gameTimeMin = performance.now() / 60000;
-
-            const recentlyBuilt = gameState.buildings.filter(b =>
-                b.owner === "ai" && b.type === bt && b.active &&
-                (performance.now() - b.builtAt) < 15000
-            ).length;
-
-            const emptyWarehouses = gameState.buildings.filter(b =>
-                b.owner === "ai" && b.type === "warehouse" && b.active && (b.workers || 0) === 0
-            ).length;
-            const penalizedEmpty = Math.max(0, emptyWarehouses - recentlyBuilt);
-
-            if (bt === "warehouse") {
-                // 🔥 СКЛАД — основа экономики, всегда высокая награда
-                if (totalWorkers < neededWorkers && penalizedEmpty > 0 && gameTimeMin > 1.5) {
-                    rewardDelta = 4.0 - 2.0 * penalizedEmpty;
-                    reason = `BUILDING_BUILT_NEEDS_WORKERS: склад (${penalizedEmpty} ждут рабочих)`;
-                } else {
-                    rewardDelta = 10.0; // 🔥 ВЫСОКАЯ награда за экономику
-                    reason = `BUILDING_BUILT_ECONOMY: склад (отлично!)`;
-                }
-            }
-            else if (bt === "repairWorkshop") {
-                // 🔥 МАСТЕРСКАЯ — вспомогательная, награда зависит от контекста
-                const woundedUnits = gameState.units.filter(u =>
-                    u.owner === "ai" && u.health > 0 && u.health < u.maxHealth * 0.8
-                ).length;
-                const totalArmy = gameState.units.filter(u =>
-                    u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0
-                ).length;
-
-                if (woundedUnits >= 2 || (totalArmy >= 3 && gameTimeMin > 2.0)) {
-                    // Армия есть и нуждается в ремонте — честная награда
-                    rewardDelta = 6.0;
-                    reason = `BUILDING_BUILT_SUPPORT: мастерская (армия нуждается в ремонте)`;
-                } else if (gameTimeMin < 1.5 && totalArmy === 0) {
-                    // 🔥 ШТРАФ: построена слишком рано, армии ещё нет
-                    rewardDelta = -3.0;
-                    reason = `BUILDING_BUILT_PREMATURE: мастерская построена слишком рано (до 1.5 мин), армии нет`;
-                } else {
-                    // Минимальная награда "просто построено"
-                    rewardDelta = 2.0;
-                    reason = `BUILDING_BUILT_SUPPORT: мастерская (преждевременно или без острой нужды)`;
-                }
-            }
-        } else {
-              const rewards = {
-                "barracks": 5.0, "barracks2": 8.0, "barracks3": 10.0,
-                "base2": 12.0, "base3": 15.0,
-                "turret": 5.0, "turret2": 8.0, "turret3": 10.0,
-                "beacon": 5.0
-              };
-              rewardDelta = rewards[bt] || 5.0;
-              
-              // Бонус за экспансию
-              const builtObj = gameState.buildings.find(b => b.owner === "ai" && b.type === bt && b.active);
-              if (builtObj) {
-                const distFromBase = Math.hypot(builtObj.x - aiBase.x, builtObj.y - aiBase.y);
-                
-                // 🔥 АДАПТАЦИЯ: порог экспансии зависит от размера мира
-                const scale = typeof window.getWorldScale === 'function' ? window.getWorldScale() : 1.0;
-                const expansionThreshold = 400 * scale; 
-
-                if (distFromBase > expansionThreshold) {
-                  rewardDelta += 15.0;
-                  reason = `BUILDING_BUILT_EXPANSION: ${bt} на расстоянии ${distFromBase.toFixed(0)}px (порог: ${expansionThreshold.toFixed(0)})`;
-                } else {
-                  reason = `BUILDING_BUILT: ${bt}`;
-                }
-                // Бонус за маяк с постройками
-                if (bt === "beacon") {
-                  const nearby = gameState.buildings.filter(b => 
-                    b.owner === "ai" && b !== builtObj &&
-                    ["warehouse","turret","turret2","turret3","barracks"].includes(b.type) &&
-                    Math.hypot(b.x - builtObj.x, b.y - builtObj.y) < 250
-                  ).length;
-                  if (nearby >= 2) {
-                    rewardDelta += 5.0;
-                    reason += " +CLUSTER_ON_OUTPOST";
-                  }
-                }
+            // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Успешная постройка ВСЕГДА дает плюс.
+            // Штрафы за пустые склады должны начисляться в evaluateStagnation, а не здесь!
+            const rewards = {
+              "warehouse": 10.0,
+              "repairWorkshop": 6.0,
+              "barracks": 8.0, "barracks2": 10.0, "barracks3": 12.0,
+              "base2": 15.0, "base3": 18.0,
+              "turret": 6.0, "turret2": 8.0, "turret3": 10.0,
+              "beacon": 7.0
+            };
+            rewardDelta = rewards[bt] || 5.0;
+            reason = `BUILDING_BUILT: ${bt} успешно построен`;
+            
+            // Бонус за экспансию (оставляем как было)
+            const builtObj = gameState.buildings.find(b => b.owner === "ai" && b.type === bt && b.active);
+            if (builtObj) {
+              const distFromBase = Math.hypot(builtObj.x - (window.aiBase?.x || 0), builtObj.y - (window.aiBase?.y || 0));
+              const scale = typeof window.getWorldScale === 'function' ? window.getWorldScale() : 1.0;
+              if (distFromBase > 400 * scale) {
+                rewardDelta += 15.0;
+                reason += " +EXPANSION_BONUS";
               }
             }
           } else {
-            rewardDelta = -3.0;
+            rewardDelta = -2.0; // Мягкий штраф за таймаут
             reason = "BUILD_TIMEOUT";
           }
         }
@@ -445,12 +330,15 @@ Object.assign(window.GnnAI, {
       // 5. БЕЗДЕЙСТВИЕ
       else if (mission.intent.type === "idle") {
         const gameTimeMin = performance.now() / 60000;
-        const totalResRaw = (m.res.gold || 0) + (m.res.silicon || 0) + (m.res.plasma || 0);
+        const res = m.res || { gold: 0, silicon: 0, plasma: 0 };
         
-        const canAffordWorker = totalResRaw >= this.GAME_CONSTANTS.WORKER_COST;
-        const canAffordWarehouse = totalResRaw >= this.GAME_CONSTANTS.WAREHOUSE_COST;
-        const canAffordBarracks = totalResRaw >= this.GAME_CONSTANTS.BARRACKS_COST;
-        const canAffordBase2 = totalResRaw >= this.GAME_CONSTANTS.BASE2_COST;
+        // 🔥 КРИТИЧЕСКИЙ ФИКС: Проверяем КАЖДЫЙ ресурс отдельно!
+        // Старая проверка (сумма >= сумма) давала ложные срабатывания: 
+        // 100 золота и 0 кремния ≠ можно построить рабочего!
+        const canAffordWorker = (res.gold >= 4) && (res.silicon >= 6) && (res.plasma >= 3);
+        const canAffordWarehouse = (res.gold >= 12) && (res.silicon >= 5) && (res.plasma >= 3);
+        const canAffordBarracks = (res.gold >= 41) && (res.silicon >= 52) && (res.plasma >= 15);
+        const canAffordBase2 = (res.gold >= 81) && (res.silicon >= 92) && (res.plasma >= 43);
         
         const hasBarracks = gameState.buildings.some(b => b.owner === "ai" && b.type === "barracks" && b.active);
         const hasBase2 = gameState.buildings.some(b => b.owner === "ai" && b.type === "base2" && b.active);
@@ -458,39 +346,41 @@ Object.assign(window.GnnAI, {
         const workerCount = gameState.units.filter(u => u.owner === "ai" && u.type === "worker" && u.health > 0).length;
         
         let criticalGoal = null;
-        let criticalCost = 0;
         
+        // Определяем самую критическую цель, которую мы УЖЕ можем позволить себе прямо сейчас
         if (!hasBarracks && canAffordBarracks && gameTimeMin > 2.0) {
           criticalGoal = "barracks";
-          criticalCost = this.GAME_CONSTANTS.BARRACKS_COST;
         } else if (!hasBase2 && hasBarracks && canAffordBase2 && gameTimeMin > 4.0) {
           criticalGoal = "base2";
-          criticalCost = this.GAME_CONSTANTS.BASE2_COST;
         } else if (warehouseCount < 2 && canAffordWarehouse && gameTimeMin > 1.5) {
           criticalGoal = "warehouse";
-          criticalCost = this.GAME_CONSTANTS.WAREHOUSE_COST;
         } else if (workerCount < warehouseCount * 5 && canAffordWorker && gameTimeMin > 1.0) {
           criticalGoal = "worker";
-          criticalCost = this.GAME_CONSTANTS.WORKER_COST;
         }
         
-        if (criticalGoal && totalResRaw >= criticalCost * 0.9) {
-          rewardDelta = -20.0;
-          reason = `IDLE_WHILE_CAN_BUILD: можно построить ${criticalGoal}`;
-        } else if (totalResRaw > 100 && gameTimeMin > 3.0) {
-          rewardDelta = 0.0;
-          reason = "SAVING_FOR_EXPENSIVE_GOAL";
+        // 🔥 ШТРАФ ТОЛЬКО если мы ДЕЙСТВИТЕЛЬНО можем построить критическую цель прямо сейчас
+        if (criticalGoal) {
+          rewardDelta = -10.0; // Смягчили с -20.0 до -10.0, чтобы не "убивать" градиенты
+          reason = `IDLE_WHILE_CAN_BUILD: можно и нужно построить ${criticalGoal}`;
         } else {
-          rewardDelta = 0.0;
-          reason = "WAITING_FOR_RESOURCES";
+          // Если не можем позволить, проверяем, копим ли мы на что-то
+          const totalRes = (res.gold || 0) + (res.silicon || 0) + (res.plasma || 0);
+          if (totalRes > 100 && gameTimeMin > 3.0) {
+            rewardDelta = 0.0;
+            reason = "SAVING_FOR_EXPENSIVE_GOAL: копим на дорогую цель";
+          } else {
+            rewardDelta = 0.0;
+            reason = "WAITING_FOR_RESOURCES: честно ждем накопления";
+          }
         }
         
-        if (gameTimeMin > 3.0 && m.aiArmy === 0 && totalResRaw > 100) {
-          rewardDelta -= 3.0;
+        // Дополнительные мягкие штрафы за панику (только если ресурсов действительно много)
+        if (gameTimeMin > 3.0 && m.aiArmy === 0 && (res.gold || 0) > 50) {
+          rewardDelta -= 2.0;
           reason += " +NO_ARMY_PANIC";
         }
-        if (m.enemyNear > 0 && totalResRaw > 50) {
-          rewardDelta -= 3.0;
+        if (m.enemyNear > 0 && (res.gold || 0) > 50) {
+          rewardDelta -= 2.0;
           reason += " +IDLE_UNDER_THREAT";
         }
         

@@ -15,13 +15,9 @@ const FX_STATE = {
   stats: { phantom: 0, ghost: 0, zombie: 0, dupPool: 0, dupAdd: 0, doubleRemove: 0, culled: 0, mg: 0, rockets: 0 },
   _bs: new Set(), _us: new Set(), _ts: -1e9
 };
-
 function fxNum(v, d) { return (typeof v === "number" && isFinite(v)) ? v : d; }
-
 function fxClamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
-
 function fxInvalidate() { FX_STATE._ts = -1e9; }
-
 function fxSets() {
   const t = performance.now();
   if (t - FX_STATE._ts > 100) {
@@ -30,9 +26,7 @@ function fxSets() {
     FX_STATE._ts = t;
   }
 }
-
 function fxInGame(o) { fxSets(); return FX_STATE._bs.has(o) || FX_STATE._us.has(o); }
-
 function fxValidTarget(t) {
   // 🔥 УПРОЩЕНО: убираем проверку в кэшированном Set (он обновляется раз в 100мс,
   // из-за чего свежезаспавненные юниты не видятся как валидные цели)
@@ -42,7 +36,6 @@ function fxValidTarget(t) {
   if (t.destroyed || t.isSelling) return false;
   return true;
 }
-
 function fxBaseFor(owner) {
   const ok = b => b && b.health > 0 && fxInGame(b);
   if (owner === "player" && typeof playerBase !== "undefined" && ok(playerBase)) return playerBase;
@@ -50,7 +43,6 @@ function fxBaseFor(owner) {
   return gameState.buildings.find(b => b.owner === owner && b.health > 0 &&
     (String(b.type).startsWith("base") || b.type === "warehouse")) || null;
 }
-
 function fxResetTransient(u) {
   u.__epoch = (u.__epoch || 0) + 1; u.__phaseInit = false; u.__physFrame = -1; u.__eliteFrame = -1;
   u.suspendedQueue = null; u.moveTarget = null; u.moveCallback = null;
@@ -69,7 +61,6 @@ function fxResetTransient(u) {
   if (u.__repairCycleId) { cancelAnimationFrame(u.__repairCycleId); u.__repairCycleId = null; }
   u.__fragmentsSpawned = false;
 }
-
 function fxEnsureCombat(u) {
   if (!u) return;
   u.vx = fxNum(u.vx, 0); u.vy = fxNum(u.vy, 0);
@@ -123,7 +114,6 @@ function fxEnsureCombat(u) {
     u.dashTimer = fxNum(u.dashTimer, 1e9);
   }
 }
-
 function fxSanitizeOrders(u) {
   if (!u) return;
   if (u.target && !fxValidTarget(u.target)) { u.target = null; FX_STATE.stats.ghost++; }
@@ -148,7 +138,6 @@ function fxSanitizeOrders(u) {
   if (u.type === "repairman" && u.busyRepair && !u.repairIntervalId && !u.moveTarget &&
       !(u.commandQueue || []).some(c => c.type === "repair")) u.busyRepair = false;
 }
-// 🔥 GNN СОБЫТИЙНЫЕ ХУКИ (Mission Logging)
 window.GnnEventHooks = {
   onUnitDamaged: function(unit, damage, source) {
     if (!unit || !unit.missionLog) return;
@@ -203,7 +192,6 @@ window.GnnEventHooks = {
     }
   }
 };
-
 function addUnit(unit) {
 if (!unit) return unit;
 // 🛡️ Проверяем РЕАЛЬНОЕ присутствие в массиве, а не флаг
@@ -228,7 +216,6 @@ if (unit.defending) gameState.defenders.push(unit);
 fxInvalidate();
 return unit;
 }
-
 function removeUnit(unit, killer = null) {
 if (!unit) return;
 // 🛡️ Смерть строго один раз: иначе двойные очки, двойные осколки и дубль в пуле
@@ -283,7 +270,6 @@ if (!unit.__fragmentsSpawned) {
   
   releaseUnitToPool(unit);
 }
-
 function cleanupUnitState(unit) {
   if (unit.repairIntervalId) { clearInterval(unit.repairIntervalId); unit.repairIntervalId = null; }
   unit.isRepairing = false; unit.repairSparkTimer = null;
@@ -292,7 +278,6 @@ function cleanupUnitState(unit) {
   unit.shocked = false; unit.shockTimer = 0; unit.frozen = false; unit.freezeTimer = 0;
   unit.target = null; unit.commandQueue = []; unit.group = undefined; unit.selected = false;
 }
-
 function cleanUpBuildingReferences() {
   if (typeof quadtree !== 'undefined' && quadtree !== null) {
     quadtree.clear();
@@ -301,7 +286,6 @@ function cleanUpBuildingReferences() {
     gameState.resources.forEach(r => quadtree.insert(r));
   }
 }
-
 function releaseUnitToPool(unit) {
 // 🛡️ Один объект не может лежать в пуле дважды
 if (unit.__inPool) { FX_STATE.stats.dupPool++; return; }
@@ -356,7 +340,6 @@ unit.alive = false;
   if (!unitPools[unit.type]) unitPools[unit.type] = [];
   unitPools[unit.type].push(unit);
 }
-
 function spawnDestructionFragments(x, y, width, height, unitType) {
   const color = (typeof unitType === "string" && unitType.startsWith("#")) ? unitType : (fragmentColors[unitType] || "gray");
   const numFragments = Math.floor(Math.random() * 4) + 4;
@@ -380,7 +363,6 @@ function spawnDestructionFragments(x, y, width, height, unitType) {
     gameState.fragments.push(fragment);
   }
 }
-
 function fireBullet(shooter, enemy) {
   if (!shooter || shooter.health <= 0) return;
 
@@ -459,7 +441,6 @@ bullet.splashDamage = 0;
   gameState.bullets.push(bullet);
 }
 // ЕДИНЫЙ ДВИЖОК ДВИЖЕНИЯ (Заменить старый moveUnit и логику в core.js)
-// 1. Функция только ЗАДАЕТ цель движения и коллбек, не выполняя анимацию
 function moveUnit(unit, targetX, targetY, callback) {
   if (unit.shocked || unit.isRetreating || unit.health <= 0) return;
   
@@ -821,7 +802,6 @@ ay = (unit.dashVector.y * 0.3 * decay) + (tanY * 80.0 * (unit.orbitDirection || 
   unit.x += unit.vx * deltaTime;
   unit.y += unit.vy * deltaTime;
 }
-
 function updateAssaultPhysics(unit, target, deltaTime) {
   if (!target || !unit) return;
 
@@ -942,7 +922,6 @@ function updateAssaultPhysics(unit, target, deltaTime) {
   unit.x += unit.vx * deltaTime;
   unit.y += unit.vy * deltaTime;
 }
-
 function updateElitePhysics(unit, target, deltaTime) {
     if (!target || !unit || unit.health <= 0) return;
 
@@ -1006,11 +985,11 @@ function updateElitePhysics(unit, target, deltaTime) {
             ax = frontX * distError * 1.5 + orbitX * 15;
             ay = frontY * distError * 1.5 + orbitY * 15;
 
-            // 🔥 МЯГКИЙ ОТКАТ ПОСЛЕ ЗАЛПА (уменьшено с 40 до 20)
+            // 🔥 МЯГКИЙ ОТКАТ ПОСЛЕ ЗАЛПА
             if (unit.postVolleyTimer && unit.postVolleyTimer > 0) {
                 unit.postVolleyTimer -= deltaTime;
-                ax -= frontX * 20; // Было 40
-                ay -= frontY * 20;
+                ax -= frontX * 40; 
+                ay -= frontY * 40;
             }
             break;
         }
@@ -1055,7 +1034,7 @@ function updateElitePhysics(unit, target, deltaTime) {
     unit.vx = unit.vx * 0.97 + ax * deltaTime;
     unit.vy = unit.vy * 0.97 + ay * deltaTime;
 
-    const maxSpeed = panicMode ? 45 : 40;
+    const maxSpeed = panicMode ? 45 : 30;
     const curSpeed = Math.hypot(unit.vx, unit.vy);
     if (curSpeed > maxSpeed) {
         unit.vx = (unit.vx / curSpeed) * maxSpeed;
@@ -1076,7 +1055,6 @@ function dynamicMove(unit, target, deltaTime) {
   // Используем боевую физику в режиме сближения (approach)
   updateFighterPhysics(unit, target, 'approach', deltaTime);
 }
-
 function dynamicAttack(unit, target, deltaTime) {
   if (unit.type === "elite") { 
     dynamicAttackElite(unit, target, deltaTime); 
@@ -1109,7 +1087,6 @@ function dynamicAttack(unit, target, deltaTime) {
   // ✅ ФИЗИКА УЖЕ ОБРАБАТЫВАЕТСЯ В applyUnitMovement
   }
 }
-
 function dynamicAttackAssault(unit, target, deltaTime) {
   if (unit.health <= 0 || !target || target.health <= 0) { 
     unit.target = null; 
@@ -1130,7 +1107,6 @@ function dynamicAttackAssault(unit, target, deltaTime) {
 // Ракеты теперь управляются внутри updateAssaultPhysics с проверкой dist <= unit.rocketRange
 // 🔥 ФИЗИКА ШТУРМОВИКА УЖЕ ОБРАБАТЫВАЕТСЯ В applyUnitMovement, здесь только стрельба!
 }
-
 function dynamicAttackElite(unit, target, deltaTime) {
     if (unit.health <= 0 || !target || target.health <= 0) {
         unit.target = null;
@@ -1274,7 +1250,6 @@ function dynamicAttackElite(unit, target, deltaTime) {
         unit.lastLaserAttack = now;
     }
 }
-
 function checkForEnemiesAndAttack(unit) {
   if (!unit || !unit.range || unit.isRetreating || unit.health <= 0) return;
     // Это разрывает злосчастный цикл
@@ -1327,7 +1302,6 @@ function checkForEnemiesAndAttack(unit) {
     }
   }
 }
-
 function startRepairmanCycle(repairman) {
   let idleStartTime = performance.now();
   
@@ -1404,7 +1378,6 @@ function startRepairmanCycle(repairman) {
   }
   requestAnimationFrame(loop);
 }
-
 function startRepairProcess(repairman, command) {
   const target = command.target;
   
@@ -1487,7 +1460,6 @@ function startRepairProcess(repairman, command) {
      }
   }, intervalTime);
 }
-
 function updateResources(deltaTime) {
   gameState.resources.forEach(resource => {
     if (resource.type === "gold" && resource.rotationSpeed) resource.rotation += resource.rotationSpeed * deltaTime;
@@ -1495,11 +1467,9 @@ function updateResources(deltaTime) {
   });
   cleanupResources();
 }
-
 function cleanupResources() {
   gameState.resources = gameState.resources.filter(resource => resource.amount > 0);
 }
-
 function checkVictoryConditions() {
   if (gameState.gameEnded) return;
   if (gameMode === "single") {
@@ -1515,7 +1485,6 @@ function checkVictoryConditions() {
     if (playerBuildings.length === 0) { cancelAnimationFrame(gameLoopId); gameState.gameEnded = true; setTimeout(() => showVictoryScreen("💀 Ты проиграл!"), 2000); return; }
   }
 }
-
 function initFogOfWar() {
   const cols = Math.ceil(worldWidth / FOG_CELL_SIZE), rows = Math.ceil(worldHeight / FOG_CELL_SIZE);
   fogMap = [];
@@ -1533,7 +1502,6 @@ function initFogOfWar() {
     persistentFogMap = persistentFogMap.slice(0, rows);
   }
 }
-
 function updateFogOfWar() {
   if (!fogMap || fogMap.length === 0 || !fogMap[0]) return;
   const invScale = 1 / camera.scale;
@@ -1582,7 +1550,6 @@ function updateFogOfWar() {
     }
   });
 }
-
 function showVictoryScreen(message) {
   let victoryScreen = document.getElementById("victoryScreen");
   if (!victoryScreen) {
@@ -1610,7 +1577,6 @@ function showVictoryScreen(message) {
   victoryScreen.appendChild(container);
   stopAllIntervals();
 }
-
 function startFighterCycle(fighter) {
   if (!fighter) return;
   function cycle() {
@@ -1649,7 +1615,6 @@ function startFighterCycle(fighter) {
   }
   cycle();
 }
-
 function processResourceDepletion() {
   gameState.resources.slice().forEach(resource => {
     if (resource.amount <= 10 && !resource.depleted) {
@@ -1728,7 +1693,6 @@ function applyUnitMicroReflexes(unit, now) {
     unit.lastAutonomousActionTime = performance.now() + 5000;
   }
 }
-
 function updateUnits(deltaTime) {
   const now = performance.now();
   
@@ -1888,7 +1852,6 @@ function updateBullets(deltaTime) {
     }
   }
 }
-
 function applySplashDamage(bullet) {
 if (!bullet || !bullet.shooter || !(bullet.splashRadius > 0)) return;
 spawnExplosionEffect(bullet.x, bullet.y);
@@ -1909,7 +1872,6 @@ done.add(obj);
 fxApplyDamage(obj, bullet.splashDamage, bullet.shooter);
 }
 }
-
 function updateParticles(deltaTime) {
   gameState.units.forEach(unit => { if (unit.burning && performance.now() - unit.burnStartTime > unit.burnDuration) unit.burning = false; });
   updateShockZones(deltaTime);
@@ -1923,7 +1885,6 @@ function updateParticles(deltaTime) {
   }
   particleUpdateAccumulator = 0;
 }
-
 function updateFragments(deltaTime) {
   for (let i = gameState.fragments.length - 1; i >= 0; i--) {
     const f = gameState.fragments[i];
@@ -1932,7 +1893,6 @@ function updateFragments(deltaTime) {
     f.x += f.vx * deltaTime; f.y += f.vy * deltaTime; f.angle += (f.rotationSpeed || 0) * deltaTime;
   }
 }
-
 function updateSwarmBehavior(deltaTime) {
   const neighborRadius = 15, separationDistance = 20, cohesionFactor = 0.001, alignmentFactor = 0.1, separationSmoothing = 1;
   gameState.units.forEach(unit => {
@@ -1967,7 +1927,6 @@ function updateSwarmBehavior(deltaTime) {
     });
   });
 }
-
 function updateTurret(building) {
   if (!building.active) return;
   const now = performance.now();
@@ -1997,7 +1956,6 @@ function updateTurret(building) {
     else if (now - building.lastFireTime > building.fireRate) { fireBullet(building, building.target); building.lastFireTime = now; }
   } else { building.angle += 0.01; }
 }
-
 function updateBuildingsActivation() {
   const now = performance.now();
   gameState.buildings.forEach(building => {
@@ -2007,7 +1965,6 @@ function updateBuildingsActivation() {
     }
   });
 }
-
 function updateCapturePoints() {
   if (!gameState.capturePoints) return;
   gameState.capturePoints.forEach(cp => {
@@ -2036,7 +1993,6 @@ function updateCapturePoints() {
     }
   });
 }
-
 function updateLasers() {
   if (!gameState?.lasers || !Array.isArray(gameState.lasers)) return;
   const now = performance.now();
@@ -2144,7 +2100,6 @@ function updateLasers() {
   // Очищаем массив от неактивных или null лазеров
   gameState.lasers = gameState.lasers.filter(l => l && l.active);
 }
-
 function updateBombZones(deltaTime) {
   const now = performance.now();
   bombZones.forEach(zone => {
@@ -2153,7 +2108,6 @@ function updateBombZones(deltaTime) {
     if (zone.exploded) { zone.radius += deltaTime * 100; if (zone.radius >= bombRadius) bombZones.splice(bombZones.indexOf(zone), 1); }
   });
 }
-
 function generateLightning(x, y, radius) {
   const points = [];
   const segments = 8; // Количество сегментов молнии
@@ -2176,7 +2130,6 @@ function generateLightning(x, y, radius) {
   
   return points;
 }
-
 function updateShockZones(deltaTime) {
   const now = performance.now();
   shockZones.forEach(zone => {
@@ -2206,7 +2159,6 @@ function spawnResourceToken(worker, resourceType) {
   };
   worker.carriedResourceToken = token;
 }
-
 function startWorkerCycle(worker, warehouse) {
   // 🔥 ИСПРАВЛЕНИЕ: Если нейросеть дала рабочему боевую команду — отменяем её
   if (worker.commandQueue && worker.commandQueue.length > 0) {
@@ -2381,7 +2333,6 @@ function startWorkerCycle(worker, warehouse) {
     }, 2000);
   });
 }
-
 function startTurretCycle(turret) {
   turret.lastFireTime = 0; turret.active = true;
   function cycle() {
@@ -2398,7 +2349,6 @@ function startTurretCycle(turret) {
   }
   turret.turretCycleId = requestAnimationFrame(cycle);
 }
-
 function cleanUpOffscreenObjects() {
   const margin = 100;
   const screenLeft = -camera.offsetX / camera.scale - margin;
@@ -2430,12 +2380,10 @@ function cleanUpOffscreenObjects() {
   });
   fxInvalidate();
 }
-
 function cleanUpBulletsAndParticles() {
   gameState.bullets = gameState.bullets.filter(bullet => bullet.alive && bullet.lifetime > 0);
   gameState.particles = gameState.particles.filter(particle => particle.life > 0);
 }
-
 function releaseUnusedMemory() {
   for (let i = gameState.fragments.length - 1; i >= 0; i--) {
     if (gameState.fragments[i].life <= 0) gameState.fragments.splice(i, 1);
@@ -2446,7 +2394,6 @@ function releaseUnusedMemory() {
 window.aiSaleQueue = window.aiSaleQueue || [];
 window.aiSaleCooldown = window.aiSaleCooldown || false;
 window.soldBuildings = window.soldBuildings || [];
-
 function queueSale(building) {
   if (!building) return;
   if (building.isSelling) return;
@@ -2455,7 +2402,6 @@ function queueSale(building) {
   building.isSelling = true;
   window.aiSaleQueue.push(building);
 }
-
 function triggerSale(building) {
   if (!building) return;
   if (!gameState.buildings.includes(building)) return;
@@ -2555,7 +2501,6 @@ function triggerSale(building) {
     cleanUpBuildingReferences();
   }
 }
-
 function processAISaleQueue() {
   if (window.aiSaleQueue.length === 0) return;
   if (window.aiSaleCooldown) return;
@@ -2579,7 +2524,6 @@ function generateUniqueUnitId() {
   const uniqueId = 'unit_' + (unitIdCounter++) + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
   return uniqueId;
 }
-
 function processProductionQueue(building) {
   if (!building) return;
   if (!building.productionQueue || building.productionQueue.length === 0) return;
@@ -2693,7 +2637,6 @@ function onBuildingDestroyed(building) {
   //reactToAttack();
   //mobilizeDefendersAround(building);
 }
-
 function updateGameState(deltaTime) {
   // Обновляем квадродерево
   quadtree.clear();
@@ -2710,7 +2653,6 @@ function updateGameState(deltaTime) {
     }
   });
 }
-
 function updateWorkerResourceToken(worker) {
   if (worker.carriedResourceToken) {
     const token = worker.carriedResourceToken;
@@ -2718,7 +2660,6 @@ function updateWorkerResourceToken(worker) {
     token.y = worker.y + token.offsetY;
   }
 }
-
 function gameLoop(time) {
   if (gameState.gameEnded) {
     console.log("Игра завершена. Цикл остановлен.");
@@ -2797,7 +2738,6 @@ function findNearestAIBuilding(x, y) {
   });
   return nearest;
 }
-
 function getRandomBasePosition(margin, existingBase = null) {
   let pos, valid = false;
   while (!valid) {
@@ -2817,7 +2757,6 @@ function getRandomBasePosition(margin, existingBase = null) {
   }
   return pos;
 }
-
 function createCapturePointsForBase(base) {
   const edgeMargin = 10, centerMargin = 30, halfWidth = worldWidth / 2;
   let xMin, xMax;
@@ -2829,7 +2768,6 @@ function createCapturePointsForBase(base) {
   for(let i=0; i<4; i++) pts.push({ x: xMin + Math.random() * (xMax - xMin), y: yMin + Math.random() * (yMax - yMin) });
   return pts;
 }
-
 function startAssaultEliteCycle(unit) {
   if (!unit) return;
   // 🛡️ Каждая новая "жизнь" юнита получает новый epoch.
@@ -2867,7 +2805,6 @@ function startAssaultEliteCycle(unit) {
   }
   cycle();
 }
-
 function spawnWaveFromCapturePoint(cp) {
   const side = cp.owner;
   if (!side) return;
@@ -2895,7 +2832,6 @@ function spawnWaveFromCapturePoint(cp) {
     if (enemyTarget) assault.commandQueue.push({ type: "attack", target: enemyTarget });
   }
 }
-
 function animateMoveAndScale(unit, targetX, targetY, targetScale, duration, callback) {
   const startTime = performance.now(), startX = unit.x, startY = unit.y, startScale = unit.scale;
   function step() {
@@ -2907,7 +2843,6 @@ function animateMoveAndScale(unit, targetX, targetY, targetScale, duration, call
   }
   step();
 }
-
 function recallRepairmenFromWorkshop(workshop) {
   const recalledRepairmen = gameState.units.filter(u =>
     u.owner === playerId &&
@@ -2940,7 +2875,6 @@ function recallRepairmenFromWorkshop(workshop) {
     hireRepairmanForPlayer(workshop);
   }
 }
-
 function spawnAtBoundary(building, offset = 10) {
   const edge = Math.floor(Math.random() * 4);
   let spawn = { x: building.x, y: building.y }, target = { x: building.x, y: building.y };
@@ -2950,7 +2884,6 @@ function spawnAtBoundary(building, offset = 10) {
   else if (edge === 3) { spawn.x = building.x - building.width / 2; spawn.y = building.y + (Math.random() - 0.5) * building.height; target.x = spawn.x - offset; target.y = spawn.y; }
   return { spawn, target };
 }
-
 function findNearestDeliveryBuilding(x, y, owner) {
   const queryRadius = 500;
   const candidates = getObjectsInRange({ x: x, y: y }, queryRadius).filter(b => b.owner === owner && b.type === "warehouse" && (b.currentDeliveryWorkers || 0) < b.maxDeliveryWorkers);
@@ -2958,13 +2891,11 @@ function findNearestDeliveryBuilding(x, y, owner) {
   candidates.sort((a, b) => Math.hypot(a.x - x, a.y - y) - Math.hypot(b.x - x, b.y - y));
   return candidates[0];
 }
-
 function isBaseVisible(base) {
   if (!base) return false;
   const screenPos = worldToScreen(base.x, base.y);
   return (screenPos.x >= 0 && screenPos.x <= canvas.width && screenPos.y >= 0 && screenPos.y <= canvas.height);
 }
-
 function showBuildZone(building, buildingType) {
   clearBuildZones(); showSingleBuildZone(building, buildingType);
   if (building.type === "base" || building.type === "base2" || building.type === "base3" || building.type === "beacon") {
@@ -2973,7 +2904,6 @@ function showBuildZone(building, buildingType) {
     nearbyBuildings.forEach(b => showSingleBuildZone(b, buildingType));
   }
 }
-
 function showSingleBuildZone(building, buildingType) {
   const zone = document.createElement("div");
   zone.className = "buildZone";
@@ -2989,19 +2919,16 @@ function showSingleBuildZone(building, buildingType) {
   });
   document.body.appendChild(zone);
 }
-
 function clearBuildZones() {
   document.querySelectorAll(".buildZone").forEach(zone => zone.remove());
   const buildMenu = document.getElementById("buildMenu");
   if (buildMenu) buildMenu.remove();
 }
-
 function seededRandom(seed) {
   let state = seed % 2147483647;
   if (state <= 0) state += 2147483646;
   return function () { state = state * 16807 % 2147483647; return (state - 1) / 2147483646; };
 }
-
 function generateResources(countPerType = 50, seed = 777) {
   const rand = seededRandom(seed);
   const resourceTypes = ["gold", "silicon", "plasma"];
@@ -3019,7 +2946,6 @@ function generateResources(countPerType = 50, seed = 777) {
     }
   });
 }
-
 function getUnitFromPool(type, owner, x, y) {
 if (!unitPools[type]) unitPools[type] = [];
 // 🧹 Выкидываем из пула дубли и объекты, которые уже в игре
@@ -3157,18 +3083,15 @@ unit.__removed = false;
 unit.__inGame = false;   // в игру юнита ставит addUnit — это шаг 3
 return unit;
 }
-
 function startLaserEffect(laser) {
   const shooter = laser.shooter;
   if (!shooter || typeof shooter.x !== 'number' || typeof shooter.y !== 'number') return;
   laser.visualFlash = { x: shooter.x, y: shooter.y, radius: 20, duration: 200, createdAt: performance.now() };
 }
-
 function applyBurningEffect(entity) {
   if (!entity || entity.burning) return;
   entity.burning = true; entity.burnTime = performance.now(); entity.burnDuration = 3000; entity.burnIntensity = 1;
 }
-
 function fireLaserShot(shooter, target) {
   if (!Array.isArray(gameState.lasers)) gameState.lasers = [];
   if (!shooter || !target || shooter.health <= 0 || target.health <= 0) return;
@@ -3179,7 +3102,6 @@ function fireLaserShot(shooter, target) {
   }
   startLaserEffect(shooter, target);
 }
-
 function assignGroup(groupNumber) {
   const groupKey = `group${groupNumber}`;
   if (!unitGroups[groupKey]) unitGroups[groupKey] = [];
@@ -3191,30 +3113,25 @@ function assignGroup(groupNumber) {
   selectedUnits = selectedUnits.filter(u => u.owner === playerId);
   selectedUnits.forEach(unit => { if (unit.group === undefined) { unit.group = groupNumber; unitGroups[groupKey].push(unit); } });
 }
-
 function selectGroup(groupNumber) {
   const group = unitGroups[`group${groupNumber}`];
   if (group && group.length > 0) {
     selectedUnits = group.filter(unit => unit.owner === playerId && gameState.units.includes(unit) && unit.alive);
   }
 }
-
 function handleGroup(groupNum) {
   if (!unitGroups[groupNum]) unitGroups[groupNum] = [];
   const currentGroup = unitGroups[groupNum].filter(u => u.alive && gameState.units.includes(u));
   if (selectedUnits.length > 0 && !arraysEqual(selectedUnits, currentGroup)) { unitGroups[groupNum] = [...selectedUnits]; } 
   else { selectedUnits = currentGroup; }
 }
-
 function arraysEqual(a, b) {
   if (a.length !== b.length) return false;
   return a.every(item => b.includes(item));
 }
-
 function selectAllFighters() {
   selectedUnits = gameState.units.filter(u => u.owner === playerId && ["fighter", "assault", "elite"].includes(u.type));
 }
-
 function commandAttack() {
     sanitizeSelectedUnits();
   if (!selectedUnits.length) return;
@@ -3244,17 +3161,6 @@ function commandAttack() {
     }
   });
 }
-
-function findNearestEnemyBuilding(x, y) {
-  let enemyBuildings = gameState.buildings.filter(b => b.owner !== playerId);
-  let nearestBuilding = null, minDistance = Infinity;
-  enemyBuildings.forEach(building => {
-    const distance = Math.hypot(building.x - x, building.y - y);
-    if (distance < minDistance) { minDistance = distance; nearestBuilding = building; }
-  });
-  return nearestBuilding;
-}
-
 function commandDefence() {
     sanitizeSelectedUnits();
   if (!selectedUnits.length) return;
@@ -3274,25 +3180,26 @@ function commandDefence() {
     }
   });
 }
-
-function applyBombDamage(x, y) {
-  gameState.units.forEach(unit => {
-    if (unit.owner !== playerId) {
-      const dist = Math.hypot(unit.x - x, unit.y - y);
-      if (dist <= bombRadius) {
-        const damage = bombMaxDamage * (1 - dist / bombRadius);
-        if (typeof window.onDamage === "function") {
-          window.onDamage(unit, damage);
-        } else {
-          unit.health -= damage;
-        }
-        if (unit.health <= 0) removeUnit(unit);
-        else { unit.burning = true; unit.burnTime = performance.now(); unit.burnDuration = 5000; }
-      }
-    }
+function commandScout() {
+    sanitizeSelectedUnits();
+  if (!selectedUnits.length) return;
+  if (!selectedUnits.length) return;
+  selectedUnits.forEach(unit => {
+    const target = scoutUnitToFog(unit);
+    if (!target) return;
+    processCommandQueue(unit);
+    if (gameMode === "pvp") sendPvpAction({ type: "scout", unitId: unit.id, x: target.x, y: target.y });
   });
 }
-
+function findNearestEnemyBuilding(x, y) {
+  let enemyBuildings = gameState.buildings.filter(b => b.owner !== playerId);
+  let nearestBuilding = null, minDistance = Infinity;
+  enemyBuildings.forEach(building => {
+    const distance = Math.hypot(building.x - x, building.y - y);
+    if (distance < minDistance) { minDistance = distance; nearestBuilding = building; }
+  });
+  return nearestBuilding;
+}
 function setFormation(type) {
     sanitizeSelectedUnits();
   if (!selectedUnits.length) return;
@@ -3332,7 +3239,6 @@ function showFloatingHint(text) {
   document.body.appendChild(hint);
   setTimeout(() => hint.remove(), 3000);
 }
-
 function applyShockEffect(x, y) {
   shockZones.push({ x, y, start: performance.now(), radius: 0, maxRadius: 180, lightningBolts: [], lastBoltTime: 0 });
   gameState.units.forEach(unit => {
@@ -3357,7 +3263,6 @@ function applyShockEffect(x, y) {
     }
   });
 }
-
 function applyBombDamage(x, y) {
   gameState.units.forEach(unit => {
     if (unit.owner !== playerId) {
@@ -3384,7 +3289,6 @@ function applyBombDamage(x, y) {
     }
   });
 }
-
 function activateShockPerk(slotIndex) {
   if (perkAwaitingTarget || Date.now() < perkCooldowns[slotIndex]) return;
   perkAwaitingTarget = true; shockActive = true; 
@@ -3393,7 +3297,6 @@ function activateShockPerk(slotIndex) {
   document.body.style.cursor = "crosshair";
   showFloatingHint("⚡ Выберите цель для ЭМИ-удара");
 }
-
 function activateBombPerk(slotIndex) {
   if (perkAwaitingTarget || Date.now() < perkCooldowns[slotIndex]) return;
   perkAwaitingTarget = true; bombActive = true; 
@@ -3402,7 +3305,6 @@ function activateBombPerk(slotIndex) {
   document.body.style.cursor = "crosshair";
   showFloatingHint("💣 Выберите цель для плазменной бомбы");
 }
-
 function activateReconPerk(slotIndex) {
   if (reconActive || Date.now() < perkCooldowns[slotIndex]) return;
   reconActive = true; perkAwaitingTarget = true; 
@@ -3422,7 +3324,6 @@ function activateReconPerk(slotIndex) {
     document.body.style.cursor = "default";
   };
 }
-
 function handlePerkClick(pos) {
   if (!perkAwaitingTarget) return false;
   if (shockActive) {
@@ -3441,19 +3342,6 @@ function handlePerkClick(pos) {
   }
   return false;
 }
-
-function commandScout() {
-    sanitizeSelectedUnits();
-  if (!selectedUnits.length) return;
-  if (!selectedUnits.length) return;
-  selectedUnits.forEach(unit => {
-    const target = scoutUnitToFog(unit);
-    if (!target) return;
-    processCommandQueue(unit);
-    if (gameMode === "pvp") sendPvpAction({ type: "scout", unitId: unit.id, x: target.x, y: target.y });
-  });
-}
-
 function findFogTargetAroundBase(base, radius = 400, angleAttempts = 20) {
   let best = null, maxScore = -1;
   for (let i = 0; i < angleAttempts; i++) {
@@ -3469,7 +3357,6 @@ function findFogTargetAroundBase(base, radius = 400, angleAttempts = 20) {
   }
   return best;
 }
-
 function scoutUnitToFog(unit) {
   // 🔥 СБРОС ПАМЯТИ: Игрок приказал разведывать, забываем старые задачи
   unit.suspendedQueue = null;
@@ -3510,7 +3397,6 @@ function scoutUnitToFog(unit) {
   }
   return null;
 }
-
 function applyFormationBuff(units, formationType) {
   const now = performance.now();
   let buff = null;
@@ -3535,7 +3421,6 @@ function applyFormationBuff(units, formationType) {
     });
   }, 5000);
 }
-
 function triggerPerkSlot(slotIndex) {
   const perkId = equippedPerks[slotIndex];
   if (!perkId || Date.now() < perkCooldowns[slotIndex]) return;
@@ -3543,12 +3428,10 @@ function triggerPerkSlot(slotIndex) {
   else if (perkId === "bomb") activateBombPerk(slotIndex);
   else if (perkId === "recon") activateReconPerk(slotIndex);
 }
-
 function getResourcesByOwner(owner) {
   if (gameMode === "pvp") return owner === playerId ? gameState.playerResources : gameState.aiResources;
   return owner === "ai" ? gameState.aiResources : gameState.playerResources;
 }
-
 function getMissingResources(cost, owner) {
   const resources = gameMode === "pvp" ? gameState.playerResources : (owner === "ai" ? gameState.aiResources : gameState.playerResources);
   const reserved = getReservedResources(owner);
