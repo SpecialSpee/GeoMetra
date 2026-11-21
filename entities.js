@@ -4,11 +4,9 @@
 // ============================================================
 // Счётчик уникальных ID зданий (локальный для этого модуля)
 let buildingIdCounter = 0;
-
 function generateUniqueBuildingId() {
   return 'building_' + (buildingIdCounter++);
 }
-
 // ------------------------------------------------------------
 // Класс Building
 // ------------------------------------------------------------
@@ -167,7 +165,6 @@ class Building {
     }
   }
 }
-
 // ------------------------------------------------------------
 // Класс Unit
 // ------------------------------------------------------------
@@ -242,31 +239,6 @@ class Unit {
     this.lastAutonomousActionTime = 0;  // Время последнего автономного действия (защита от перехвата GNN)
   }
 }
-
-// ------------------------------------------------------------
-// Класс Resource
-// ------------------------------------------------------------
-class Resource {
-  constructor(type, x, y, amount, max) {
-    this.type = type;
-    this.x = x;
-    this.y = y;
-    this.amount = amount;
-    this.max = max;
-    this.currentWorkers = 0;
-    this.maxWorkers = 10;
-    this.depleted = false;
-
-    if (this.type === "gold") {
-      const shape = createGoldShape();
-      this.points = shape.points;
-      this.baseRadius = shape.baseRadius;
-      this.rotation = 0;
-      this.rotationSpeed = 0.2;
-    }
-  }
-}
-
 // ------------------------------------------------------------
 // Класс Bullet
 // ------------------------------------------------------------

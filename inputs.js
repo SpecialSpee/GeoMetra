@@ -9,6 +9,7 @@ let hasDragged = false; // <-- НОВОЕ: флаг, чтобы отличать
 let longTapTimeout = null;
 let longTapFired = false;
 const longTapDelay = 600;
+const UNIT_CLICK_RADIUS = 20; 
 let isSelecting = false;
 let selectionStart = null;
 let selectionBox = null;
@@ -35,19 +36,15 @@ function sanitizeSelectedUnits() {
   );
   return selectedUnits;
 }
-
-
-function processCanvasClick(pos) {
+function processCanvasClick(pos, shiftKey) {
   clearBuildZones();
-  sanitizeSelectedUnits(); // 🔥 Чистим список перед обработкой клика
-  const clickedResource = getObjectsInRange(pos, 10)
-    .find(r => (r.type === "gold" || r.type === "silicon" || r.type === "plasma"));
+  sanitizeSelectedUnits();
+  selectedUnits = selectedUnits.filter(u => !u.isRetreating);
 
+  // 1. Клик по зданию
   const clickedBuilding = gameState.buildings.find(b =>
-    pos.x >= b.x - b.width / 2 &&
-    pos.x <= b.x + b.width / 2 &&
-    pos.y >= b.y - b.height / 2 &&
-    pos.y <= b.y + b.height / 2
+    pos.x >= b.x - b.width / 2 && pos.x <= b.x + b.width / 2 &&
+    pos.y >= b.y - b.height / 2 && pos.y <= b.y + b.height / 2
   );
 
   if (clickedBuilding) {
@@ -55,12 +52,10 @@ function processCanvasClick(pos) {
       if (typeof showWarning === "function") showWarning("Это чужое здание!");
       return;
     }
-
     if (!clickedBuilding.active) {
       if (typeof showWarning === "function") showWarning("Здание ещё не активно!");
       return;
     }
-
     switch (clickedBuilding.type) {
       case "warehouse":
         if (typeof hireWorkerForPlayer === "function") hireWorkerForPlayer(clickedBuilding);
@@ -85,51 +80,32 @@ function processCanvasClick(pos) {
     }
   }
 
-  // === Если клик по ресурсу и выбран рабочий
-  if (clickedResource && selectedUnits.length > 0) {
-    selectedUnits.forEach(unit => {
-      if (unit.type === "worker") {
-        unit.commandQueue = [];
-        unit.commandQueue.push({ type: "gather", resource: clickedResource });
-      }
-    });
+  // 2. Клик по своему юниту — ВЫДЕЛЕНИЕ
+  const clickedUnit = gameState.units.find(u =>
+    u.owner === playerId &&
+    u.type !== "worker" && u.type !== "repairman" &&
+    !u.isRetreating &&
+    Math.hypot(u.x - pos.x, u.y - pos.y) < UNIT_CLICK_RADIUS
+  );
+
+  if (clickedUnit) {
+    if (shiftKey) {
+      // 🔥 SHIFT: toggle — добавить или убрать из группы
+      const idx = selectedUnits.indexOf(clickedUnit);
+      if (idx === -1) selectedUnits.push(clickedUnit);
+      else selectedUnits.splice(idx, 1);
+    } else {
+      selectedUnits = [clickedUnit];
+    }
     return;
   }
 
-  // === Клик по юниту или на пустое место
-  const unitRadius = 5;
-  const clickedUnit = getObjectsInRange(pos, unitRadius)
-    .find(u => u.owner === playerId && u instanceof Unit && u.type !== "worker" && u.type !== "repairman");
-
-  if (clickedUnit) {
-    selectedUnits = [clickedUnit];
-  } else if (selectedUnits.length > 0) {
-    sanitizeSelectedUnits();
-    selectedUnits.forEach(unit => {
-      unit.commandQueue = [];
-      
-      // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Сбрасываем цель атаки и подвешенные задачи при ручном перемещении
-      unit.target = null;
-      unit.suspendedQueue = null;
-      
-      if (unit.currentMovementAnimation) {
-        cancelAnimationFrame(unit.currentMovementAnimation);
-        unit.currentMovementAnimation = null;
-      }
-      const randomTarget = getRandomTargetPoint(pos.x, pos.y, 50);
-      unit.commandQueue.push({ type: "move", x: randomTarget.x, y: randomTarget.y });
-
-      if (gameMode === "pvp" && typeof sendPvpAction === "function") {
-        sendPvpAction({ type: "move", unitId: unit.id, x: randomTarget.x, y: randomTarget.y });
-      }
-    });
+  // 3. 🔥 Клик по пустоте — СБРОС ВЫДЕЛЕНИЯ (без Shift)
+  if (!shiftKey) {
+    selectedUnits = [];
   }
 }
-
-// ============================================================
 // ОБРАБОТЧИКИ МЫШИ
-// ============================================================
-
 canvas.addEventListener("mousedown", function(e) {
   if (e.button !== 0) return;
   isDragging = true;
@@ -156,7 +132,6 @@ canvas.addEventListener("mousedown", function(e) {
     }, saleDuration);
   }
 }, false);
-
 canvas.addEventListener("mousemove", function(e) {
   if (isDragging) {
     const dx = e.clientX - dragStart.x;
@@ -188,7 +163,6 @@ canvas.addEventListener("mousemove", function(e) {
     selectionBox.style.height = h + "px";
   }
 }, false);
-
 canvas.addEventListener("mouseup", function(e) {
   if (e.button !== 0) return;
   isDragging = false;
@@ -214,27 +188,20 @@ canvas.addEventListener("mouseup", function(e) {
     isSelecting = false;
   }
 }, false);
-
 canvas.addEventListener("mouseleave", function() {
   isDragging = false;
 });
-
 canvas.addEventListener("click", e => {
   const pos = screenToWorld(e.clientX, e.clientY);
 
-  // 🔥 ДОБАВЬ ЭТУ СТРОКУ ПЕРВОЙ:
   if (typeof handlePerkClick === "function" && handlePerkClick(pos)) {
     e.preventDefault();
-    return; // Прерываем выполнение, если перк был активирован
+    return;
   }
-  // ГЛАВНОЕ ИСПРАВЛЕНИЕ: Игнорируем клик, если это было перетаскивание камеры
-  if (hasDragged) {
-    hasDragged = false;
-    return; 
-  }
-
+  if (hasDragged) { hasDragged = false; return; }
   if (suppressMouseClick) return;
 
+  // Перки (шок/бомба/разведка) — как были
   if (typeof perkAwaitingTarget !== 'undefined' && perkAwaitingTarget && typeof shockActive !== 'undefined' && shockActive) {
     if (gameMode === "pvp" && typeof sendPvpAction === "function") sendPvpAction({ type: "shockPerk", x: pos.x, y: pos.y });
     shockZones.push({ x: pos.x, y: pos.y, start: performance.now(), radius: 0, lightningBolts: [] });
@@ -243,7 +210,6 @@ canvas.addEventListener("click", e => {
     e.preventDefault();
     return;
   }
-
   if (typeof perkAwaitingTarget !== 'undefined' && perkAwaitingTarget && typeof bombActive !== 'undefined' && bombActive) {
     if (gameMode === "pvp" && typeof sendPvpAction === "function") sendPvpAction({ type: "bombPerk", x: pos.x, y: pos.y });
     bombZones.push({ x: pos.x, y: pos.y, start: performance.now(), exploded: false, radius: 0 });
@@ -252,16 +218,15 @@ canvas.addEventListener("click", e => {
     e.preventDefault();
     return;
   }
-
   if (typeof perkAwaitingTarget !== 'undefined' && perkAwaitingTarget && typeof reconConfirmCallback === "function") {
     reconConfirmCallback(pos.x, pos.y);
     e.preventDefault();
     return;
   }
 
-  processCanvasClick(pos);
+  // 🔥 Передаём Shift в обработчик клика
+  processCanvasClick(pos, e.shiftKey);
 });
-
 canvas.addEventListener("dblclick", e => {
   if (typeof clearBuildZones === "function") clearBuildZones();
   const pos = screenToWorld(e.clientX, e.clientY);
@@ -272,27 +237,103 @@ canvas.addEventListener("dblclick", e => {
   );
   if (clickedBuilding) return;
 
-  const unitRadius = 5;
   const clickedUnit = gameState.units.find(u =>
     u.owner === playerId && u.type !== "worker" && u.type !== "repairman" &&
-    Math.hypot(u.x - pos.x, u.y - pos.y) < unitRadius
+    !u.isRetreating &&
+    Math.hypot(u.x - pos.x, u.y - pos.y) < UNIT_CLICK_RADIUS
   );
 
   if (clickedUnit) {
-    selectedUnits = gameState.units.filter(u =>
+    const sameType = gameState.units.filter(u =>
       u.owner === playerId && u.type === clickedUnit.type &&
-      u.type !== "worker" && u.type !== "repairman"
+      u.type !== "worker" && u.type !== "repairman" && !u.isRetreating
     );
+    // 🔥 Shift + двойной клик = добавить к существующему выделению
+    if (e.shiftKey) {
+      sameType.forEach(u => { if (!selectedUnits.includes(u)) selectedUnits.push(u); });
+    } else {
+      selectedUnits = sameType;
+    }
   } else {
-    // Вызов функции выделения рамкой
     startSelectionFrame(e);
   }
 });
+canvas.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  if (typeof clearBuildZones === "function") clearBuildZones();
+  const pos = screenToWorld(e.clientX, e.clientY);
 
-// ============================================================
+  sanitizeSelectedUnits();
+  const activeUnits = selectedUnits.filter(u =>
+    !u.isRetreating && !(u.type === "repairman" && u.busyRepair)
+  );
+  if (activeUnits.length === 0) return;
+
+  // Цель: враг → здание → камень (ресурс)
+  let target = gameState.units.find(u =>
+    u.owner !== playerId && Math.hypot(u.x - pos.x, u.y - pos.y) < UNIT_CLICK_RADIUS
+  );
+  
+  if (!target) {
+    target = gameState.buildings.find(b =>
+      b.owner !== playerId &&
+      pos.x >= b.x - b.width / 2 && pos.x <= b.x + b.width / 2 &&
+      pos.y >= b.y - b.height / 2 && pos.y <= b.y + b.height / 2
+    );
+  }
+  
+  if (!target) {
+    // 🔥 УВЕЛИЧЕННЫЙ РАДИУС КЛИКА ПО КАМНЮ (+15px для удобства)
+    const rocks = gameState.resources.filter(r =>
+      r.hp > 0 && Math.hypot(r.x - pos.x, r.y - pos.y) < 
+      (typeof r.getCurrentRadius === "function" ? r.getCurrentRadius() : 30) + 15
+    );
+    if (rocks.length > 0) {
+      target = rocks.sort((a, b) =>
+        Math.hypot(a.x - pos.x, a.y - pos.y) - Math.hypot(b.x - pos.x, b.y - pos.y)
+      )[0];
+    }
+  }
+
+  if (target) {
+    // 🔥 АТАКА (рабочие/ремонтники не атакуют)
+    activeUnits.forEach(unit => {
+      if (unit.type === "worker" || unit.type === "repairman") return;
+      
+      unit.suspendedQueue = null;
+      
+      // 🔥 Если цель - камень, заставляем идти к его КРАЮ, а не в центр (иначе упрутся и не будут стрелять)
+      let tx = target.x, ty = target.y;
+      if (target.amount !== undefined) {
+        const rr = typeof target.getCurrentRadius === "function" ? target.getCurrentRadius() : 20;
+        const ang = Math.atan2(unit.y - target.y, unit.x - target.x);
+        tx = target.x + Math.cos(ang) * (rr + 25); // 25px отступ от края
+        ty = target.y + Math.sin(ang) * (rr + 25);
+      }
+
+      unit.commandQueue = [
+        { type: "move", x: tx, y: ty },
+        { type: "attack", target: target }
+      ];
+      unit.target = target;
+      
+      if (gameMode === "pvp" && typeof sendPvpAction === "function") {
+        sendPvpAction({ type: "attack", unitId: unit.id, targetId: target.id, x: tx, y: ty });
+      }
+    });
+  } else {
+    // 🔥 ДВИЖЕНИЕ в точку (правый клик по пустоте)
+    activeUnits.forEach(unit => {
+      unit.suspendedQueue = null;
+      unit.commandQueue = [{ type: "move", x: pos.x, y: pos.y }];
+      unit.target = null;
+      if (gameMode === "pvp" && typeof sendPvpAction === "function") {
+        sendPvpAction({ type: "move", unitId: unit.id, x: pos.x, y: pos.y });
+      }
+    });
+  }
+});
 // ФУНКЦИЯ ВЫДЕЛЕНИЯ РАМКОЙ (ОРИГИНАЛЬНАЯ)
-// ============================================================
-
 function startSelectionFrame(initialEvent) {
   const startX = initialEvent.clientX, startY = initialEvent.clientY;
   const selectionBox = document.createElement("div");
@@ -331,36 +372,6 @@ function startSelectionFrame(initialEvent) {
   document.addEventListener("mousemove", onMouseMove);
   document.addEventListener("mouseup", onMouseUp);
 }
-
-canvas.addEventListener("contextmenu", e => {
-  e.preventDefault();
-  if (typeof clearBuildZones === "function") clearBuildZones();
-  const pos = screenToWorld(e.clientX, e.clientY);
-  const unitRadius = 5;
-
-  let enemyTarget = gameState.units.find(u => u.owner !== playerId && Math.hypot(u.x - pos.x, u.y - pos.y) < unitRadius);
-  if (!enemyTarget) {
-    enemyTarget = gameState.buildings.find(b =>
-      b.owner !== playerId && pos.x >= b.x - b.width / 2 && pos.x <= b.x + b.width / 2 &&
-      pos.y >= b.y - b.height / 2 && pos.y <= b.y + b.height / 2
-    );
-  }
-
-  sanitizeSelectedUnits();
-  if (enemyTarget && selectedUnits.length > 0) {
-    selectedUnits.forEach(unit => {
-      unit.suspendedQueue = null; // 🔥 Приказ атаки — сбрасываем память о старых задачах
-      unit.commandQueue = [];
-      unit.commandQueue.push({ type: "attack", target: enemyTarget });
-      if (gameMode === "pvp" && typeof sendPvpAction === "function") {
-        sendPvpAction({ type: "attack", unitId: unit.id, targetId: enemyTarget.id });
-      }
-    });
-  } else {
-    selectedUnits = [];
-  }
-});
-
 canvas.addEventListener("wheel", e => {
   e.preventDefault();
   const zoomFactor = 1.05;
@@ -376,33 +387,23 @@ canvas.addEventListener("wheel", e => {
   
   if (typeof clearBuildZones === "function") clearBuildZones();
 }, { passive: false });
-
-// ============================================================
 // ФУНКЦИИ МЕНЮ СТРОИТЕЛЬСТВА (ВОССТАНОВЛЕНЫ ИЗ ОРИГИНАЛА)
-// ============================================================
-
 function clearBuildZones() {
   document.querySelectorAll(".buildZone").forEach(zone => zone.remove());
   const menu = document.getElementById("buildMenu");
   if (menu) menu.remove();
 }
-
-// ============================================================
 // ПОЛНАЯ ЛОГИКА СТРОИТЕЛЬСТВА (ЗАМЕНИТЬ ЭТОТ БЛОК ВМЕСТО ЗАГЛУШКИ)
-// ============================================================
-
 function rectsOverlap(r1, r2) {
   return !(r1.right <= r2.left || r1.left >= r2.right ||
            r1.bottom <= r2.top || r1.top >= r2.bottom);
 }
-
 function canSpendResources(cost, owner) {
   const res = getResourcesByOwner(owner);
   return res.gold >= (cost.gold || 0) &&
          res.silicon >= (cost.silicon || 0) &&
          res.plasma >= (cost.plasma || 0);
 }
-
 function placeBuilding(x, y, buildingType, owner) {
   if (owner !== playerId) return; // ❗ Не даём строить чужим
 
@@ -492,6 +493,11 @@ function placeBuilding(x, y, buildingType, owner) {
   updateResourceUI();
 
   gameState.buildings.push(building);
+
+  // 🔥 НОВОЕ: Выталкиваем камни, если здание появилось внутри ресурса
+  if (typeof pushRocksOutOfBuilding === "function") {
+    pushRocksOutOfBuilding(building, 25);
+  }
 
   if (["turret", "turret2", "turret3"].includes(buildingType)) {
     if (typeof startTurretCycle === "function") startTurretCycle(building);

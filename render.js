@@ -1,7 +1,14 @@
-// ============================================================
-// render.js — Отрисовка и Canvas (v7.4 Fixed)
-// ============================================================
-// Массив с путями к фоновым изображениям
+// render.js — Отрисовка и Canvas (v7.7 Fixed)
+const warehouseImage = new Image(); warehouseImage.src = "/src/models/warehouse.png"; warehouseImage.onload = () => { preloadedIcons["warehouse"] = warehouseImage; };
+const repairWorkshopImage = new Image(); repairWorkshopImage.src = "/src/models/repairWorkshop.png"; repairWorkshopImage.onload = () => { preloadedIcons["repairWorkshop"] = repairWorkshopImage; };
+const beaconImage = new Image(); beaconImage.src = "/src/models/beacon.png"; beaconImage.onload = () => { preloadedIcons["beacon"] = beaconImage; };
+const baseImage = new Image(); baseImage.src = "/src/models/base.png"; baseImage.onload = () => { preloadedIcons["base"] = baseImage; };
+const base2Image = new Image(); base2Image.src = "/src/models/base2.png"; base2Image.onload = () => { preloadedIcons["base2"] = base2Image; };
+const base3Image = new Image(); base3Image.src = "/src/models/base3.png"; base3Image.onload = () => { preloadedIcons["base3"] = base3Image; };
+const barracksImage = new Image(); barracksImage.src = "/src/models/barracks.png"; barracksImage.onload = () => { preloadedIcons["barracks"] = barracksImage; };
+const barracks2Image = new Image(); barracks2Image.src = "/src/models/barracks2.png"; barracks2Image.onload = () => { preloadedIcons["barracks2"] = barracks2Image; };
+const barracks3Image = new Image(); barracks3Image.src = "/src/models/barracks3.png"; barracks3Image.onload = () => { preloadedIcons["barracks3"] = barracks3Image; };
+
 const backgroundImages = [
   '/src/images/background0.png',
   //'/src/images/background1.png',
@@ -12,19 +19,22 @@ const backgroundImages = [
   //'/src/images/background6.png',
   //'/src/images/background7.png'
 ];
+const OWNER_COLORS = {
+  player1: { base: "#00FF00", hull: "#00AA00", glow: "rgba(0, 255, 0, 0.5)", accent: "#00FF00" },
+  player2: { base: "#FF0000", hull: "#AA0000", glow: "rgba(255, 0, 0, 0.5)", accent: "#FF0000" },
+  ai: { base: "#FF0000", hull: "#AA0000", glow: "rgba(255, 0, 0, 0.5)", accent: "#FF0000" },
+  player: { base: "#00FF00", hull: "#00AA00", glow: "rgba(0, 255, 0, 0.5)", accent: "#00FF00" }
+};
+let colorSet = OWNER_COLORS["player"];
 
 // Выбор случайного изображения из массива
 const randomIndex = Math.floor(Math.random() * backgroundImages.length);
 const selectedImage = backgroundImages[randomIndex];
 // Создание объекта изображения и установка источника
 const backgroundImage = new Image();
-
-// ============================================================
 // GNN OVERLAY CANVAS (Глобальная инициализация)
-// ============================================================
 const gnnOverlayCanvas = document.getElementById("gnnOverlayCanvas");
 let gnnCtx = null;
-
 window.initGnnOverlay = function() {
     if (gnnOverlayCanvas && typeof canvas !== 'undefined' && canvas) {
         gnnOverlayCanvas.width = canvas.width;
@@ -32,10 +42,8 @@ window.initGnnOverlay = function() {
         gnnCtx = gnnOverlayCanvas.getContext("2d");
     }
 };
-
 // Инициализируем с небольшой задержкой, чтобы canvas точно был готов
 setTimeout(window.initGnnOverlay, 500);
-
 // Обновляем размер при изменении окна
 window.addEventListener("resize", () => {
     if (gnnOverlayCanvas && typeof canvas !== 'undefined') {
@@ -43,31 +51,18 @@ window.addEventListener("resize", () => {
         gnnOverlayCanvas.height = canvas.height;
     }
 });
-
 backgroundImage.src = selectedImage;
-
-const OWNER_COLORS = {
-  player1: { base: "#00FF00", hull: "#00AA00", glow: "rgba(0, 255, 0, 0.5)", accent: "#00FF00" },
-  player2: { base: "#FF0000", hull: "#AA0000", glow: "rgba(255, 0, 0, 0.5)", accent: "#FF0000" },
-  ai: { base: "#FF0000", hull: "#AA0000", glow: "rgba(255, 0, 0, 0.5)", accent: "#FF0000" },
-  player: { base: "#00FF00", hull: "#00AA00", glow: "rgba(0, 255, 0, 0.5)", accent: "#00FF00" }
-};
-
-let colorSet = OWNER_COLORS["player"];
 function updateColorSet() {
   if (typeof playerId !== "undefined" && OWNER_COLORS[playerId]) colorSet = OWNER_COLORS[playerId];
 }
-
 function hexToRgb(hex) {
   hex = hex.replace("#", "");
   return `${parseInt(hex.substring(0, 2), 16)},${parseInt(hex.substring(2, 4), 16)},${parseInt(hex.substring(4, 6), 16)}`;
 }
-
 function hexToRgba(hex, alpha = 1) {
   hex = hex.replace("#", "");
   return `rgba(${parseInt(hex.substring(0, 2), 16)},${parseInt(hex.substring(2, 4), 16)},${parseInt(hex.substring(4, 6), 16)},${alpha})`;
 }
-
 function createStarLayer(width, height, starCount, minSize, maxSize) {
   const offscreen = document.createElement("canvas");
   offscreen.width = width; offscreen.height = height;
@@ -80,33 +75,6 @@ function createStarLayer(width, height, starCount, minSize, maxSize) {
   }
   return offscreen;
 }
-
-const starField = {
-  layers: [],
-  init: function() {
-    this.layers = [];
-    const starCountLayer1 = isMobile ? 50 : 300;
-    const starCountLayer2 = isMobile ? 25 : 200;
-    const starCountLayer3 = isMobile ? 10 : 100;
-    this.layers.push({ canvas: createStarLayer(canvas.width, canvas.height, starCountLayer1, 0.5, 1.2), speed: 0.1 });
-    this.layers.push({ canvas: createStarLayer(canvas.width, canvas.height, starCountLayer2, 1, 2), speed: 0.3 });
-    this.layers.push({ canvas: createStarLayer(canvas.width, canvas.height, starCountLayer3, 0.5, 1), speed: 0.5 });
-  },
-  draw: function() {
-    ctx.save();
-    this.layers.forEach(layer => {
-      const offsetX = - (camera.offsetX * layer.speed) % canvas.width;
-      const offsetY = - (camera.offsetY * layer.speed) % canvas.height;
-      for (let i = -1; i <= 1; i++) {
-        for (let j = -1; j <= 1; j++) {
-          ctx.drawImage(layer.canvas, offsetX + i * canvas.width, offsetY + j * canvas.height, canvas.width, canvas.height);
-        }
-      }
-    });
-    ctx.restore();
-  }
-};
-starField.init();
 
 window.drawGnnOverlay = function() {
     // 1. ЗАЩИТА И ОЧИСТКА (Главный фикс "хвостов" и артефактов)
@@ -561,7 +529,6 @@ const legendItems = [
         window._gnnLegendClickListenerAdded = true;
     }
 };
-
 function createSaleIndicator() {
   let indicator = document.getElementById("saleIndicator");
   if (!indicator) {
@@ -571,12 +538,10 @@ function createSaleIndicator() {
     document.body.appendChild(indicator);
   }
 }
-
 function clearSaleIndicator() {
   const indicator = document.getElementById("saleIndicator");
   if (indicator) indicator.remove();
 }
-
 function checkAndSellUnprofitableBuildings() {
   gameState.buildings.forEach(building => {
     if (building.owner !== "ai" || ["base", "base2", "base3"].includes(building.type)) return;
@@ -588,7 +553,6 @@ function checkAndSellUnprofitableBuildings() {
     }
   });
 }
-
 function spawnExplosionEffect(x, y) {
   gameState.particles.push({ x, y, vx: 0, vy: 0, life: 0.1, maxLife: 0.3, radius: 15, color: "#FF0000", flash: true });
   const particleCount = 15 + Math.floor(Math.random() * 10);
@@ -597,7 +561,6 @@ function spawnExplosionEffect(x, y) {
     gameState.particles.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life, maxLife: life, radius: 2, color: "white", flash: false });
   }
 }
-
 function spawnSparkEffect(x, y) {
   const sparksCount = isMobile ? 2 : 4;
   for (let i = 0; i < sparksCount; i++) {
@@ -611,7 +574,6 @@ function spawnSparkEffect(x, y) {
     gameState.particles.push(spark);
   }
 }
-
 function renderParticles() {
   ctx.save();
   ctx.translate(camera.offsetX, camera.offsetY);
@@ -635,7 +597,6 @@ function renderParticles() {
   });
   ctx.restore();
 }
-
 function updateSaleIndicator() {
   const indicator = document.getElementById("saleIndicator");
   if (saleBuilding && indicator) {
@@ -648,13 +609,428 @@ function updateSaleIndicator() {
     indicator.style.opacity = progress;
   }
 }
+function spawnParticles(x, y, color) {
+  const count = Math.floor(Math.random() * 3) + 3;
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2, speed = Math.random() * 50 + 50;
+    const particle = { x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 0.2 + Math.random() * 0.5, maxLife: 0, color: "yellow", radius: 1 };
+    particle.maxLife = particle.life;
+    gameState.particles.push(particle);
+  }
+}
+function getMarkerPosition(offset, rect) {
+  const w = rect.width, h = rect.height, perimeter = 2 * (w + h);
+  let pos = offset % perimeter;
+  if (pos < w) return { x: rect.x + pos, y: rect.y };
+  if (pos < w + h) return { x: rect.x + w, y: rect.y + (pos - w) };
+  if (pos < 2 * w + h) return { x: rect.x + w - (pos - (w + h)), y: rect.y + h };
+  return { x: rect.x, y: rect.y + h - (pos - (2 * w + h)) };
+}
+function spawnShockEffect(x, y) {
+  const count = isMobile ? 2 : 4;
+  for (let i = 0; i < count; i++) {
+    const p = getParticle();
+    p.x = x; p.y = y; p.vx = (Math.random() - 0.5) * 40; p.vy = (Math.random() - 0.5) * 40;
+    p.life = p.maxLife = 0.3 + Math.random() * 0.3; p.type = "sparkLine"; p.color = "cyan";
+    p.length = 3 + Math.random() * 5; p.thickness = 1; p.angle = Math.random() * Math.PI * 2;
+    gameState.particles.push(p);
+  }
+}
+let backgroundCache;
+function createBackgroundCache() {
+  backgroundCache = document.createElement('canvas');
+  backgroundCache.width = canvas.width; backgroundCache.height = canvas.height;
+  let bgCtx = backgroundCache.getContext('2d');
+  bgCtx.fillStyle = "#000"; bgCtx.fillRect(0, 0, backgroundCache.width, backgroundCache.height);
+  bgCtx.fillStyle = "white";
+  for (let i = 0; i < (isMobile ? 50 : 100); i++) {
+    bgCtx.beginPath(); bgCtx.arc(Math.random() * backgroundCache.width, Math.random() * backgroundCache.height, 1.5, 0, Math.PI * 2); bgCtx.fill();
+  }
+}
+function drawCapturePoints() {
+  gameState.capturePoints.forEach(cp => {
+    ctx.save();
+    const screenPos = worldToScreen(cp.x, cp.y);
+    ctx.fillStyle = cp.color;
+    ctx.fillRect(screenPos.x - (cp.width * camera.scale) / 2, screenPos.y - (cp.height * camera.scale) / 2, cp.width * camera.scale, cp.height * camera.scale);
+    ctx.restore();
+  });
+}
+function renderResource(resource) {
+  ctx.save();
+  ctx.translate(resource.x, resource.y);
+  
+  const now = performance.now();
+  const pulse = (Math.sin(now / 500) + 1) / 2;
+  const r = resource.getCurrentRadius ? resource.getCurrentRadius() : 14;
+  
+  // 1. Рисуем базовую форму метеорита (слегка неровный круг)
+  ctx.beginPath();
+  const segments = 12;
+  for (let i = 0; i <= segments; i++) {
+    const angle = (i / segments) * Math.PI * 2;
+    // Небольшая деформация для эффекта камня
+    const noise = 1 + Math.sin(angle * 3 + resource.x) * 0.08; 
+    const px = Math.cos(angle) * r * noise;
+    const py = Math.sin(angle) * r * noise;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  
+  // Базовый цвет камня (темный, в зависимости от типа)
+  const baseColors = { gold: "#3a3220", silicon: "#2a2d35", plasma: "#251a35" };
+  ctx.fillStyle = baseColors[resource.type] || "#333";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.6)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
 
+  // 2. Рисуем ВКРАПЛЕНИЯ (Жилы ресурса)
+  ctx.save();
+  ctx.clip(); // Обрезаем вкрапления по форме метеорита
+  
+  const inclusionColors = { 
+    gold: "rgba(255, 215, 0, 0.8)", 
+    silicon: "rgba(180, 210, 255, 0.7)", 
+    plasma: "rgba(200, 50, 255, 0.8)" 
+  };
+  ctx.fillStyle = inclusionColors[resource.type];
+  
+  // Генерируем "жилы" на основе координат, чтобы они не мерцали каждый кадр
+  const seed = resource.seed || 0;
+  for (let i = 0; i < 4; i++) {
+    const angle = (i / 4) * Math.PI * 2 + (seed % 10);
+    const dist = r * 0.3 + (seed % 5);
+    const size = r * (0.2 + (i % 3) * 0.15);
+    
+    ctx.beginPath();
+    ctx.arc(Math.cos(angle) * dist, Math.sin(angle) * dist, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  
+  // Для плазмы добавляем пульсирующее свечение
+  if (resource.type === "plasma") {
+    ctx.fillStyle = `rgba(200, 50, 255, ${0.2 + pulse * 0.3})`;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore(); // Снимаем clip
+
+  // 3. Трещины при повреждении
+  if (resource.crackLevel > 0) {
+    ctx.strokeStyle = "rgba(0,0,0,0.7)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(-r*0.5, -r*0.5);
+    ctx.lineTo(0, 0);
+    ctx.lineTo(r*0.3, r*0.6);
+    if (resource.crackLevel >= 2) {
+      ctx.moveTo(r*0.5, -r*0.2);
+      ctx.lineTo(-r*0.2, r*0.4);
+    }
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+// ОТРИСОВКА ЭФФЕКТОВ ПЕРКОВ
+function renderShockZones() {
+  const now = performance.now();
+  shockZones = shockZones.filter(zone => {
+    if (!zone || typeof zone.x !== 'number' || typeof zone.y !== 'number') return false;
+    
+    const elapsed = now - zone.start;
+    if (elapsed > 2000) return false;
+
+    const progress = elapsed / 2000;
+    zone.radius = zone.maxRadius * progress;
+    const alpha = 1 - progress;
+
+    ctx.save();
+    const glowGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.radius);
+    glowGrad.addColorStop(0, `rgba(0, 255, 255, ${alpha * 0.3})`);
+    glowGrad.addColorStop(0.7, `rgba(0, 200, 255, ${alpha * 0.15})`);
+    glowGrad.addColorStop(1, `rgba(0, 150, 255, 0)`);
+    ctx.fillStyle = glowGrad;
+    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.fill();
+
+    ctx.strokeStyle = `rgba(0, 255, 255, ${alpha})`;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = "#00ffff"; ctx.shadowBlur = 15;
+    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.stroke();
+
+    if (zone.lightningBolts && Array.isArray(zone.lightningBolts)) {
+      zone.lightningBolts.forEach(boltObj => {
+        const pts = boltObj.points;
+        if (!pts || pts.length === 0) return;
+        ctx.strokeStyle = `rgba(200, 255, 255, ${alpha * 0.9})`;
+        ctx.lineWidth = 2; ctx.shadowColor = "#ffffff"; ctx.shadowBlur = 10;
+        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.stroke();
+      });
+    }
+    ctx.restore();
+    return true;
+  });
+}
+function renderBombZones() {
+  const now = performance.now();
+  bombZones = bombZones.filter(zone => {
+    const elapsed = now - zone.start;
+    if (!zone.exploded) {
+      const warningProgress = elapsed / zone.warningTime;
+      const pulse = Math.sin(warningProgress * Math.PI * 4) * 0.5 + 0.5;
+      const currentRadius = zone.maxRadius * (0.3 + warningProgress * 0.7);
+      ctx.save();
+      const warnGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, currentRadius);
+      warnGrad.addColorStop(0, `rgba(255, 50, 0, ${0.4 + pulse * 0.3})`);
+      warnGrad.addColorStop(0.6, `rgba(255, 100, 0, ${0.2 + pulse * 0.2})`);
+      warnGrad.addColorStop(1, `rgba(255, 0, 0, 0)`);
+      ctx.fillStyle = warnGrad;
+      ctx.beginPath(); ctx.arc(zone.x, zone.y, currentRadius, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(255, ${100 - pulse * 100}, 0, ${0.8 + pulse * 0.2})`;
+      ctx.lineWidth = 2 + pulse * 2; ctx.shadowColor = "#ff4400"; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.arc(zone.x, zone.y, currentRadius, 0, Math.PI * 2); ctx.stroke();
+      const remaining = Math.max(0, (zone.warningTime - elapsed) / 1000);
+      ctx.fillStyle = "#ffffff"; ctx.font = "bold 20px Orbitron"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.shadowColor = "#ff0000"; ctx.shadowBlur = 10;
+      ctx.fillText(remaining.toFixed(1), zone.x, zone.y);
+      ctx.restore();
+      return true;
+    } else {
+      const explosionProgress = Math.min(1, (elapsed - zone.warningTime) / 1000);
+      const alpha = 1 - explosionProgress;
+      ctx.save();
+      const expGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.maxRadius * explosionProgress);
+      expGrad.addColorStop(0, `rgba(255, 255, 200, ${alpha})`);
+      expGrad.addColorStop(0.3, `rgba(255, 150, 0, ${alpha * 0.8})`);
+      expGrad.addColorStop(0.7, `rgba(255, 50, 0, ${alpha * 0.4})`);
+      expGrad.addColorStop(1, `rgba(255, 0, 0, 0)`);
+      ctx.fillStyle = expGrad;
+      ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.maxRadius * explosionProgress, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      return explosionProgress < 1;
+    }
+  });
+}
+function renderReconZones() {
+  const now = Date.now();
+  reconZones = reconZones.filter(zone => {
+    const elapsed = now - zone.start;
+    if (elapsed > zone.duration) return false;
+    const progress = elapsed / zone.duration;
+    const alpha = 1 - progress;
+    zone.radius = zone.maxRadius * Math.min(1, progress * 3);
+    zone.scanAngle = (zone.scanAngle || 0) + 0.05;
+    ctx.save();
+    const scanGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.radius);
+    scanGrad.addColorStop(0, `rgba(0, 255, 150, ${alpha * 0.1})`);
+    scanGrad.addColorStop(0.8, `rgba(0, 255, 150, ${alpha * 0.3})`);
+    scanGrad.addColorStop(1, `rgba(0, 255, 150, 0)`);
+    ctx.fillStyle = scanGrad;
+    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(0, 255, 150, ${alpha * 0.6})`; ctx.lineWidth = 2; ctx.shadowColor = "#00ff88"; ctx.shadowBlur = 10;
+    ctx.beginPath(); ctx.moveTo(zone.x, zone.y);
+    ctx.lineTo(zone.x + Math.cos(zone.scanAngle) * zone.radius, zone.y + Math.sin(zone.scanAngle) * zone.radius);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(0, 255, 150, ${alpha * 0.4})`; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    return true;
+  });
+}
+function spawnSupernovaEffect(obj) {
+  for (let i = 0; i < 20; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 50 + Math.random() * 100;
+    gameState.particles.push({
+      x: obj.x, y: obj.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+      life: 1.0, maxLife: 1.0, radius: 3, color: obj.color || "#ffffff", type: "spark"
+    });
+  }
+}
+// ОТРИСОВКА ТУМАНА ВОЙНЫ
+function renderPersistentFog() {
+  if (!fogMap || !fogMap.length || !persistentFogMap || !persistentFogMap.length) return;
+
+  const cols = persistentFogMap[0].length;
+  const rows = persistentFogMap.length;
+  const cellScreenSize = FOG_CELL_SIZE * camera.scale;
+  const invScale = 1 / camera.scale;
+
+  const viewLeft = -camera.offsetX * invScale;
+  const viewTop = -camera.offsetY * invScale;
+  const viewRight = viewLeft + canvas.width * invScale;
+  const viewBottom = viewTop + canvas.height * invScale;
+
+  // 🔥 НЕ обрезаем к 0 и cols-1! Идём по ВСЕМ клеткам экрана,
+  // а границы проверяем внутри цикла. Иначе при скролле за край мира
+  // остаются непрокрашенные дыры.
+  const startCol = Math.floor(viewLeft / FOG_CELL_SIZE) - 1;
+  const endCol = Math.ceil(viewRight / FOG_CELL_SIZE) + 1;
+  const startRow = Math.floor(viewTop / FOG_CELL_SIZE) - 1;
+  const endRow = Math.ceil(viewBottom / FOG_CELL_SIZE) + 1;
+
+  ctx.save();
+  for (let r = startRow; r <= endRow; r++) {
+    for (let c = startCol; c <= endCol; c++) {
+      const worldX = c * FOG_CELL_SIZE;
+      const worldY = r * FOG_CELL_SIZE;
+      const screenPos = worldToScreen(worldX, worldY);
+
+      const inMap = (r >= 0 && r < rows && c >= 0 && c < cols);
+
+      let alpha;
+      if (!inMap) {
+        // 🔥 За пределами мира — всегда полный туман
+        alpha = 0.95;
+      } else if (persistentFogMap[r][c] === 0) {
+        // Никогда не видели — почти чёрный
+        alpha = 0.95;
+      } else if (fogMap[r] && fogMap[r][c] === 0) {
+        // Видели раньше, но сейчас вне зоны видимости — полупрозрачный
+        alpha = 0.6;
+      } else {
+        continue; // 🔥 Зона видима — не рисуем ничего
+      }
+
+      ctx.fillStyle = `rgba(0, 0, 0, ${alpha})`;
+      ctx.fillRect(screenPos.x, screenPos.y, cellScreenSize + 1, cellScreenSize + 1);
+    }
+  }
+  ctx.restore();
+}
+function renderFogOfWar() {
+  renderPersistentFog();
+}
+function renderFragments() {
+  if (!gameState.fragments || gameState.fragments.length === 0) return;
+  
+  // 🔥 ИСПРАВЛЕНИЕ: Убираем ctx.save/translate/scale/restore
+  // Контекст уже преобразован в renderGame() — двойное преобразование ломало координаты
+  
+  gameState.fragments.forEach(f => {
+    ctx.save();
+    ctx.translate(f.x, f.y);
+    ctx.rotate(f.angle);
+    ctx.fillStyle = f.color;
+    ctx.globalAlpha = Math.max(0, f.life / f.maxLife);
+    
+    ctx.beginPath();
+    if (f.points && f.points.length > 0) {
+      ctx.moveTo(f.points[0].x, f.points[0].y);
+      for (let i = 1; i < f.points.length; i++) {
+        ctx.lineTo(f.points[i].x, f.points[i].y);
+      }
+    } else {
+      ctx.rect(-4, -4, 8, 8);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  });
+}
+function updateResourceUI() {
+  document.getElementById("playerGold").innerText = Math.round(gameState.playerResources.gold);
+  document.getElementById("playerSilicon").innerText = Math.round(gameState.playerResources.silicon);
+  document.getElementById("playerPlasma").innerText = Math.round(gameState.playerResources.plasma);
+  document.getElementById("aiGold").innerText = gameState.aiResources.gold;
+  document.getElementById("aiSilicon").innerText = gameState.aiResources.silicon;
+  document.getElementById("aiPlasma").innerText = gameState.aiResources.plasma;
+}
+function updateBaseNavButton() {
+  const btnId = "baseNavButton", existingBtn = document.getElementById(btnId);
+  const base = gameState.buildings.find(b => b.type === "base" && b.owner === playerId);
+  if (!base) { if (existingBtn) existingBtn.remove(); return; }
+  if (!isBaseVisible(base)) {
+    if (!existingBtn) {
+      const btn = document.createElement("button");
+      btn.id = btnId; btn.innerText = "◀";
+      Object.assign(btn.style, { position: "fixed", bottom: "2vh", left: "7vw", opacity: "0.7", zIndex: "1000" });
+      btn.addEventListener("click", () => { camera.offsetX = canvas.width / 2 - base.x * camera.scale; camera.offsetY = canvas.height / 2 - base.y * camera.scale; });
+      document.body.appendChild(btn);
+    }
+  } else { if (existingBtn) existingBtn.remove(); }
+}
+function updateBase2NavButton() {
+  const btnId = "base2NavButton", existingBtn = document.getElementById(btnId);
+  const playerBase2 = gameState.buildings.find(b => b.owner === playerId && b.type === "base2");
+  if (!playerBase2) { if (existingBtn) existingBtn.remove(); return; }
+  if (!isBaseVisible(playerBase2)) {
+    if (!existingBtn) {
+      const btn = document.createElement("button");
+      btn.id = btnId; btn.innerText = "<<";
+      Object.assign(btn.style, { position: "fixed", bottom: "2vh", left: "13vw", opacity: "0.7", zIndex: "1000" });
+      btn.addEventListener("click", () => { camera.offsetX = canvas.width / 2 - playerBase2.x * camera.scale; camera.offsetY = canvas.height / 2 - playerBase2.y * camera.scale; });
+      document.body.appendChild(btn);
+    }
+  } else { if (existingBtn) existingBtn.remove(); }
+}
+function updateBase3NavButton() {
+  const btnId = "base3NavButton", existingBtn = document.getElementById(btnId);
+  const playerBase3 = gameState.buildings.find(b => b.owner === playerId && b.type === "base3");
+  if (!playerBase3) { if (existingBtn) existingBtn.remove(); return; }
+  if (!isBaseVisible(playerBase3)) {
+    if (!existingBtn) {
+      const btn = document.createElement("button");
+      btn.id = btnId; btn.innerText = "<<<";
+      Object.assign(btn.style, { position: "fixed", bottom: "2vh", left: "20vw", opacity: "0.7", zIndex: "1000" });
+      btn.addEventListener("click", () => { camera.offsetX = canvas.width / 2 - playerBase3.x * camera.scale; camera.offsetY = canvas.height / 2 - playerBase3.y * camera.scale; });
+      document.body.appendChild(btn);
+    }
+  } else { if (existingBtn) existingBtn.remove(); }
+}
+function updateProductionIndicator(building) {
+  if (!gameState.buildings.includes(building) || building.health <= 0) {
+    const existing = document.getElementById("productionIndicator_" + building.id);
+    if (existing) existing.remove();
+    return;
+  }
+  if (!building.productionQueue || building.productionQueue.length === 0) {
+    const existingIndicator = document.getElementById("productionIndicator_" + building.id);
+    if (existingIndicator) existingIndicator.remove();
+    return;
+  }
+  let container = document.getElementById("productionIndicator_" + building.id);
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "productionIndicator_" + building.id;
+    container.className = "production-indicator";
+    (document.getElementById("gameContainer") || document.body).appendChild(container);
+  }
+  const screenPos = worldToScreen(building.x, building.y);
+  container.style.left = (screenPos.x - (building.width * camera.scale) / 2) + "px";
+  container.style.top = (screenPos.y + (building.height * camera.scale) - 10) + "px";
+  container.style.display = isInFogOfWar(building.x, building.y) ? "none" : "block";
+  container.innerHTML = "";
+  const now = performance.now();
+  building.productionQueue.forEach(order => {
+    const section = document.createElement("div");
+    section.className = "production-section";
+    section.style.width = (5 * camera.scale) + "px";
+    section.style.height = (2 * camera.scale) + "px";
+    const fill = document.createElement("div");
+    fill.className = "production-fill";
+    const elapsed = now - order.timeStart;
+    fill.style.width = (Math.min(elapsed / order.productionTime, 1) * 100) + "%";
+    section.appendChild(fill);
+    container.appendChild(section);
+  });
+}
+function isTargetAlive(target) {
+  if (target instanceof Unit) return gameState.units.includes(target);
+  if (target instanceof Building) return gameState.buildings.includes(target);
+  return false;
+}
 function drawGoldPlanetAlt(resource, ctx) {
   ctx.save();
   let angle = resource.rotation || 0;
   resource.rotation = angle + 0.002;
   ctx.rotate(angle);
-  const baseRadius = resource.baseRadius ? resource.baseRadius * 0.85 : 40;
+  const baseRadius = resource.getCurrentRadius ? resource.getCurrentRadius() : 14;
   const oceanGradient = ctx.createRadialGradient(0, 0, baseRadius * 0.3, 0, 0, baseRadius);
   oceanGradient.addColorStop(0, "#fff8dc"); oceanGradient.addColorStop(0.5, "#ffd700"); oceanGradient.addColorStop(1, "#b8860b");
   ctx.fillStyle = oceanGradient; ctx.beginPath(); ctx.arc(0, 0, baseRadius, 0, Math.PI * 2); ctx.fill();
@@ -708,7 +1084,6 @@ function drawGoldPlanetAlt(resource, ctx) {
   ctx.fillStyle = pulseGrad; ctx.beginPath(); ctx.arc(0, 0, pulseRadius, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
-
 function drawSiliconPlanet(ctx, x, y, radius) {
   const gradient = ctx.createRadialGradient(x, y, radius * 0.2, x, y, radius);
   gradient.addColorStop(0, "#bbbbbb"); gradient.addColorStop(1, "#777777");
@@ -723,367 +1098,87 @@ function drawSiliconPlanet(ctx, x, y, radius) {
   ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.ellipse(x, y, radius * 1.4, radius * 0.5, Math.PI / 6, 0, 2 * Math.PI); ctx.stroke();
 }
-
-function renderResource(resource) {
-  ctx.save();
-  ctx.translate(resource.x, resource.y);
-  const now = performance.now(), sinValue = Math.sin(now / 300), pulse = (sinValue + 1) / 2;
-  const pulseRadius = resource.baseRadius ? resource.baseRadius * 1.5 + pulse * 5 : 15;
-  if (resource.type === "gold") { drawGoldPlanetAlt(resource, ctx); } 
-  else if (resource.type === "silicon") {
-    const size = 15;
-    ctx.save(); ctx.rotate(performance.now() / 3000);
-    const grad = ctx.createRadialGradient(0, 0, size * 0.2, 0, 0, size);
-    grad.addColorStop(0, "#bbbbbb"); grad.addColorStop(1, "#777777");
-    ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(0, 0, size, 0, Math.PI * 2); ctx.fill(); ctx.restore();
-    if (resource.swirlCount === undefined) {
-      resource.swirlCount = Math.floor(Math.random() * 5) + 1; resource.swirlOffsets = [];
-      for (let i = 0; i < resource.swirlCount; i++) resource.swirlOffsets.push(Math.random() * Math.PI * 2);
-      resource.swirlSizes = [];
-      for (let i = 0; i < resource.swirlCount; i++) resource.swirlSizes.push((0.1 + Math.random() * 0.4) * size);
-    }
-    const baseAngle = performance.now() * 0.0005;
-    for (let i = 0; i < resource.swirlCount; i++) {
-      const angle = baseAngle + resource.swirlOffsets[i];
-      const swirlX = Math.cos(angle) * size * 0.5, swirlY = Math.sin(angle) * size * 0.3;
-      const t = performance.now() * 0.001, baseR = resource.swirlSizes[i];
-      const dynamicR = baseR * (0.7 + 0.3 * Math.sin(t * 0.3 + i));
-      let alpha = 1;
-      if (swirlY > 0) alpha = Math.max(0, 1 - swirlY / (size * 0.3));
-      ctx.fillStyle = `rgba(68,68,68,${alpha.toFixed(2)})`;
-      ctx.beginPath(); ctx.arc(swirlX, swirlY, dynamicR, 0, Math.PI * 2); ctx.fill();
-    }
-    ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.ellipse(0, 0, size * 1.5, size * 0.8, Math.PI / 6, 0, Math.PI * 2); ctx.stroke();
-    ctx.strokeStyle = "rgba(160,200,220,0.3)"; ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.ellipse(0, 0, size * 1.8, size * 0.9, Math.PI / 5, 0, Math.PI * 2); ctx.stroke();
-  } else if (resource.type === "plasma") {
-    const baseRadius = 8;
-    const time = performance.now(), swingAngle = Math.sin(time * 0.0004) * (Math.PI / 12);
-    const dx = Math.cos(swingAngle) * baseRadius, dy = Math.sin(swingAngle) * baseRadius;
-    const grad = ctx.createLinearGradient(-dx, -dy, dx, dy);
-    grad.addColorStop(0.0, "#8a2be2"); grad.addColorStop(0.15, "#6a0dad"); grad.addColorStop(0.3, "#4b0082");
-    grad.addColorStop(0.45, "#8a2be2"); grad.addColorStop(0.6, "#9370db"); grad.addColorStop(0.75, "#7b68ee");
-    grad.addColorStop(0.9, "#6a0dad"); grad.addColorStop(1.0, "#8a2be2");
-    if (!resource.cachedSatellites || (time - resource.lastSatUpdate > 50)) {
-      if (resource.satelliteCount === undefined) {
-        resource.satelliteCount = Math.floor(Math.random() * 3) + 1;
-        resource.satelliteOffsets = []; resource.satelliteSizes = [];
-        for (let i = 0; i < resource.satelliteCount; i++) {
-          resource.satelliteOffsets.push(Math.random() * Math.PI * 2);
-          resource.satelliteSizes.push(1.5 + Math.random() * 1.5);
-        }
-      }
-      const rotationSpeed = 0.00015, currentRotation = time * rotationSpeed;
-      const orbitMultiplierX = 2.0, orbitMultiplierY = 2.5;
-      const satellites = [];
-      for (let i = 0; i < resource.satelliteCount; i++) {
-        const angle = currentRotation + resource.satelliteOffsets[i];
-        const orbitX = Math.cos(angle) * baseRadius * orbitMultiplierX;
-        const orbitY = Math.sin(angle) * baseRadius * orbitMultiplierY;
-        const isBehind = orbitY > 0;
-        const depthFactor = 1 - Math.abs(orbitY) / (baseRadius * orbitMultiplierY);
-        const alpha = isBehind ? (0.3 + 0.4 * depthFactor) : (0.5 + 0.5 * depthFactor);
-        const size = Math.max(0.5, resource.satelliteSizes[i] * (0.3 + 0.7 * depthFactor));
-        satellites.push({ orbitX, orbitY, size, alpha, isBehind });
-      }
-      resource.cachedSatellites = satellites; resource.lastSatUpdate = time;
-    }
-    const backSatellites = resource.cachedSatellites.filter(s => s.isBehind);
-    const frontSatellites = resource.cachedSatellites.filter(s => !s.isBehind);
-    for (const sat of backSatellites) {
-      ctx.fillStyle = `rgba(135,206,250,${sat.alpha.toFixed(2)})`;
-      ctx.beginPath(); ctx.arc(sat.orbitX, sat.orbitY, sat.size, 0, Math.PI * 2); ctx.fill();
-    }
-    ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(0, 0, baseRadius, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "rgba(135,206,250,0.3)"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(0, 0, baseRadius + 2, 0, Math.PI * 2); ctx.stroke();
-    for (const sat of frontSatellites) {
-      ctx.fillStyle = `rgba(135,206,250,${sat.alpha.toFixed(2)})`;
-      ctx.beginPath(); ctx.arc(sat.orbitX, sat.orbitY, sat.size, 0, Math.PI * 2); ctx.fill();
-    }
-    const pulseGrad = ctx.createRadialGradient(0, 0, baseRadius, 0, 0, pulseRadius);
-    pulseGrad.addColorStop(0, "rgba(148,0,211,0.0)"); pulseGrad.addColorStop(1, "rgba(148,0,211,0.4)");
-    ctx.fillStyle = pulseGrad; ctx.beginPath(); ctx.arc(0, 0, pulseRadius, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.restore();
-}
-
-function findNearestResource(x, y, preferredType) {
-  const pos = { x, y };
-  let candidates = getObjectsInRange(pos, 1000).filter(r => r.amount > 0 && r.type === preferredType && r.currentWorkers < r.maxWorkers);
-  if (candidates.length === 0) candidates = getObjectsInRange(pos, 1000).filter(r => r.amount > 0 && r.currentWorkers < r.maxWorkers);
-  let nearest = null, minDist = Infinity;
-  candidates.forEach(r => { const d = Math.hypot(r.x - x, r.y - y); if (d < minDist) { minDist = d; nearest = r; } });
-  return nearest;
-}
-
-function renderWorkerResourceToken(ctx, token) {
-  if (isInFogOfWar(token.x, token.y)) return;
-  let baseColor, topColor, leftColor, rightColor;
-  if (token.resourceType === "gold") { baseColor = "#ffd700"; topColor = "#fffacd"; leftColor = "#ffd700"; rightColor = "#b8860b"; } 
-  else if (token.resourceType === "silicon") { baseColor = "silver"; topColor = "#d3d3d3"; leftColor = "silver"; rightColor = "#a9a9a9"; } 
-  else if (token.resourceType === "plasma") { baseColor = "cyan"; topColor = "#e0ffff"; leftColor = "cyan"; rightColor = "#008b8b"; } 
-  else { baseColor = "white"; topColor = "#ffffff"; leftColor = "#cccccc"; rightColor = "#999999"; }
-  const size = 6, half = size / 3, offset = 1;
-  ctx.beginPath(); ctx.moveTo(token.x, token.y - half - offset); ctx.lineTo(token.x + half, token.y - offset);
-  ctx.lineTo(token.x, token.y + half - offset); ctx.lineTo(token.x - half, token.y - offset); ctx.closePath(); ctx.fillStyle = topColor; ctx.fill();
-  ctx.beginPath(); ctx.moveTo(token.x - half, token.y - offset); ctx.lineTo(token.x, token.y + half - offset);
-  ctx.lineTo(token.x, token.y + half + offset); ctx.lineTo(token.x - half, token.y + offset); ctx.closePath(); ctx.fillStyle = leftColor; ctx.fill();
-  ctx.beginPath(); ctx.moveTo(token.x + half, token.y - offset); ctx.lineTo(token.x, token.y + half - offset);
-  ctx.lineTo(token.x, token.y + half + offset); ctx.lineTo(token.x + half, token.y + offset); ctx.closePath(); ctx.fillStyle = rightColor; ctx.fill();
-}
-
 function renderResourceTokens() {
-  ctx.save(); ctx.fillStyle = "gold";
-  gameState.resourceTokens.forEach(token => {
+  ctx.save();
+  (gameState.resourceTokens || []).forEach(token => {
+    if (!token.isGround) return; // ← в руках НЕ трогаем, они рисуются в блоке камеры
     if (isInFogOfWar(token.x, token.y)) return;
     const screenPos = worldToScreen(token.x, token.y);
-    ctx.beginPath(); ctx.arc(screenPos.x, screenPos.y, 3, 0, Math.PI * 2); ctx.fill();
+    const alpha = Math.min(1, token.life / 3);
+    ctx.globalAlpha = alpha;
+
+    let topColor, leftColor, rightColor;
+    if (token.type === "gold") { topColor = "#fffacd"; leftColor = "#ffd700"; rightColor = "#b8860b"; } 
+    else if (token.type === "silicon") { topColor = "#d3d3d3"; leftColor = "silver"; rightColor = "#a9a9a9"; } 
+    else if (token.type === "plasma") { topColor = "#e0ffff"; leftColor = "cyan"; rightColor = "#008b8b"; } 
+    else { topColor = "#ffffff"; leftColor = "#cccccc"; rightColor = "#999999"; }
+
+    // 🔥 УВЕЛИЧИЛИ РАЗМЕР и добавили обводку, как у токенов в руках!
+    const size = 10 * camera.scale;
+    const half = size / 3;
+    const offset = 1 * camera.scale;
+    const x = screenPos.x, y = screenPos.y;
+    
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 1;
+
+    ctx.beginPath(); ctx.moveTo(x, y - half - offset); ctx.lineTo(x + half, y - offset);
+    ctx.lineTo(x, y + half - offset); ctx.lineTo(x - half, y - offset); ctx.closePath(); ctx.fillStyle = topColor; ctx.fill(); ctx.stroke();
+    
+    ctx.beginPath(); ctx.moveTo(x - half, y - offset); ctx.lineTo(x, y + half - offset);
+    ctx.lineTo(x, y + half + offset); ctx.lineTo(x - half, y + offset); ctx.closePath(); ctx.fillStyle = leftColor; ctx.fill(); ctx.stroke();
+    
+    ctx.beginPath(); ctx.moveTo(x + half, y - offset); ctx.lineTo(x, y + half - offset);
+    ctx.lineTo(x, y + half + offset); ctx.lineTo(x + half, y + offset); ctx.closePath(); ctx.fillStyle = rightColor; ctx.fill(); ctx.stroke();
+    
+    ctx.globalAlpha = 1;
   });
   ctx.restore();
 }
-
-function spawnParticles(x, y, color) {
-  const count = Math.floor(Math.random() * 3) + 3;
-  for (let i = 0; i < count; i++) {
-    const angle = Math.random() * Math.PI * 2, speed = Math.random() * 50 + 50;
-    const particle = { x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 0.2 + Math.random() * 0.5, maxLife: 0, color: "yellow", radius: 1 };
-    particle.maxLife = particle.life;
-    gameState.particles.push(particle);
-  }
-}
-
-function getMarkerPosition(offset, rect) {
-  const w = rect.width, h = rect.height, perimeter = 2 * (w + h);
-  let pos = offset % perimeter;
-  if (pos < w) return { x: rect.x + pos, y: rect.y };
-  if (pos < w + h) return { x: rect.x + w, y: rect.y + (pos - w) };
-  if (pos < 2 * w + h) return { x: rect.x + w - (pos - (w + h)), y: rect.y + h };
-  return { x: rect.x, y: rect.y + h - (pos - (2 * w + h)) };
-}
-
-function spawnShockEffect(x, y) {
-  const count = isMobile ? 2 : 4;
-  for (let i = 0; i < count; i++) {
-    const p = getParticle();
-    p.x = x; p.y = y; p.vx = (Math.random() - 0.5) * 40; p.vy = (Math.random() - 0.5) * 40;
-    p.life = p.maxLife = 0.3 + Math.random() * 0.3; p.type = "sparkLine"; p.color = "cyan";
-    p.length = 3 + Math.random() * 5; p.thickness = 1; p.angle = Math.random() * Math.PI * 2;
-    gameState.particles.push(p);
-  }
-}
-
-let backgroundCache;
-function createBackgroundCache() {
-  backgroundCache = document.createElement('canvas');
-  backgroundCache.width = canvas.width; backgroundCache.height = canvas.height;
-  let bgCtx = backgroundCache.getContext('2d');
-  bgCtx.fillStyle = "#000"; bgCtx.fillRect(0, 0, backgroundCache.width, backgroundCache.height);
-  bgCtx.fillStyle = "white";
-  for (let i = 0; i < (isMobile ? 50 : 100); i++) {
-    bgCtx.beginPath(); bgCtx.arc(Math.random() * backgroundCache.width, Math.random() * backgroundCache.height, 1.5, 0, Math.PI * 2); bgCtx.fill();
-  }
-}
-
-function drawCapturePoints() {
-  gameState.capturePoints.forEach(cp => {
-    ctx.save();
-    const screenPos = worldToScreen(cp.x, cp.y);
-    ctx.fillStyle = cp.color;
-    ctx.fillRect(screenPos.x - (cp.width * camera.scale) / 2, screenPos.y - (cp.height * camera.scale) / 2, cp.width * camera.scale, cp.height * camera.scale);
-    ctx.restore();
-  });
-}
-
-// ============================================================
-// ОТРИСОВКА ЭФФЕКТОВ ПЕРКОВ
-// ============================================================
-function renderShockZones() {
-  const now = performance.now();
-  shockZones = shockZones.filter(zone => {
-    if (!zone || typeof zone.x !== 'number' || typeof zone.y !== 'number') return false;
-    
-    const elapsed = now - zone.start;
-    if (elapsed > 2000) return false;
-
-    const progress = elapsed / 2000;
-    zone.radius = zone.maxRadius * progress;
-    const alpha = 1 - progress;
-
-    ctx.save();
-    const glowGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.radius);
-    glowGrad.addColorStop(0, `rgba(0, 255, 255, ${alpha * 0.3})`);
-    glowGrad.addColorStop(0.7, `rgba(0, 200, 255, ${alpha * 0.15})`);
-    glowGrad.addColorStop(1, `rgba(0, 150, 255, 0)`);
-    ctx.fillStyle = glowGrad;
-    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.fill();
-
-    ctx.strokeStyle = `rgba(0, 255, 255, ${alpha})`;
-    ctx.lineWidth = 3;
-    ctx.shadowColor = "#00ffff"; ctx.shadowBlur = 15;
-    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.stroke();
-
-    if (zone.lightningBolts && Array.isArray(zone.lightningBolts)) {
-      zone.lightningBolts.forEach(boltObj => {
-        const pts = boltObj.points;
-        if (!pts || pts.length === 0) return;
-        ctx.strokeStyle = `rgba(200, 255, 255, ${alpha * 0.9})`;
-        ctx.lineWidth = 2; ctx.shadowColor = "#ffffff"; ctx.shadowBlur = 10;
-        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-        ctx.stroke();
-      });
-    }
-    ctx.restore();
-    return true;
-  });
-}
-
-function renderBombZones() {
-  const now = performance.now();
-  bombZones = bombZones.filter(zone => {
-    const elapsed = now - zone.start;
-    if (!zone.exploded) {
-      const warningProgress = elapsed / zone.warningTime;
-      const pulse = Math.sin(warningProgress * Math.PI * 4) * 0.5 + 0.5;
-      const currentRadius = zone.maxRadius * (0.3 + warningProgress * 0.7);
-      ctx.save();
-      const warnGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, currentRadius);
-      warnGrad.addColorStop(0, `rgba(255, 50, 0, ${0.4 + pulse * 0.3})`);
-      warnGrad.addColorStop(0.6, `rgba(255, 100, 0, ${0.2 + pulse * 0.2})`);
-      warnGrad.addColorStop(1, `rgba(255, 0, 0, 0)`);
-      ctx.fillStyle = warnGrad;
-      ctx.beginPath(); ctx.arc(zone.x, zone.y, currentRadius, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = `rgba(255, ${100 - pulse * 100}, 0, ${0.8 + pulse * 0.2})`;
-      ctx.lineWidth = 2 + pulse * 2; ctx.shadowColor = "#ff4400"; ctx.shadowBlur = 20;
-      ctx.beginPath(); ctx.arc(zone.x, zone.y, currentRadius, 0, Math.PI * 2); ctx.stroke();
-      const remaining = Math.max(0, (zone.warningTime - elapsed) / 1000);
-      ctx.fillStyle = "#ffffff"; ctx.font = "bold 20px Orbitron"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.shadowColor = "#ff0000"; ctx.shadowBlur = 10;
-      ctx.fillText(remaining.toFixed(1), zone.x, zone.y);
-      ctx.restore();
-      return true;
-    } else {
-      const explosionProgress = Math.min(1, (elapsed - zone.warningTime) / 1000);
-      const alpha = 1 - explosionProgress;
-      ctx.save();
-      const expGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.maxRadius * explosionProgress);
-      expGrad.addColorStop(0, `rgba(255, 255, 200, ${alpha})`);
-      expGrad.addColorStop(0.3, `rgba(255, 150, 0, ${alpha * 0.8})`);
-      expGrad.addColorStop(0.7, `rgba(255, 50, 0, ${alpha * 0.4})`);
-      expGrad.addColorStop(1, `rgba(255, 0, 0, 0)`);
-      ctx.fillStyle = expGrad;
-      ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.maxRadius * explosionProgress, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
-      return explosionProgress < 1;
-    }
-  });
-}
-
-function renderReconZones() {
-  const now = Date.now();
-  reconZones = reconZones.filter(zone => {
-    const elapsed = now - zone.start;
-    if (elapsed > zone.duration) return false;
-    const progress = elapsed / zone.duration;
-    const alpha = 1 - progress;
-    zone.radius = zone.maxRadius * Math.min(1, progress * 3);
-    zone.scanAngle = (zone.scanAngle || 0) + 0.05;
-    ctx.save();
-    const scanGrad = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.radius);
-    scanGrad.addColorStop(0, `rgba(0, 255, 150, ${alpha * 0.1})`);
-    scanGrad.addColorStop(0.8, `rgba(0, 255, 150, ${alpha * 0.3})`);
-    scanGrad.addColorStop(1, `rgba(0, 255, 150, 0)`);
-    ctx.fillStyle = scanGrad;
-    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = `rgba(0, 255, 150, ${alpha * 0.6})`; ctx.lineWidth = 2; ctx.shadowColor = "#00ff88"; ctx.shadowBlur = 10;
-    ctx.beginPath(); ctx.moveTo(zone.x, zone.y);
-    ctx.lineTo(zone.x + Math.cos(zone.scanAngle) * zone.radius, zone.y + Math.sin(zone.scanAngle) * zone.radius);
-    ctx.stroke();
-    ctx.strokeStyle = `rgba(0, 255, 150, ${alpha * 0.4})`; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.stroke();
-    ctx.restore();
-    return true;
-  });
-}
-
-function spawnSupernovaEffect(obj) {
-  for (let i = 0; i < 20; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    const speed = 50 + Math.random() * 100;
-    gameState.particles.push({
-      x: obj.x, y: obj.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
-      life: 1.0, maxLife: 1.0, radius: 3, color: obj.color || "#ffffff", type: "spark"
-    });
-  }
-}
-
-const warehouseImage = new Image(); warehouseImage.src = "/src/models/warehouse.png"; warehouseImage.onload = () => { preloadedIcons["warehouse"] = warehouseImage; };
-const repairWorkshopImage = new Image(); repairWorkshopImage.src = "/src/models/repairWorkshop.png"; repairWorkshopImage.onload = () => { preloadedIcons["repairWorkshop"] = repairWorkshopImage; };
-const beaconImage = new Image(); beaconImage.src = "/src/models/beacon.png"; beaconImage.onload = () => { preloadedIcons["beacon"] = beaconImage; };
-const baseImage = new Image(); baseImage.src = "/src/models/base.png"; baseImage.onload = () => { preloadedIcons["base"] = baseImage; };
-const base2Image = new Image(); base2Image.src = "/src/models/base2.png"; base2Image.onload = () => { preloadedIcons["base2"] = base2Image; };
-const base3Image = new Image(); base3Image.src = "/src/models/base3.png"; base3Image.onload = () => { preloadedIcons["base3"] = base3Image; };
-const barracksImage = new Image(); barracksImage.src = "/src/models/barracks.png"; barracksImage.onload = () => { preloadedIcons["barracks"] = barracksImage; };
-const barracks2Image = new Image(); barracks2Image.src = "/src/models/barracks2.png"; barracks2Image.onload = () => { preloadedIcons["barracks2"] = barracks2Image; };
-const barracks3Image = new Image(); barracks3Image.src = "/src/models/barracks3.png"; barracks3Image.onload = () => { preloadedIcons["barracks3"] = barracks3Image; };
-
-// ============================================================
-// ОТРИСОВКА ТУМАНА ВОЙНЫ
-// ============================================================
-function renderPersistentFog() {
-  if (!fogMap || !fogMap.length || !persistentFogMap || !persistentFogMap.length) return;
+function renderWorkerResourceToken(ctx, token) {
+  let topColor, leftColor, rightColor;
+  if (token.resourceType === "gold") { topColor = "#fffacd"; leftColor = "#ffd700"; rightColor = "#b8860b"; } 
+  else if (token.resourceType === "silicon") { topColor = "#d3d3d3"; leftColor = "silver"; rightColor = "#a9a9a9"; } 
+  else if (token.resourceType === "plasma") { topColor = "#e0ffff"; leftColor = "cyan"; rightColor = "#008b8b"; } 
+  else { topColor = "#ffffff"; leftColor = "#cccccc"; rightColor = "#999999"; }
+  
+  // 🔥 УВЕЛИЧИЛИ РАЗМЕР и добавили обводку, чтобы кубик отлично был виден!
+  const size = 10 * camera.scale; 
+  const half = size / 3; 
+  const offset = 1 * camera.scale;
   
   ctx.save();
-  const cellScreenSize = FOG_CELL_SIZE * camera.scale;
-  const invScale = 1 / camera.scale;
-  const viewLeft = -camera.offsetX * invScale;
-  const viewTop = -camera.offsetY * invScale;
-  const viewRight = viewLeft + canvas.width * invScale;
-  const viewBottom = viewTop + canvas.height * invScale;
+  ctx.strokeStyle = "white";
+  ctx.lineWidth = 1;
+
+  // Верхняя грань
+  ctx.beginPath(); ctx.moveTo(token.x, token.y - half - offset); ctx.lineTo(token.x + half, token.y - offset);
+  ctx.lineTo(token.x, token.y + half - offset); ctx.lineTo(token.x - half, token.y - offset); ctx.closePath(); 
+  ctx.fillStyle = topColor; ctx.fill(); ctx.stroke();
   
-  const startCol = Math.max(0, Math.floor(viewLeft / FOG_CELL_SIZE));
-  const endCol = Math.min(persistentFogMap[0].length - 1, Math.floor(viewRight / FOG_CELL_SIZE));
-  const startRow = Math.max(0, Math.floor(viewTop / FOG_CELL_SIZE));
-  const endRow = Math.min(persistentFogMap.length - 1, Math.floor(viewBottom / FOG_CELL_SIZE));
+  // Левая грань
+  ctx.beginPath(); ctx.moveTo(token.x - half, token.y - offset); ctx.lineTo(token.x, token.y + half - offset);
+  ctx.lineTo(token.x, token.y + half + offset); ctx.lineTo(token.x - half, token.y + offset); ctx.closePath(); 
+  ctx.fillStyle = leftColor; ctx.fill(); ctx.stroke();
   
-  for (let r = startRow; r <= endRow; r++) {
-    for (let c = startCol; c <= endCol; c++) {
-      if (!persistentFogMap[r] || persistentFogMap[r][c] === undefined) continue;
-      
-      const worldX = c * FOG_CELL_SIZE;
-      const worldY = r * FOG_CELL_SIZE;
-      const screenPos = worldToScreen(worldX, worldY);
-      
-      if (persistentFogMap[r][c] === 0) {
-        ctx.fillStyle = "rgba(0, 0, 0, 0.95)";
-        ctx.fillRect(screenPos.x, screenPos.y, cellScreenSize + 1, cellScreenSize + 1); 
-      } else if (fogMap[r] && fogMap[r][c] === 0) {
-        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-        ctx.fillRect(screenPos.x, screenPos.y, cellScreenSize + 1, cellScreenSize + 1);
-      }
-    }
-  }
+  // Правая грань
+  ctx.beginPath(); ctx.moveTo(token.x + half, token.y - offset); ctx.lineTo(token.x, token.y + half - offset);
+  ctx.lineTo(token.x, token.y + half + offset); ctx.lineTo(token.x + half, token.y + offset); ctx.closePath(); 
+  ctx.fillStyle = rightColor; ctx.fill(); ctx.stroke();
+  
   ctx.restore();
 }
-
-function renderFogOfWar() {
-  renderPersistentFog();
-}
-
 function renderGame() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!backgroundCache) createBackgroundCache();
   ctx.drawImage(backgroundCache, 0, 0);
   if (backgroundImage.complete) ctx.drawImage(backgroundImage, 0, canvas.height - backgroundImage.height, backgroundImage.width, backgroundImage.height);
-  starField.draw();
   ctx.save();
   ctx.translate(camera.offsetX, camera.offsetY);
   ctx.scale(camera.scale, camera.scale);
-  
+
   gameState.resources.forEach(resource => renderResource(resource));
-  
+
   gameState.buildings.forEach(building => {
     ctx.save();
     ctx.translate(building.x, building.y);
@@ -1340,6 +1435,20 @@ function renderGame() {
 
   gameState.units.forEach(unit => {
     if (unit.hidden) return;
+        // 🔥 НОВОЕ: враг невидим в тумане ИЛИ за камнем (только для чужих юнитов)
+    if (unit.owner !== playerId) {
+      if (isInFogOfWar(unit.x, unit.y)) return;
+      const viewer = playerBase; // источник обзора базы
+      if (viewer && isLineOfSightBlocked(viewer.x, viewer.y, unit.x, unit.y)) {
+        // Проверяем, есть ли хоть один союзник с LoS на врага
+        const hasAnySight = gameState.units.some(u =>
+          u.owner === playerId && u.health > 0 && !isLineOfSightBlocked(u.x, u.y, unit.x, unit.y)
+        ) || gameState.buildings.some(b =>
+          b.owner === playerId && !isLineOfSightBlocked(b.x, b.y, unit.x, unit.y)
+        );
+        if (!hasAnySight) return;
+      }
+    }
     ctx.save();
     ctx.translate(unit.x, unit.y);
     ctx.scale(unit.scale, unit.scale);
@@ -1487,6 +1596,13 @@ function renderGame() {
     }
   });
 
+  // 🔥 ТОКЕНЫ В РУКАХ РАБОЧИХ — рисуем в мировых координатах (без worldToScreen!)
+  gameState.units.forEach(unit => {
+    if (unit.carriedResourceToken && !isInFogOfWar(unit.carriedResourceToken.x, unit.carriedResourceToken.y)) {
+      renderWorkerResourceToken(ctx, unit.carriedResourceToken);
+    }
+  });
+
   gameState.buildings.forEach(building => { if (["barracks", "barracks2", "barracks3"].includes(building.type)) updateProductionIndicator(building); });
 
   gameState.bullets.forEach(bullet => {
@@ -1540,11 +1656,19 @@ function renderGame() {
     ctx.restore();
   });
   renderFragments();
-  gameState.resourceTokens.forEach(token => renderWorkerResourceToken(ctx, token));
   renderShockZones();
   renderBombZones();
-  ctx.restore();
+  
+  // 🔥 ВОССТАНАВЛИВАЕМ КОНТЕКСТ ДО ЭКРАННЫХ КООРДИНАТ
+  ctx.restore(); 
+  
+  // 🔥 ТУМАН ВОЙНЫ — строго после restore()
+  renderPersistentFog();
 
+  // 🔥 НАЗЕМНЫЕ ОСКОЛКИ — строго после restore(), один раз
+  renderResourceTokens();
+
+  // 4. Лазеры и остальной UI рисуем в экранных координатах
   for (const laser of gameState.lasers || []) {
     if (!laser.visualFlash) continue;
     const now = performance.now(), elapsed = now - laser.visualFlash.createdAt;
@@ -1588,136 +1712,9 @@ function renderGame() {
     ctx.stroke();
     ctx.restore();
   }
-  
-  //renderFogOfWar();
   checkVictoryConditions();
-  updateBaseNavButton(); updateBase2NavButton(); updateBase3NavButton();
+  updateBaseNavButton(); 
+  updateBase2NavButton(); 
+  updateBase3NavButton();
   updateSaleIndicator();
 }
-
-function renderFragments() {
-  if (!gameState.fragments || gameState.fragments.length === 0) return;
-  
-  // 🔥 ИСПРАВЛЕНИЕ: Убираем ctx.save/translate/scale/restore
-  // Контекст уже преобразован в renderGame() — двойное преобразование ломало координаты
-  
-  gameState.fragments.forEach(f => {
-    ctx.save();
-    ctx.translate(f.x, f.y);
-    ctx.rotate(f.angle);
-    ctx.fillStyle = f.color;
-    ctx.globalAlpha = Math.max(0, f.life / f.maxLife);
-    
-    ctx.beginPath();
-    if (f.points && f.points.length > 0) {
-      ctx.moveTo(f.points[0].x, f.points[0].y);
-      for (let i = 1; i < f.points.length; i++) {
-        ctx.lineTo(f.points[i].x, f.points[i].y);
-      }
-    } else {
-      ctx.rect(-4, -4, 8, 8);
-    }
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  });
-}
-
-function updateResourceUI() {
-  document.getElementById("playerGold").innerText = Math.round(gameState.playerResources.gold);
-  document.getElementById("playerSilicon").innerText = Math.round(gameState.playerResources.silicon);
-  document.getElementById("playerPlasma").innerText = Math.round(gameState.playerResources.plasma);
-  document.getElementById("aiGold").innerText = gameState.aiResources.gold;
-  document.getElementById("aiSilicon").innerText = gameState.aiResources.silicon;
-  document.getElementById("aiPlasma").innerText = gameState.aiResources.plasma;
-}
-
-function updateBaseNavButton() {
-  const btnId = "baseNavButton", existingBtn = document.getElementById(btnId);
-  const base = gameState.buildings.find(b => b.type === "base" && b.owner === playerId);
-  if (!base) { if (existingBtn) existingBtn.remove(); return; }
-  if (!isBaseVisible(base)) {
-    if (!existingBtn) {
-      const btn = document.createElement("button");
-      btn.id = btnId; btn.innerText = "◀";
-      Object.assign(btn.style, { position: "fixed", bottom: "2vh", left: "7vw", opacity: "0.7", zIndex: "1000" });
-      btn.addEventListener("click", () => { camera.offsetX = canvas.width / 2 - base.x * camera.scale; camera.offsetY = canvas.height / 2 - base.y * camera.scale; });
-      document.body.appendChild(btn);
-    }
-  } else { if (existingBtn) existingBtn.remove(); }
-}
-
-function updateBase2NavButton() {
-  const btnId = "base2NavButton", existingBtn = document.getElementById(btnId);
-  const playerBase2 = gameState.buildings.find(b => b.owner === playerId && b.type === "base2");
-  if (!playerBase2) { if (existingBtn) existingBtn.remove(); return; }
-  if (!isBaseVisible(playerBase2)) {
-    if (!existingBtn) {
-      const btn = document.createElement("button");
-      btn.id = btnId; btn.innerText = "<<";
-      Object.assign(btn.style, { position: "fixed", bottom: "2vh", left: "13vw", opacity: "0.7", zIndex: "1000" });
-      btn.addEventListener("click", () => { camera.offsetX = canvas.width / 2 - playerBase2.x * camera.scale; camera.offsetY = canvas.height / 2 - playerBase2.y * camera.scale; });
-      document.body.appendChild(btn);
-    }
-  } else { if (existingBtn) existingBtn.remove(); }
-}
-
-function updateBase3NavButton() {
-  const btnId = "base3NavButton", existingBtn = document.getElementById(btnId);
-  const playerBase3 = gameState.buildings.find(b => b.owner === playerId && b.type === "base3");
-  if (!playerBase3) { if (existingBtn) existingBtn.remove(); return; }
-  if (!isBaseVisible(playerBase3)) {
-    if (!existingBtn) {
-      const btn = document.createElement("button");
-      btn.id = btnId; btn.innerText = "<<<";
-      Object.assign(btn.style, { position: "fixed", bottom: "2vh", left: "20vw", opacity: "0.7", zIndex: "1000" });
-      btn.addEventListener("click", () => { camera.offsetX = canvas.width / 2 - playerBase3.x * camera.scale; camera.offsetY = canvas.height / 2 - playerBase3.y * camera.scale; });
-      document.body.appendChild(btn);
-    }
-  } else { if (existingBtn) existingBtn.remove(); }
-}
-
-function updateProductionIndicator(building) {
-  if (!gameState.buildings.includes(building) || building.health <= 0) {
-    const existing = document.getElementById("productionIndicator_" + building.id);
-    if (existing) existing.remove();
-    return;
-  }
-  if (!building.productionQueue || building.productionQueue.length === 0) {
-    const existingIndicator = document.getElementById("productionIndicator_" + building.id);
-    if (existingIndicator) existingIndicator.remove();
-    return;
-  }
-  let container = document.getElementById("productionIndicator_" + building.id);
-  if (!container) {
-    container = document.createElement("div");
-    container.id = "productionIndicator_" + building.id;
-    container.className = "production-indicator";
-    (document.getElementById("gameContainer") || document.body).appendChild(container);
-  }
-  const screenPos = worldToScreen(building.x, building.y);
-  container.style.left = (screenPos.x - (building.width * camera.scale) / 2) + "px";
-  container.style.top = (screenPos.y + (building.height * camera.scale) - 10) + "px";
-  container.style.display = isInFogOfWar(building.x, building.y) ? "none" : "block";
-  container.innerHTML = "";
-  const now = performance.now();
-  building.productionQueue.forEach(order => {
-    const section = document.createElement("div");
-    section.className = "production-section";
-    section.style.width = (5 * camera.scale) + "px";
-    section.style.height = (2 * camera.scale) + "px";
-    const fill = document.createElement("div");
-    fill.className = "production-fill";
-    const elapsed = now - order.timeStart;
-    fill.style.width = (Math.min(elapsed / order.productionTime, 1) * 100) + "%";
-    section.appendChild(fill);
-    container.appendChild(section);
-  });
-}
-
-function isTargetAlive(target) {
-  if (target instanceof Unit) return gameState.units.includes(target);
-  if (target instanceof Building) return gameState.buildings.includes(target);
-  return false;
-}
-

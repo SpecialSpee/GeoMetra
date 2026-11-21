@@ -633,7 +633,6 @@ function getMissingResources(cost, owner) {
     plasma: Math.max(0, (cost.plasma || 0) - (resources.plasma || 0))
   };
 }
-
 function hireWorkerForPlayer(warehouse) {
   if (!warehouse.active) {
     showWarning("Здание еще не активно!");
@@ -686,7 +685,6 @@ function hireWorkerForPlayer(warehouse) {
     });
   }
 }
-
 function hireRepairmanForPlayer(workshop) {
   if (!workshop.active) {
     showWarning("Здание еще не активно!");
@@ -732,7 +730,6 @@ function hireRepairmanForPlayer(workshop) {
     });
   }
 }
-
 function hireFighterForPlayer(barracks) {
   if (barracks.owner !== playerId) {
     showWarning("Это чужое здание!");
@@ -784,7 +781,6 @@ function hireFighterForPlayer(barracks) {
 
   barracks.productionQueue.push(order);
 }
-
 function hireAssaultForPlayer(barracks2) {
   if (barracks2.owner !== playerId) {
     showWarning("Это чужое здание!");
@@ -839,7 +835,6 @@ function hireAssaultForPlayer(barracks2) {
 
   barracks2.productionQueue.push(order);
 }
-
 function hireEliteForPlayer(barracks3) {
   if (barracks3.owner !== playerId) {
     showWarning("Это чужое здание!");
@@ -894,7 +889,6 @@ function hireEliteForPlayer(barracks3) {
 
   barracks3.productionQueue.push(order);
 }
-
 // ============================================================
 // ФУНКЦИЯ ПОКАЗА ПРЕДУПРЕЖДЕНИЙ
 // ============================================================

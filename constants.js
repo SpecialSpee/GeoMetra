@@ -19,9 +19,7 @@ let bombAwaitingTarget = false;
 let playerBase = null;
 let aiBase = null;
 let aiLogicInterval;
-
 window.gameMode = "single"; // или просто: gameMode = "single";
-
   const CFG = {
     MAX_NODES: 160,
     NODE_FEATURES: 59,
@@ -61,7 +59,6 @@ window.gameMode = "single"; // или просто: gameMode = "single";
     );
     return currentMaxSize / BASE_WORLD_SIZE;
   };
-
   const WeightDB = {
     db: null,
     isClosing: false,
@@ -109,12 +106,10 @@ window.gameMode = "single"; // или просто: gameMode = "single";
       });
     }
   };
-
   const THREAT_ASSESSMENT = {
     turret: 3, turret2: 5, turret3: 7,
     fighter: 2, assault: 4, elite: 6
   };
-
 const G_ACTIONS = [
   "defend",
   "build_warehouse","build_repair","build_barracks", 
@@ -131,7 +126,6 @@ const G_ACTIONS = [
   "all_in_base",       // всё на базу
   "idle"
 ];
-
 const BUILDING_ACTIVATION_DELAYS = {
   base: 5000,            // 5 секунд
   base2: 8000,           // 8 секунд
@@ -172,7 +166,6 @@ let gameState = {
   repairmen: [],
   defenders: []
 };
-
 const iconPaths = [
   "src/icons/base.png",
   "src/icons/base2.png",
@@ -191,19 +184,16 @@ const iconPaths = [
   "src/models/elite.png",
   "src/models/assault.png"
 ];
-
 const preloadedIcons = {};
 iconPaths.forEach(path => {
   const img = new Image();
   img.src = path;
   preloadedIcons[path] = img;
 });
-
 const bulletPools = {
   regular: [],
   missile: [],
 };
-
 const unitPools = {
   worker: [],
   repairman: [],
@@ -211,9 +201,7 @@ const unitPools = {
   assault: [],
   elite: []
 };
-
 const fragmentPool = [];
-
 const SCORE_VALUES = {
   fighter: 0.01,
   assault: 0.025,
@@ -234,7 +222,6 @@ const SCORE_VALUES = {
   base3: 1.9
 
 };
-
 const fragmentColors = {
   worker: "#00FF00",      // зелёный для рабочих
   fighter: "#FF0000",     // красный для истребителей
@@ -276,7 +263,6 @@ const AUTO_COLLECT_ENABLED = true;
 const ASSAULT_VISION_RANGE = 310;
 const FIGHTER_VISION_RANGE = 210;
 const ELITE_VISION_RANGE =  530;
-
 const MISSILE_CONFIG = { 
   speed: 170,          // Скорость полёта ракеты
   lifetime: 3,         // Время жизни (секунд)
@@ -284,7 +270,6 @@ const MISSILE_CONFIG = {
   splashRadius: 30,    // Радиус действия splash-урона
   splashDamage: 7     // Урон по объектам в области
 };
-
 const MELEE_BULLET_CONFIG = {
   speed: 270,     // скорость пули (можно настроить)
   lifetime: 0.8,  // время жизни пули (короткое, так как это ближний бой)
@@ -304,9 +289,7 @@ const TURN_SPEED = 50;
 const WANDER_STRENGTH = 90;
 const MIN_TURN_ANGLE = 200 * Math.PI / 180;
 const MAX_TURN_ANGLE = 300 * Math.PI / 180;
-
 let selectedUnits = [];
-
 function randomFarPosition(building, minDistance = 200) {
   if (!building || building.x == null || building.y == null) {
     console.warn("[AI] randomFarPosition(): здание не передано или некорректно");
@@ -320,11 +303,9 @@ function randomFarPosition(building, minDistance = 200) {
     y: building.y + distance * Math.sin(angle) 
   };
 }
-
 function countBuildings(buildingType, owner) {
   return gameState.buildings.filter(b => b.owner === owner && b.type === buildingType).length;
 }
-
 function canAfford(cost, owner) {
   const res = owner === "ai"
     ? gameState.aiResources
@@ -348,7 +329,6 @@ function evaluateResourceDensity(x, y, radius) {
   });
   return density;
 }
-
 function attemptToBuildWarehouse() {
   if (countBuildings("warehouse", "ai") < DESIRED_WAREHOUSE_COUNT) {
     const pos = findOptimalWarehousePosition();
@@ -359,12 +339,10 @@ function attemptToBuildWarehouse() {
     }
   }
 }
-
 function randomNearbyPosition(building, distance) {
   const angle = Math.random() * Math.PI * 2;
   return { x: building.x + distance * Math.cos(angle), y: building.y + distance * Math.sin(angle) };
 }
-
 function isPositionInBuildingZone(x, y) {
   for (let b of gameState.buildings) {
     // Если нужно только для игрока, можно раскомментировать:
@@ -382,7 +360,6 @@ function isPositionInBuildingZone(x, y) {
   }
   return false;
 }
-
 function startRepairProcess(repairman, command) {
   const target = command.target;
 
@@ -573,7 +550,6 @@ function isWithinAlliedZone(x, y) {
   }
   return false;
 }
-
 function loadGame() {
   try {
     // Загружаем сохранённое состояние игры из localStorage
@@ -609,13 +585,11 @@ function loadGame() {
     alert("Ошибка загрузки!");
   }
 }
-
 function exitGame() {
   if (confirm("Вы действительно хотите выйти?")) {
     location.reload();
   }
 }
-
 function stopAllIntervals() {
   // Получаем ID последнего интервала
   let highestId = setInterval(() => {}, 1000);
@@ -624,7 +598,6 @@ function stopAllIntervals() {
     clearInterval(i);
   }
 }
-
 function checkVictoryConditions() {
   if (gameState.gameEnded) return;
 
@@ -677,7 +650,6 @@ function checkVictoryConditions() {
     }
   }
 }
-
 function showVictoryScreen(message) {
   let victoryScreen = document.getElementById("victoryScreen");
   if (!victoryScreen) {
@@ -751,12 +723,10 @@ function showVictoryScreen(message) {
   victoryScreen.appendChild(container);
 	stopAllIntervals();
 }
-
 function rectsOverlap(r1, r2) {
   return !(r1.right <= r2.left || r1.left >= r2.right ||
            r1.bottom <= r2.top || r1.top >= r2.bottom);
 }
-
 const buildingCosts = {
   base: BASE_COST,
   base2: BASE2_COST,
@@ -771,7 +741,6 @@ const buildingCosts = {
   turret3: TURRET3_COST,
   beacon: BEACON_COST
 };
-
 const unitCosts = {
   worker: WORKER_COST,
   repairman: REPAIRMAN_COST,
@@ -779,6 +748,3 @@ const unitCosts = {
   assault: ASSAULT_COST,
   elite: ELITE_COST
 };
-
-
-

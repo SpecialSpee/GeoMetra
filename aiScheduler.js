@@ -6,7 +6,6 @@
 const AI_TICK_MS = 250;
 const NEURAL_AUTO_WORKERS = true; // микро-экономика: в сети нет действия hireWorker
 const AI_BUILD_RADIUS = 300;      // правило: только от базы/маяков
-
 const GameTimers = {
   intervals: new Set(),
   timeouts: new Set(),
@@ -41,7 +40,6 @@ const GameTimers = {
   }
 };
 window.GameTimers = GameTimers;
-
 const AI_TASKS = [
   { key: "aiLogic",     period: 1000,  modes: ["single"],           fn: "aiLogic" },
   { key: "buildQ",      period: 1000,  modes: ["single", "neural", "gnn"], fn: "processBuildQueue" },
@@ -57,7 +55,6 @@ const AI_TASKS = [
   // Задача для GNN экономики, если включена AUTO_ECONOMY внутри GnnAI
   { key: "gnnEco",      period: 2000,  modes: ["gnn"],              fn: "gnnAutoEconomyWrapper" }
 ];
-
 const AIScheduler = {
   running: false, 
   mode: null, 
@@ -135,7 +132,6 @@ const AIScheduler = {
   }
 };
 window.AIScheduler = AIScheduler;
-
 // Полиморфная distance: поддерживает (a,b) и (x1,y1,x2,y2)
 window.distance = function (a, b, c, d) {
   if (a && typeof a === "object") return Math.hypot(a.x - b.x, a.y - b.y);
@@ -164,7 +160,6 @@ window.scheduleAIBuilding = function (type, x, y, delay = 500) {
   window.buildQueue.push({ type, x, y, plannedAt: performance.now(), delay });
   return true;
 };
-
 window.getFreeReserveUnits = function () {
   if (!gameState || !gameState.units) return [];
   return gameState.units.filter(u =>
@@ -174,7 +169,6 @@ window.getFreeReserveUnits = function () {
     (!u.commandQueue || u.commandQueue.length === 0)
   );
 };
-
 window.mobilizeDefendersAround = function (pos, radius = 250) {
   if (!pos || typeof pos.x !== "number") return;
   if (!gameState || !gameState.units) return;
@@ -203,7 +197,6 @@ window.mobilizeDefendersAround = function (pos, radius = 250) {
     if (typeof processCommandQueue === "function") processCommandQueue(unit);
   });
 };
-
 window.aiEnqueueMilitaryUnit = function (unitType, building) {
   if (!building || !building.active) return false;
   const req = { fighter: "barracks", assault: "barracks2", elite: "barracks3" }[unitType];
@@ -251,7 +244,6 @@ window.attemptToEnqueueMilitaryOrders = function () {
 };
 // Отключены: спавн и оплата больше не дублируются
 window.processAIMilitaryProductionQueue = function () {};
-
 window.updateAIProductionQueues = function () {};
 // Микро-экономика нейро-режима (решения о зданиях/бое остаются за сетью)
 window.aiNeuralEcoTick = function () {
@@ -283,9 +275,7 @@ window.gnnAutoEconomyWrapper = function() {
     }
 };
 window.initAILogic = function () { window.initAILogic._inited = true; };
-
 window.gameLoopAI = function () {};
-
 window.stopAllIntervals = function () {
   AIScheduler.stop();
   GameTimers.clearAll();

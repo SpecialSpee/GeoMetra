@@ -1,11 +1,21 @@
 let isPaused = false;
 let lastTime = performance.now();
+let rockBuildingAuditTimer = 0;
 let gameLoopId;
 let frameCounter = 0;
 const frameSkipMobile = 2;
 let swarmFrameCounter = 0;
 let particleUpdateAccumulator = 0;
 let idCollisionCount = 0;
+// 🗺️ A* PATHFINDING (Оптимизированный для RTS)
+const PATH_GRID_SIZE = 60; // Размер клетки сетки (чем больше, тем быстрее, но менее точно)
+let pathGrid = [];
+let gridCols = 0;
+let gridRows = 0;
+let lastGridUpdate = 0;
+let fogUpdateTimer = 0;
+const FOG_UPDATE_INTERVAL = 0.15; // Обновлять каждые 0.15 секунды (примерно 6-7 раз в сек)
+const GRID_UPDATE_COOLDOWN = 1000; // Обновлять сетку не чаще раза в секунду
 const PARTICLE_UPDATE_INTERVAL = 0.033;
 const unitGroups = { group1: [], group2: [], group3: [] };
 // 🧱 ФУНДАМЕНТ ФИКСОВ — состояние и хелперы
@@ -14,6 +24,64 @@ const FX_STATE = {
   frame: 0,
   stats: { phantom: 0, ghost: 0, zombie: 0, dupPool: 0, dupAdd: 0, doubleRemove: 0, culled: 0, mg: 0, rockets: 0 },
   _bs: new Set(), _us: new Set(), _ts: -1e9
+};
+// Продажа зданий / очередь продаж ИИ
+window.aiSaleQueue = window.aiSaleQueue || [];
+window.aiSaleCooldown = window.aiSaleCooldown || false;
+window.soldBuildings = window.soldBuildings || [];
+window.GnnEventHooks = {
+  onUnitDamaged: function(unit, damage, source) {
+    if (!unit || !unit.missionLog) return;
+    unit.missionLog.damageTaken += damage;
+    unit.missionLog.events.push({
+      t: performance.now() - unit.missionLog.startTime,
+      type: "damage_taken",
+      amount: damage,
+      from: source ? { type: source.type, owner: source.owner, id: source.id } : { type: "area_effect" },
+      pos: { x: unit.x, y: unit.y },
+      hpAfter: unit.health
+    });
+    if (source && source.type && source.type.startsWith("turret")) unit.missionLog.hitByTurret = true;
+  },
+  onUnitDealtDamage: function(unit, damage, target) {
+    if (!unit || !unit.missionLog) return;
+    if (target && target.id === unit.missionLog.targetId) {
+      unit.missionLog.damageDealt += damage;
+    }
+    unit.missionLog.events.push({
+      t: performance.now(),
+      type: "damage_dealt",
+      amount: damage,
+      to: target ? { id: target.id, type: target.type, owner: target.owner } : null,
+      isPrimaryTarget: target && target.id === unit.missionLog.targetId
+    });
+  },
+	
+  onUnitDeath: function(unit, killer) {
+    if (!unit || !unit.missionLog) return;
+    unit.missionLog.alive = false;
+    unit.missionLog.deathPos = { x: unit.x, y: unit.y };
+    unit.missionLog.killedBy = killer ? { type: killer.type, owner: killer.owner, id: killer.id } : null;
+    unit.missionLog.events.push({
+      t: performance.now() - unit.missionLog.startTime,
+      type: "death",
+      pos: unit.missionLog.deathPos,
+      killedBy: unit.missionLog.killedBy,
+      hpAtDeath: 0
+    });
+  },
+  onUnitReachedTarget: function(unit, target) {
+    if (!unit || !unit.missionLog) return;
+    if (target && target.id === unit.missionLog.targetId) {
+      unit.missionLog.reachedTarget = true;
+      unit.missionLog.events.push({
+        t: performance.now() - unit.missionLog.startTime,
+        type: "reached_target",
+        targetPos: { x: target.x, y: target.y },
+        targetHP: target.health
+      });
+    }
+  }
 };
 function fxNum(v, d) { return (typeof v === "number" && isFinite(v)) ? v : d; }
 function fxClamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
@@ -28,10 +96,14 @@ function fxSets() {
 }
 function fxInGame(o) { fxSets(); return FX_STATE._bs.has(o) || FX_STATE._us.has(o); }
 function fxValidTarget(t) {
-  // 🔥 УПРОЩЕНО: убираем проверку в кэшированном Set (он обновляется раз в 100мс,
-  // из-за чего свежезаспавненные юниты не видятся как валидные цели)
-  // Проверка health > 0 + флаги destroyed/isSelling достаточны
   if (!t) return false;
+  
+  // 🔥 НОВОЕ: Если это ресурс (камень), проверяем hp > 0
+  if (t.amount !== undefined) {
+    return (t.hp || 0) > 0 && !t.destroyed;
+  }
+  
+  // Стандартная проверка для юнитов/зданий
   if (!(fxNum(t.health, 0) > 0)) return false;
   if (t.destroyed || t.isSelling) return false;
   return true;
@@ -44,22 +116,73 @@ function fxBaseFor(owner) {
     (String(b.type).startsWith("base") || b.type === "warehouse")) || null;
 }
 function fxResetTransient(u) {
-  u.__epoch = (u.__epoch || 0) + 1; u.__phaseInit = false; u.__physFrame = -1; u.__eliteFrame = -1;
-  u.suspendedQueue = null; u.moveTarget = null; u.moveCallback = null;
-  u.commandQueue = []; u.target = null; u.isRetreating = false; u.isDashing = false;
-  u.retreatTarget = null; u.returnToBattleCooldown = 0; u.dashEndTime = 0; u.postDashTimer = 0; u.dashVector = { x: 0, y: 0 };
-  u.lastAutonomousActionTime = 0; u.lastBurnTick = 0; u.lastShockEffect = 0;
-  u.sparkTimer = 0; u.isRepairing = false; u.busyRepair = false; u.__repairTarget = null;
-  u.missionLog = null; u.shockedUntil = 0; u.shocked = false; u.burning = false; u.burnTime = 0; u.burnStartTime = 0; u.burnDuration = 0;
-  u.hidden = false; u.hiding = false; u.inWorkshop = null; u.delivering = false; u.carrying = 0; u.carriedResourceToken = null;
-  u.assignedResource = null; u.assignedResourceType = null; u.laserBeam = null; u.vx = 0; u.vy = 0;
+  if (!u) return;
+  
+  u.__epoch = (u.__epoch || 0) + 1; 
+  u.__phaseInit = false; 
+  u.__physFrame = -1; 
+  u.__eliteFrame = -1;  
+  u.isRetreating = false; 
+  u.delivering = false;
+  u.suspendedQueue = null; 
+  u.moveTarget = null; 
+  u.moveCallback = null; 
+  u.commandQueue = []; 
+  u.target = null; 
+  u.isDashing = false; 
+  u.carrying = 0;
+  u.retreatTarget = null; 
+  u.returnToBattleCooldown = 0; 
+  u.dashEndTime = 0; 
+  u.postDashTimer = 0; 
+  u.dashVector = { x: 0, y: 0 }; 
+  u.assignedResource = null;
+  u.lastAutonomousActionTime = 0; 
+  u.lastBurnTick = 0; 
+  u.lastShockEffect = 0; 
+  u.__fragmentsSpawned = false; 
+  u.assignedResourceType = null;
+  u.sparkTimer = 0; 
+  u.isRepairing = false; 
+  u.busyRepair = false; 
+  u.__repairTarget = null; 
+  u.carriedResourceToken = null;
+  
+  // 🔥 ШАГ 1.3: НЕ ТРОГАЕМ u.missionLog = null! 
+  // Мы хотим сохранить историю миссии юнита до его смерти.
+  // Если нужно сбросить статистику для нового юнита из пула, делаем это аккуратно:
+  if (u.missionLog) {
+    u.missionLog.damageTaken = 0;
+    u.missionLog.damageDealt = 0;
+    u.missionLog.events = [];
+    u.missionLog.alive = true;
+    u.missionLog.startTime = performance.now();
+    u.missionLog.targetId = null;
+    u.missionLog.reachedTarget = false;
+    u.missionLog.deathPos = null;
+    u.missionLog.killedBy = null;
+    u.missionLog.hitByTurret = false;
+  }
+
+  u.shockedUntil = 0; 
+  u.shocked = false; 
+  u.burning = false; 
+  u.burnTime = 0; 
+  u.burnStartTime = 0; 
+  u.burnDuration = 0; 
+  u.vx = 0; 
+  u.vy = 0;
+  u.hidden = false; 
+  u.hiding = false; 
+  u.inWorkshop = null; 
+  u.laserBeam = null;
+  
   if (u.repairIntervalId) { clearInterval(u.repairIntervalId); u.repairIntervalId = null; }
   if (u.burningIntervalId) { clearInterval(u.burningIntervalId); u.burningIntervalId = null; }
   if (u.currentMovementAnimation) { cancelAnimationFrame(u.currentMovementAnimation); u.currentMovementAnimation = null; }
   if (u.waitingAnimation) { cancelAnimationFrame(u.waitingAnimation); u.waitingAnimation = null; }
   if (u.__cycleId) { cancelAnimationFrame(u.__cycleId); u.__cycleId = null; }
   if (u.__repairCycleId) { cancelAnimationFrame(u.__repairCycleId); u.__repairCycleId = null; }
-  u.__fragmentsSpawned = false;
 }
 function fxEnsureCombat(u) {
   if (!u) return;
@@ -138,146 +261,6 @@ function fxSanitizeOrders(u) {
   if (u.type === "repairman" && u.busyRepair && !u.repairIntervalId && !u.moveTarget &&
       !(u.commandQueue || []).some(c => c.type === "repair")) u.busyRepair = false;
 }
-window.GnnEventHooks = {
-  onUnitDamaged: function(unit, damage, source) {
-    if (!unit || !unit.missionLog) return;
-    unit.missionLog.damageTaken += damage;
-    unit.missionLog.events.push({
-      t: performance.now() - unit.missionLog.startTime,
-      type: "damage_taken",
-      amount: damage,
-      from: source ? { type: source.type, owner: source.owner, id: source.id } : { type: "area_effect" },
-      pos: { x: unit.x, y: unit.y },
-      hpAfter: unit.health
-    });
-    if (source && source.type && source.type.startsWith("turret")) unit.missionLog.hitByTurret = true;
-  },
-  onUnitDealtDamage: function(unit, damage, target) {
-    if (!unit || !unit.missionLog) return;
-    if (target && target.id === unit.missionLog.targetId) {
-      unit.missionLog.damageDealt += damage;
-    }
-    unit.missionLog.events.push({
-      t: performance.now(),
-      type: "damage_dealt",
-      amount: damage,
-      to: target ? { id: target.id, type: target.type, owner: target.owner } : null,
-      isPrimaryTarget: target && target.id === unit.missionLog.targetId
-    });
-  },
-	
-  onUnitDeath: function(unit, killer) {
-    if (!unit || !unit.missionLog) return;
-    unit.missionLog.alive = false;
-    unit.missionLog.deathPos = { x: unit.x, y: unit.y };
-    unit.missionLog.killedBy = killer ? { type: killer.type, owner: killer.owner, id: killer.id } : null;
-    unit.missionLog.events.push({
-      t: performance.now() - unit.missionLog.startTime,
-      type: "death",
-      pos: unit.missionLog.deathPos,
-      killedBy: unit.missionLog.killedBy,
-      hpAtDeath: 0
-    });
-  },
-  onUnitReachedTarget: function(unit, target) {
-    if (!unit || !unit.missionLog) return;
-    if (target && target.id === unit.missionLog.targetId) {
-      unit.missionLog.reachedTarget = true;
-      unit.missionLog.events.push({
-        t: performance.now() - unit.missionLog.startTime,
-        type: "reached_target",
-        targetPos: { x: target.x, y: target.y },
-        targetHP: target.health
-      });
-    }
-  }
-};
-function addUnit(unit) {
-if (!unit) return unit;
-// 🛡️ Проверяем РЕАЛЬНОЕ присутствие в массиве, а не флаг
-if (gameState.units.indexOf(unit) !== -1) { FX_STATE.stats.dupAdd++; return unit; }
-unit.__inGame = true;
-unit.__removed = false;
-unit.__inPool = false;
-unit.__pooled = false;
-fxEnsureCombat(unit);
-fxSanitizeOrders(unit);
-// 🔥 АВТОМАТИЧЕСКОЕ ПРИСВАИВАНИЕ ID, если его нет
-if (!unit.id) unit.id = generateUniqueUnitId();
-// ПРОВЕРКА: нет ли уже ДРУГОГО юнита с таким ID?
-if (gameState.units.some(u => u !== unit && u.id === unit.id)) {
-console.warn(`[⚠️ ID COLLISION] Юнит с ID ${unit.id} уже существует! Генерируем новый...`);
-unit.id = generateUniqueUnitId();
-}
-gameState.units.push(unit);
-if (unit.type === "fighter" || unit.type === "assault" || unit.type === "elite") gameState.attackers.push(unit);
-if (unit.type === "repairman") gameState.repairmen.push(unit);
-if (unit.defending) gameState.defenders.push(unit);
-fxInvalidate();
-return unit;
-}
-function removeUnit(unit, killer = null) {
-if (!unit) return;
-// 🛡️ Смерть строго один раз: иначе двойные очки, двойные осколки и дубль в пуле
-if (gameState.units.indexOf(unit) !== -1) {
-  unit.__removed = false;   // объект реально в игре — снимаем протухшие флаги
-  unit.__inPool = false;
-} else if (unit.__removed || unit.__inPool) {
-  FX_STATE.stats.doubleRemove++;
-  return;
-}
-unit.__removed = true;
-unit.__inGame = false;
-if (!killer && unit.__lastAttacker) killer = unit.__lastAttacker;
-fxInvalidate();
-// 🔥 ХУК СМЕРТИ
-if (typeof window.GnnEventHooks !== 'undefined') window.GnnEventHooks.onUnitDeath(unit, killer);
-cleanupUnitState(unit);
-  for (let key in unitGroups) unitGroups[key] = unitGroups[key].filter(u => u !== unit);
-  if (gameMode === "pvp" && unit.owner === playerId) sendPvpAction({ type: "die", unitId: unit.id });
-// 🛡️ ОСКОЛКИ СТРОГО ОДИН РАЗ (onDamage уже мог их породить)
-if (!unit.__fragmentsSpawned) {
-  unit.__fragmentsSpawned = true;
-  spawnDestructionFragments(unit.x, unit.y, unit.width || 10, unit.height || 10, unit.type);
-}  
-  if (unit.assignedResource) { 
-    unit.assignedResource.currentWorkers = Math.max(0, unit.assignedResource.currentWorkers - 1); 
-    unit.assignedResource = null; 
-  }
-  
-  if (unit.type === "worker" && unit.homeWarehouse) {
-    unit.homeWarehouse.workers = Math.max(0, unit.homeWarehouse.workers - 1);
-    
-    // 🔥 ИСПРАВЛЕНИЕ БАГА: Освобождаем слот доставки, если рабочий умер/удален во время доставки
-    if (unit.delivering && unit.homeWarehouse.currentDeliveryWorkers > 0) {
-      unit.homeWarehouse.currentDeliveryWorkers--;
-    }
-  }
-  
-  if (unit.type === "repairman" && unit.homeWorkshop) {
-    unit.homeWorkshop.repairman = Math.max(0, unit.homeWorkshop.repairman - 1);
-  }
-  
-  if (unit.owner === "ai") { 
-    gameState.playerScore += SCORE_VALUES[unit.type] || 0; 
-    updateScoreUI(); 
-  }
-  
-  gameState.units = gameState.units.filter(u => u !== unit);
-  gameState.attackers = gameState.attackers.filter(u => u !== unit);
-  gameState.defenders = gameState.defenders.filter(u => u !== unit);
-  gameState.repairmen = gameState.repairmen.filter(u => u !== unit);
-  
-  releaseUnitToPool(unit);
-}
-function cleanupUnitState(unit) {
-  if (unit.repairIntervalId) { clearInterval(unit.repairIntervalId); unit.repairIntervalId = null; }
-  unit.isRepairing = false; unit.repairSparkTimer = null;
-  if (unit.burningIntervalId) { clearInterval(unit.burningIntervalId); unit.burningIntervalId = null; }
-  unit.isBurning = false; unit.burningTimer = 0;
-  unit.shocked = false; unit.shockTimer = 0; unit.frozen = false; unit.freezeTimer = 0;
-  unit.target = null; unit.commandQueue = []; unit.group = undefined; unit.selected = false;
-}
 function cleanUpBuildingReferences() {
   if (typeof quadtree !== 'undefined' && quadtree !== null) {
     quadtree.clear();
@@ -285,60 +268,6 @@ function cleanUpBuildingReferences() {
     gameState.units.forEach(u => quadtree.insert(u));
     gameState.resources.forEach(r => quadtree.insert(r));
   }
-}
-function releaseUnitToPool(unit) {
-// 🛡️ Один объект не может лежать в пуле дважды
-if (unit.__inPool) { FX_STATE.stats.dupPool++; return; }
-unit.__inPool = true;
-unit.__inGame = false;
-unit.__epoch = (unit.__epoch || 0) + 1;
-// 🧹 Стираем память прошлой жизни — источник фантомных приказов
-unit.suspendedQueue = null;
-unit.moveTarget = null;
-unit.moveCallback = null;
-unit.isRetreating = false;
-fxInvalidate();
-// 🔥 ПОЛНЫЙ СБРОС всех полей перед возвратом
-unit.alive = false;
-  unit.commandQueue = [];
-  unit.target = null;
-  unit.hidden = false;
-  unit.hiding = false;
-  unit.inWorkshop = null;
-  unit.defending = false;
-  unit.group = undefined;
-  unit.selected = false;
-  unit.maneuvering = false;
-  unit.formationBuff = null;
-  unit.burning = false;
-  unit.shocked = false;
-  unit.frozen = false;
-  unit.carrying = 0;
-  unit.delivering = false;
-  unit.carriedResourceToken = null;
-  unit.assignedResource = null;
-  unit.assignedResourceType = null;
-  unit.homeWarehouse = null;
-  unit.homeWorkshop = null;
-  unit.homeBuilding = null;
-  unit.busyRepair = false;
-  unit.laserBeam = null;
-  unit.damage = undefined;
-  unit.speed = undefined;
-  unit.vx = 0;
-  unit.vy = 0;
-  unit.angle = 0;
-  unit.scale = 1;
-  unit.idleTimer = 0;
-  unit.attackCooldown = 0;
-  
-  if (unit.repairIntervalId) { clearInterval(unit.repairIntervalId); unit.repairIntervalId = null; }
-  if (unit.burningIntervalId) { clearInterval(unit.burningIntervalId); unit.burningIntervalId = null; }
-  if (unit.currentMovementAnimation) { cancelAnimationFrame(unit.currentMovementAnimation); unit.currentMovementAnimation = null; }
-  if (unit.waitingAnimation) { cancelAnimationFrame(unit.waitingAnimation); unit.waitingAnimation = null; }
-  
-  if (!unitPools[unit.type]) unitPools[unit.type] = [];
-  unitPools[unit.type].push(unit);
 }
 function spawnDestructionFragments(x, y, width, height, unitType) {
   const color = (typeof unitType === "string" && unitType.startsWith("#")) ? unitType : (fragmentColors[unitType] || "gray");
@@ -365,7 +294,7 @@ function spawnDestructionFragments(x, y, width, height, unitType) {
 }
 function fireBullet(shooter, enemy) {
   if (!shooter || shooter.health <= 0) return;
-
+  if (enemy && isLineOfSightBlocked(shooter.x, shooter.y, enemy.x, enemy.y)) return;
   let bulletConfig, bulletType = 'regular';
 
   // 🔥 ИСПРАВЛЕНИЕ: Строгий порядок проверок!
@@ -440,1035 +369,136 @@ bullet.splashDamage = 0;
 
   gameState.bullets.push(bullet);
 }
-// ЕДИНЫЙ ДВИЖОК ДВИЖЕНИЯ (Заменить старый moveUnit и логику в core.js)
-function moveUnit(unit, targetX, targetY, callback) {
-  if (unit.shocked || unit.isRetreating || unit.health <= 0) return;
-  
-  // Сбрасываем старую анимацию, если она была
-  if (unit.currentMovementAnimation) {
-    cancelAnimationFrame(unit.currentMovementAnimation);
-    unit.currentMovementAnimation = null;
-  }
-
-  // Сохраняем цель и колбек прямо в юните для обработки в главном цикле
-  unit.moveTarget = { x: targetX, y: targetY };
-  unit.moveCallback = callback;
-  unit.angle = Math.atan2(targetY - unit.y, targetX - unit.x);
-}
-// 2. ЕДИНАЯ функция обновления позиции (вызывается из updateUnits каждый кадр)
-function applyUnitMovement(unit, deltaTime) {
-  if (unit.shocked || unit.health <= 0) return;
-
-// 🔥 ПРИОРИТЕТ 0: ОТСТУПЛЕНИЕ (теперь летит к МАСТЕРСКОЙ, а не к базе!)
-if (unit.isRetreating) {
-  // 🔥 ИСПОЛЬЗУЕМ СОХРАНЁННУЮ ЦЕЛЬ (мастерская или fallback на базу)
-  let target = unit.retreatTarget;
-  
-  // Проверка валидности цели (вдруг мастерскую уничтожили, пока мы летели)
-  if (!target || target.health <= 0 || !target.active) {
-    // Ищем новую мастерскую
-    const workshops = gameState.buildings.filter(b => 
-      b.owner === unit.owner && 
-      b.type === 'repairWorkshop' && 
-      b.active && 
-      b.health > 0
-    );
-    
-    if (workshops.length > 0) {
-      target = workshops.sort((a, b) => 
-        Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
-      )[0];
-      unit.retreatTarget = target;
-    } else {
-      // Fallback на базу
-      target = unit.owner === "player" ? playerBase : aiBase;
-      unit.retreatTarget = target;
-    }
-  }
-  
-  if (!target) {
-    // Своих построек нет вообще — выходим из отступления
-    unit.isRetreating = false;
-    unit.retreatTarget = null;
-    unit.target = null;
-    return;
-  }
-  
-  const dx = target.x - unit.x;
-  const dy = target.y - unit.y;
-  const dist = Math.hypot(dx, dy);
-  
-  // 🔥 РАЗНЫЕ ПОРОГИ ДОСТИЖЕНИЯ для мастерской и базы
-  const arrivalThreshold = target.type === 'repairWorkshop' ? 40 : 15;
-  
-  if (dist > arrivalThreshold) {
-    unit.angle = Math.atan2(dy, dx);
-    const speed = 70; // 🔥 Увеличили скорость отступления с 50 до 70 — юнит быстрее доберётся до лечения
-    unit.x += (dx / dist) * speed * deltaTime;
-    unit.y += (dy / dist) * speed * deltaTime;
-  } else {
-    // 🔥 ДОСТИГЛИ ЦЕЛИ!
-    if (target.type === 'repairWorkshop') {
-      // У мастерской просто останавливаемся и ждём лечения
-      // Мастерская сама найдёт нас через startRepairmanCycle
-      unit.vx = 0;
-      unit.vy = 0;
-    } else {
-      // У базы — выходим из отступления
-      unit.isRetreating = false;
-      unit.retreatTarget = null;
-      unit.target = null;
-    }
-  }
-  return; // Прерываем, чтобы боевая логика не перехватила управление
-}
-
-// ПРИОРИТЕТ 1: Боевая физика
-if (["fighter", "assault", "elite"].includes(unit.type) && unit.target && unit.target.health > 0) {
-    if (unit.type === "assault") {
-        updateAssaultPhysics(unit, unit.target, deltaTime);
-    } else if (unit.type === "fighter") {
-        const dist = Math.hypot(unit.target.x - unit.x, unit.target.y - unit.y);
-        const mode = dist > unit.range ? 'approach' : 'orbit';
-        updateFighterPhysics(unit, unit.target, mode, deltaTime);
-    } else if (unit.type === "elite") {
-        // 🔥 НОВОЕ: своя физика для элиты
-        updateElitePhysics(unit, unit.target, deltaTime);
-    }
-    return;
-}
-  // ПРИОРИТЕТ 2: Стандартное движение к точке
-  if (unit.moveTarget) {
-    const dx = unit.moveTarget.x - unit.x;
-    const dy = unit.moveTarget.y - unit.y;
-    const dist = Math.hypot(dx, dy);
-
-    if (dist < 5) {
-      unit.x = unit.moveTarget.x;
-      unit.y = unit.moveTarget.y;
-      const cb = unit.moveCallback;
-      unit.moveTarget = null;
-      unit.moveCallback = null;
-      if (typeof cb === "function") cb();
-      return;
-    }
-
-    unit.angle = Math.atan2(dy, dx);
-    const speed = unit.speed || (["fighter", "assault", "elite"].includes(unit.type) ? 120 : WORKER_SPEED);
-    unit.x += (dx / dist) * speed * deltaTime;
-    unit.y += (dy / dist) * speed * deltaTime;
-  }
-}
-// 3. Очищенный менеджер очереди команд (без рекурсивных requestAnimationFrame)
-function processCommandQueue(unit, overrideDelta) {
-  if (!unit || unit.health <= 0) return;
-  if (unit.owner !== playerId && unit.owner !== "ai") return;
-  if (unit.shocked) { 
-    unit.commandQueue = []; 
-    return; 
-  }
-
-  // Если очередь пуста, но юнит военный и рядом есть враги — запускаем автономный поиск
-  if (unit.commandQueue.length === 0) {
-    if (["fighter", "assault", "elite"].includes(unit.type)) {
-      checkForEnemiesAndAttack(unit);
-    }
-    return;
-  }
-
-  const command = unit.commandQueue[0]; // Смотрим на первую команду, не удаляя её сразу
-
-  if (command.type === "move") {
-    // Если мы уже движемся к этой цели, ничего не делаем, ждем достижения
-    if (!unit.moveTarget || unit.moveTarget.x !== command.x || unit.moveTarget.y !== command.y) {
-      moveUnit(unit, command.x, command.y, () => {
-        unit.commandQueue.shift(); // Удаляем команду только после достижения
-        processCommandQueue(unit); // Рекурсивно обрабатываем следующую
-      });
-    }
-  } 
-  else if (command.type === "attack") {
-    const target = command.target;
-    if (!target || target.health <= 0) {
-      unit.target = null;
-      unit.commandQueue.shift();
-      processCommandQueue(unit);
-      return;
-    }
-
-    unit.target = target;
-    const dist = Math.hypot(unit.x - target.x, unit.y - target.y);
-    
-    // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Для военных юнитов движение делегировано applyUnitMovement.
-    if (["fighter", "assault", "elite"].includes(unit.type)) {
-      unit.moveTarget = null;
-      unit.moveCallback = null;
-      
-      // Стреляем только если уже в радиусе поражения
-      if (dist <= unit.range) {
-        if (unit.type === "elite") dynamicAttackElite(unit, target, overrideDelta || 1/60);
-        else if (unit.type === "assault") dynamicAttackAssault(unit, target, overrideDelta || 1/60);
-        else dynamicAttack(unit, target, overrideDelta || 1/60);
-      }
-    } else {
-      // Старая логика для рабочих/ремонтников (на всякий случай)
-      if (dist > unit.range) {
-        moveUnit(unit, target.x, target.y, () => {
-          unit.commandQueue.shift();
-          processCommandQueue(unit);
-        });
-      } else {
-        unit.moveTarget = null;
-        unit.moveCallback = null;
-        if (typeof dynamicAttack === "function") dynamicAttack(unit, target, overrideDelta || 1/60);
-      }
-    }
-  } 
-  else if (command.type === "gather") {
-    const resource = command.resource;
-    if (!resource || resource.amount <= 0) {
-      unit.commandQueue.shift();
-      processCommandQueue(unit);
-      return;
-    }
-    if (!unit.moveTarget || Math.hypot(unit.moveTarget.x - resource.x, unit.moveTarget.y - resource.y) > 5) {
-      moveUnit(unit, resource.x, resource.y, () => {
-        if (resource.amount > 0) { 
-          resource.amount--; 
-          unit.carrying = (unit.carrying || 0) + 1; 
-        }
-        unit.commandQueue.shift();
-        
-        const deliveryBuilding = findNearestDeliveryBuilding(unit.x, unit.y, unit.owner);
-        if (deliveryBuilding) {
-          unit.commandQueue.unshift({ type: "move", x: deliveryBuilding.x, y: deliveryBuilding.y, callback: () => {
-             // Логика доставки
-             const res = unit.owner === playerId ? gameState.playerResources : gameState.aiResources;
-             res[resource.type] += unit.carrying; 
-             unit.carrying = 0;
-             if (resource.amount > 0) unit.commandQueue.unshift({ type: "gather", resource });
-             processCommandQueue(unit);
-          }});
-        } else {
-          if (resource.amount > 0) unit.commandQueue.unshift({ type: "gather", resource });
-          processCommandQueue(unit);
-        }
-      });
-    }
-  }
-else if (command.type === "repair") {
-  const { workshop, target } = command;
-  
-  // 🔥 ЖЕСТКАЯ ПРОВЕРКА: Цель мертва, уничтожена, продается или уже полностью здорова?
-  if (!target || !fxValidTarget(target) || target.health >= target.maxHealth) {
-    unit.commandQueue.shift(); // Удаляем бессмысленную команду к "призраку"
-    unit.busyRepair = false;   // Сбрасываем флаг занятости
-    processCommandQueue(unit); // Ищем новую, реальную задачу
-    return;
-  }
-  
-  // Если мы еще не движемся к этой цели или цель сдвинулась
-  if (!unit.moveTarget || Math.hypot(unit.moveTarget.x - target.x, unit.moveTarget.y - target.y) > 5) {
-     moveUnit(unit, target.x, target.y, () => {
-       // 🔥 ПОВТОРНАЯ ПРОВЕРКА ПОСЛЕ ПРИБЫТИЯ: вдруг цель умерла, пока мы летели?
-       if (!target || !fxValidTarget(target) || target.health >= target.maxHealth) {
-         unit.commandQueue.shift();
-         unit.busyRepair = false;
-         processCommandQueue(unit);
-         return;
-       }
-       
-       unit.commandQueue.shift(); // Команда выполнена, удаляем
-       startRepairProcess(unit, command);
-       processCommandQueue(unit);
-     });
-  }
-}
-}
-// 4. ЕДИНАЯ ФИЗИКА ДЛЯ ВОЕННЫХ: Сближение + Орбита
-function updateFighterPhysics(unit, target, mode, deltaTime) {
-  if (!target || !unit) return;
-
-  // 🔥 АНТИ-СЛИПАНИЕ: Разведение в мировом пространстве
-  const neighbors = getObjectsInRange({x: unit.x, y: unit.y}, 40)
-    .filter(u => u !== unit && u.owner === unit.owner && u.type === unit.type && u.health > 0);
-  if (neighbors.length > 0) {
-    let sepX = 0, sepY = 0;
-    for (let other of neighbors) {
-      const dx = unit.x - other.x;
-      const dy = unit.y - other.y;
-      const d = Math.hypot(dx, dy);
-      if (d < 40 && d > 0) {
-        const force = (40 - d) / 40;
-        sepX += (dx / d) * force * 20
-        sepY += (dy / d) * force * 20
-      }
-    }
-    unit.vx += sepX * deltaTime;
-    unit.vy += sepY * deltaTime;
-  }
-
-  const dist = Math.hypot(target.x - unit.x, target.y - unit.y);
-  if (dist === 0) return;
-
-  const angleToTarget = Math.atan2(target.y - unit.y, target.x - unit.x);
-  unit.angle = lerpAngle(unit.angle, angleToTarget, 0.15);
-
-  const frontX = Math.cos(unit.angle), frontY = Math.sin(unit.angle);
-  const tanX = -frontY, tanY = frontX; // Вектор стрейфа (перпендикулярно цели)
-
-  let ax = 0, ay = 0;
-
-  // 🔥 РЫВОК (прорыв в тыл): имеет высший приоритет над орбитой
-  if (mode === 'orbit' && !unit.isDashing && (unit.postDashTimer || 0) <= 0) {
-    unit.dashTimer -= deltaTime * 1000;
-    if (unit.dashTimer <= 0 && dist < unit.range * 1.2) {
-      const dashAngle = angleToTarget + (Math.random() - 0.5) * (Math.PI / 3);
-      const dashSpeed = 100; 
-      unit.dashVector = { x: Math.cos(dashAngle) * dashSpeed, y: Math.sin(dashAngle) * dashSpeed };
-      unit.isDashing = true;
-      unit.dashEndTime = performance.now() + 600; 
-      unit.dashTimer = Math.random() * 4000 + 4000; 
-    }
-  }
-
-  if (unit.isDashing) {
-    if (performance.now() > unit.dashEndTime) {
-      unit.isDashing = false; 
-      unit.postDashTimer = 1.5; // Фаза закрепления в тылу
-    } else {
-      ax = unit.dashVector.x * 3.0;
-      ay = unit.dashVector.y * 3.0;
-    }
-  } else if (mode === 'orbit') {
-    const wobble = Math.sin((performance.now() / 500) + (unit.orbitPhase || 0)) * 25;
-    const idealDist = (unit.range * 0.75) + wobble;
-    let distError = dist - idealDist;
-
-    // 🔥 ФАЗА ЗАКРЕПЛЕНИЯ В ТЫЛУ (после рывка)
-    if (unit.postDashTimer > 0) {
-      unit.postDashTimer -= deltaTime;
-      distError = 0; // Отключаем "пружину" возврата
-      
-      const decay = unit.postDashTimer / 1.5; 
-      // 🔥 ДОБАВИЛИ СТРЕЙФ СЮДА: чтобы после рывка юнит сразу начинал боковое движение
-ax = (unit.dashVector.x * 0.3 * decay) + (tanX * 80.0 * (unit.orbitDirection || 1) * (unit.strafeDirection || 1));
-ay = (unit.dashVector.y * 0.3 * decay) + (tanY * 80.0 * (unit.orbitDirection || 1) * (unit.strafeDirection || 1));      
-    } else {
-      // 🔥 СТАНДАРТНАЯ ОРБИТА + СТРЕЙФ (ИСПРАВЛЕННЫЙ)
-      unit.strafeTimer -= deltaTime * 1000;
-      if (unit.strafeTimer <= 0) {
-        // 70% шанс смены направления
-        if (Math.random() < 0.7) {
-          unit.strafeDirection = (unit.strafeDirection || 1) * -1;
-          
-          // 🔥 НОВЫЙ ФИКС: Резкий "пинок" (импульс) при смене направления!
-          // Это делает смену направления визуально заметной, как реальный маневр уклонения
-          unit.vx += (tanX * (unit.strafeDirection || 1)) * 60; 
-          unit.vy += (tanY * (unit.strafeDirection || 1)) * 60;
-        }
-        unit.strafeTimer = Math.random() * 3000 + 500; // 0.5 - 3.5 сек
-      }
-
-      const dir = unit.strafeDirection || 1;
-
-      if (Math.abs(distError) < 40) {
-        // 🔥 УВЕЛИЧИЛИ стрейф до 80.0. Теперь он доминирует над мелкими колебаниями дистанции
-        const dir = (unit.orbitDirection || 1) * (unit.strafeDirection || 1);
-        ax = frontX * distError * 2.0 + tanX * 80.0 * dir;
-        ay = frontY * distError * 2.0 + tanY * 80.0 * dir;      } else {
-
-      }
-    }
-  } else {
-    // 🔥 СБЛИЖЕНИЕ (approach)
-    const desiredDist = unit.range * 0.8;
-    const distError = dist - desiredDist;
-    ax = frontX * distError * 5.0 + tanX * 8.0 * (unit.orbitDirection || 1) * (unit.strafeDirection || 1);
-    ay = frontY * distError * 5.0 + tanY * 8.0 * (unit.orbitDirection || 1) * (unit.strafeDirection || 1);  }
-
-  // Применяем инерцию
-  unit.vx = unit.vx * 0.90 + ax * deltaTime;
-  unit.vy = unit.vy * 0.90 + ay * deltaTime;
-
-  // Лимит скорости
-  const maxSpeed = unit.isDashing ? 100 : 70;
-  const curSpeed = Math.hypot(unit.vx, unit.vy);
-  if (curSpeed > maxSpeed) {
-    unit.vx = (unit.vx / curSpeed) * maxSpeed;
-    unit.vy = (unit.vy / curSpeed) * maxSpeed;
-  }
-
-  unit.x += unit.vx * deltaTime;
-  unit.y += unit.vy * deltaTime;
-}
-function updateAssaultPhysics(unit, target, deltaTime) {
-  if (!target || !unit) return;
-
-  // 1. АНТИ-СЛИПАНИЕ (только для своих штурмовиков)
-  const neighbors = getObjectsInRange({x: unit.x, y: unit.y}, 50)
-    .filter(u => u !== unit && u.owner === unit.owner && u.type === "assault" && u.health > 0);
-  if (neighbors.length > 0) {
-    let sepX = 0, sepY = 0;
-    for (let other of neighbors) {
-      const dx = unit.x - other.x;
-      const dy = unit.y - other.y;
-      const d = Math.hypot(dx, dy);
-      if (d < 50 && d > 0) {
-        const force = (50 - d) / 50;
-        sepX += (dx / d) * force * 20;
-        sepY += (dy / d) * force * 20;
-      }
-    }
-    unit.vx += sepX * deltaTime;
-    unit.vy += sepY * deltaTime;
-  }
-
-  const dist = Math.hypot(target.x - unit.x, target.y - unit.y);
-  if (dist === 0) return;
-
-  const angleToTarget = Math.atan2(target.y - unit.y, target.x - unit.x);
-  // Плавный поворот (0.08 вместо 0.15 у файтера) = ощущение тяжелого корабля
-  unit.angle = lerpAngle(unit.angle, angleToTarget, 0.08);
-
-  const frontX = Math.cos(unit.angle), frontY = Math.sin(unit.angle);
-  const tanX = -frontY, tanY = frontX;
-
-  let ax = 0, ay = 0;
-
-  // 2. УПРАВЛЕНИЕ ФАЗАМИ БОЯ
-  unit.phaseTimer -= deltaTime * 1000;
-  if (unit.phaseTimer <= 0) {
-    if (unit.combatPhase === 'approach') {
-      unit.combatPhase = 'retreat';
-      unit.phaseTimer = 2000; // 2 сек на откат и залп
-      unit.rocketBurstCount = 0;
-      unit.rocketBurstTimer = 0;
-    } else if (unit.combatPhase === 'retreat') {
-      unit.combatPhase = 'approach';
-      unit.phaseTimer = Math.random() * 3000 + 3000; // 3-6 сек сближения (это и есть кулдаун между залпами!)
-      unit.figure8Phase = Math.random() * Math.PI * 2;
-    }
-  }
-
-  // 3. ДВИЖЕНИЕ В ЗАВИСИМОСТИ ОТ ФАЗЫ
-  if (unit.combatPhase === 'approach') {
-  // Плавная восьмерка при сближении (ускорение увеличено для компенсации демпфирования 0.88)
-  const approachSpeed = 600;
-  const figure8Amplitude = 50;
-  const figure8Frequency = 1.2;
-  unit.figure8Phase += deltaTime * figure8Frequency;
-  const figure8Offset = Math.sin(unit.figure8Phase) * figure8Amplitude;
-  ax = frontX * approachSpeed + tanX * figure8Offset * 2.0;
-  ay = frontY * approachSpeed + tanY * figure8Offset * 2.0;
-  } else if (unit.combatPhase === 'retreat') {
-  // Откат назад
-  const retreatSpeed = 400;
-  ax = -frontX * retreatSpeed;
-  ay = -frontY * retreatSpeed;
-    
-    // 🔥 КРИТИЧЕСКИЙ ФИКС: Выстрел ракетами ТОЛЬКО если цель в радиусе ракет (280)!
-    if (dist <= unit.rocketRange) {
-      unit.rocketBurstTimer -= deltaTime * 1000;
-      if (unit.rocketBurstTimer <= 0 && unit.rocketBurstCount < 3) {
-        const targetAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
-        const rocket = new Bullet(unit.x, unit.y, targetAngle, MISSILE_CONFIG.speed, unit, target);
-        rocket.lifetime = MISSILE_CONFIG.lifetime;
-        rocket.damage = MISSILE_CONFIG.damage;
-        rocket.splashRadius = MISSILE_CONFIG.splashRadius;
-        rocket.splashDamage = MISSILE_CONFIG.splashDamage;
-        rocket.isMissile = true;
-        rocket.target = target;
-        rocket.color = "255,0,0";
-        gameState.bullets.push(rocket);
-        
-        unit.rocketBurstCount++;
-        unit.rocketBurstTimer = 400; // 🔥 400мс между ракетами (теперь виден четкий интервал)
-        unit.lastRocketFireTime = performance.now();
-      }
-    }
-  }
-
-  // 4. МЯГКИЙ СТРЕЙФ (поверх фазы)
-  unit.strafeTimer -= deltaTime * 1000;
-  if (unit.strafeTimer <= 0) {
-    if (Math.random() < 0.5) { // 50% шанс смены направления
-      unit.strafeDirection = (unit.strafeDirection || 1) * -1;
-      // Мягкий толчок (30 вместо 100), чтобы не было мгновенного "щелчка" скорости
-      unit.vx += (tanX * (unit.strafeDirection || 1)) * 30;
-      unit.vy += (tanY * (unit.strafeDirection || 1)) * 30;
-    }
-    unit.strafeTimer = Math.random() * 4000 + 2000; // 2-6 сек (реже, чем у файтера)
-  }
-
-  const dir = unit.strafeDirection || 1;
-  // Постоянная боковая сила для плавности (увеличена)
-  ax += tanX * 120.0 * dir;
-  ay += tanY * 120.0 * dir;
-
-  // 5. ИНЕРЦИЯ И ОГРАНИЧЕНИЕ СКОРОСТИ
-  // Чуть больше инерции для ощущения массы (0.88)
-  unit.vx = unit.vx * 0.88 + ax * deltaTime;
-  unit.vy = unit.vy * 0.88 + ay * deltaTime;
-
-  // Максимальная скорость 90 (медленнее файтера, чувствуется "тяжесть", но динамика сохранена)
-  const maxSpeed = 90;
-  const curSpeed = Math.hypot(unit.vx, unit.vy);
-  if (curSpeed > maxSpeed) {
-    unit.vx = (unit.vx / curSpeed) * maxSpeed;
-    unit.vy = (unit.vy / curSpeed) * maxSpeed;
-  }
-
-  unit.x += unit.vx * deltaTime;
-  unit.y += unit.vy * deltaTime;
-}
-function updateElitePhysics(unit, target, deltaTime) {
-    if (!target || !unit || unit.health <= 0) return;
-
-    const dist = Math.hypot(target.x - unit.x, target.y - unit.y);
-    if (dist === 0) return;
-
-    const angleToTarget = Math.atan2(target.y - unit.y, target.x - unit.x);
-    unit.angle = lerpAngle(unit.angle, angleToTarget, 0.03);
-
-    const frontX = Math.cos(unit.angle), frontY = Math.sin(unit.angle);
-    const tanX = -frontY, tanY = frontX;
-
-    const SIEGE_MIN = 380, SIEGE_MAX = 520;   
-    const BURN_MIN = 220, BURN_MAX = 340;     
-    const MELEE_MAX = 200;                     
-
-    let desiredPhase = unit.combatPhase || 'siege';
-    
-    if (dist > SIEGE_MAX) {
-        desiredPhase = 'approach'; 
-    } else if (dist < MELEE_MAX) {
-        // 🔥 КУЛДАУН НА ФАЗУ SHRED: не убегает чаще раза в 5 секунд
-        const now = performance.now();
-        if (!unit.lastShredTime || now - unit.lastShredTime > 5000) {
-            desiredPhase = 'shred';
-            unit.lastShredTime = now;
-        } else {
-            desiredPhase = 'burn'; // Вместо побега используем лазер
-        }
-    } else if (dist >= BURN_MIN && dist <= BURN_MAX) {
-        desiredPhase = 'burn';     
-    } else if (dist >= SIEGE_MIN && dist <= SIEGE_MAX) {
-        desiredPhase = 'siege';    
-    } else if (dist > BURN_MAX && dist < SIEGE_MIN) {
-        desiredPhase = 'closeIn';  
-    }
-    
-    unit.combatPhase = desiredPhase;
-    const panicMode = unit.health < unit.maxHealth * 0.3;
-
-    let ax = 0, ay = 0;
-
-    switch (desiredPhase) {
-        case 'approach': {
-            const desiredDist = SIEGE_MAX - 30;
-            const distError = dist - desiredDist;
-            ax = frontX * distError * 1.5;
-            ay = frontY * distError * 1.5;
-            break;
-        }
-
-        case 'siege': {
-            if (!unit.siegePhaseAngle) unit.siegePhaseAngle = Math.random() * Math.PI * 2;
-            unit.siegePhaseAngle += deltaTime * 0.15;
-
-            const orbitX = Math.cos(unit.siegePhaseAngle);
-            const orbitY = Math.sin(unit.siegePhaseAngle);
-            const idealDist = (SIEGE_MIN + SIEGE_MAX) / 2;
-            const distError = dist - idealDist;
-
-            ax = frontX * distError * 1.5 + orbitX * 15;
-            ay = frontY * distError * 1.5 + orbitY * 15;
-
-            // 🔥 МЯГКИЙ ОТКАТ ПОСЛЕ ЗАЛПА
-            if (unit.postVolleyTimer && unit.postVolleyTimer > 0) {
-                unit.postVolleyTimer -= deltaTime;
-                ax -= frontX * 40; 
-                ay -= frontY * 40;
-            }
-            break;
-        }
-
-        case 'closeIn': {
-            const desiredDist = BURN_MAX - 20;
-            const distError = dist - desiredDist;
-            ax = frontX * distError * 1.5;
-            ay = frontY * distError * 1.5;
-            break;
-        }
-
-        case 'burn': {
-            const idealDist = (BURN_MIN + BURN_MAX) / 2;
-            const distError = dist - idealDist;
-            
-            if (!unit.burnDriftTimer) unit.burnDriftTimer = 0;
-            unit.burnDriftTimer -= deltaTime;
-            if (unit.burnDriftTimer <= 0) {
-                unit.burnDriftDir = (unit.burnDriftDir || 1) * -1;
-                unit.burnDriftTimer = 6 + Math.random() * 4;
-            }
-            
-            ax = frontX * distError * 1.5 + tanX * 12 * (unit.burnDriftDir || 1);
-            ay = frontY * distError * 1.5 + tanY * 12 * (unit.burnDriftDir || 1);
-            break;
-        }
-
-        case 'shred': {
-            // 🔥 МЯГКИЙ ОТКАТ (уменьшено с 2.0 до 1.0)
-            const escapeDist = MELEE_MAX + 60; // Было +80
-            const distError = dist - escapeDist;
-            ax = -frontX * Math.abs(distError) * 1.0; // Было 2.0
-            ay = -frontY * Math.abs(distError) * 1.0;
-            
-            ax += tanX * 15 * (unit.orbitDirection || 1); // Было 25
-            ay += tanY * 15 * (unit.orbitDirection || 1);
-            break;
-        }
-    }
-
-    unit.vx = unit.vx * 0.97 + ax * deltaTime;
-    unit.vy = unit.vy * 0.97 + ay * deltaTime;
-
-    const maxSpeed = panicMode ? 45 : 30;
-    const curSpeed = Math.hypot(unit.vx, unit.vy);
-    if (curSpeed > maxSpeed) {
-        unit.vx = (unit.vx / curSpeed) * maxSpeed;
-        unit.vy = (unit.vy / curSpeed) * maxSpeed;
-    }
-
-    unit.x += unit.vx * deltaTime;
-    unit.y += unit.vy * deltaTime;
-}
-// 5. ОБЁРТКА ДЛЯ ДВИЖЕНИЯ В БОЮ (сближение/кайтинг)
-function dynamicMove(unit, target, deltaTime) {
-  if (!unit || !target || unit.health <= 0) return;
-  
-  // Очищаем стандартную цель движения, чтобы не конфликтовала с боевой физикой
-  unit.moveTarget = null;
-  unit.moveCallback = null;
-  
-  // Используем боевую физику в режиме сближения (approach)
-  updateFighterPhysics(unit, target, 'approach', deltaTime);
-}
-function dynamicAttack(unit, target, deltaTime) {
-  if (unit.type === "elite") { 
-    dynamicAttackElite(unit, target, deltaTime); 
-    return; 
-  }
-  if (unit.type === "assault") { 
-    dynamicAttackAssault(unit, target, deltaTime); 
-    return; 
-  }
-  
-  if (!target || target.health <= 0) { 
-    unit.target = null; 
-    return; 
-  }
-  
-  const currentDistance = Math.hypot(target.x - unit.x, target.y - unit.y);
-  if (currentDistance > unit.range) { 
-    unit.target = null; 
-    return; 
-  }
-  
-  const now = performance.now(); 
-
-  if (unit.type === "fighter") {
-  if (unit.shocked) return;
-  if (now - unit.lastFireTime >= unit.fireRate) {
-  fireBullet(unit, target);
-  unit.lastFireTime = now;
-  }
-  // ✅ ФИЗИКА УЖЕ ОБРАБАТЫВАЕТСЯ В applyUnitMovement
-  }
-}
-function dynamicAttackAssault(unit, target, deltaTime) {
-  if (unit.health <= 0 || !target || target.health <= 0) { 
-    unit.target = null; 
-    return; 
-  }
-  
-  const currentDistance = Math.hypot(target.x - unit.x, target.y - unit.y);
+// 1. Построение сетки препятствий
+function updatePathfindingGrid() {
   const now = performance.now();
-  
-  // Пулемет: стреляем ТОЛЬКО в фазе сближения и ТОЛЬКО в упор
-  if (currentDistance <= unit.machineGunRange && 
-      (now - unit.lastMachineGunFireTime >= unit.machineGunFireRate) &&
-      unit.combatPhase === 'approach') {
-    fireBullet(unit, target);
-    unit.lastMachineGunFireTime = now;
-  }
-  
-// Ракеты теперь управляются внутри updateAssaultPhysics с проверкой dist <= unit.rocketRange
-// 🔥 ФИЗИКА ШТУРМОВИКА УЖЕ ОБРАБАТЫВАЕТСЯ В applyUnitMovement, здесь только стрельба!
-}
-function dynamicAttackElite(unit, target, deltaTime) {
-    if (unit.health <= 0 || !target || target.health <= 0) {
-        unit.target = null;
-        return;
-    }
+  if (now - lastGridUpdate < GRID_UPDATE_COOLDOWN) return;
+  lastGridUpdate = now;
 
-    const currentDistance = Math.hypot(target.x - unit.x, target.y - unit.y);
-    const now = performance.now();
+  gridCols = Math.ceil(worldWidth / PATH_GRID_SIZE);
+  gridRows = Math.ceil(worldHeight / PATH_GRID_SIZE);
+  pathGrid = new Array(gridCols * gridRows).fill(0); // 0 = свободно, 1 = занято
 
-    // 🔥 ПРОВЕРКА БЛИЖНИХ УГРОЗ: переключение на врагов в упор
-    const nearbyMeleeEnemies = getEnemiesInRange({x: unit.x, y: unit.y}, unit.meleeRange)
-        .filter(e => e.owner !== unit.owner && e.health > 0);
-    
-    if (nearbyMeleeEnemies.length > 0) {
-        // Переключаем цель на ближайшего врага в упор
-        target = nearbyMeleeEnemies.sort((a, b) => 
-            Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
-        )[0];
-        unit.target = target;
-    } else {
-        // Проверяем врагов в радиусе лазера (220-340)
-        const nearbyLaserEnemies = getEnemiesInRange({x: unit.x, y: unit.y}, unit.laserRange)
-            .filter(e => e.owner !== unit.owner && e.health > 0 && 
-                        Math.hypot(e.x - unit.x, e.y - unit.y) >= 220);
-        
-        if (nearbyLaserEnemies.length > 0 && currentDistance > unit.laserRange) {
-            // Переключаем на ближнего врага для лазера
-            target = nearbyLaserEnemies.sort((a, b) => 
-                Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
-            )[0];
-            unit.target = target;
-        }
-    }
+  // Помечаем камни как препятствия (с небольшим запасом, чтобы путь огибал их, а не шел впритык)
+  const margin = 35; 
+  for (const rock of gameState.resources) {
+    if (rock.hp <= 0) continue;
+    const r = rock.getCurrentRadius() + margin;
+    const minCol = Math.max(0, Math.floor((rock.x - r) / PATH_GRID_SIZE));
+    const maxCol = Math.min(gridCols - 1, Math.floor((rock.x + r) / PATH_GRID_SIZE));
+    const minRow = Math.max(0, Math.floor((rock.y - r) / PATH_GRID_SIZE));
+    const maxRow = Math.min(gridRows - 1, Math.floor((rock.y + r) / PATH_GRID_SIZE));
 
-    // Пересчитываем дистанцию после возможного переключения цели
-    const dist = Math.hypot(target.x - unit.x, target.y - unit.y);
-
-    // Держим дистанцию
-    const preferredRange = unit.artilleryPreferredRange || unit.artilleryRange || 500;
-    if (dist < preferredRange * 0.8) {
-        const angleAway = Math.atan2(unit.y - target.y, unit.x - target.x);
-        dynamicMove(unit, { x: target.x + Math.cos(angleAway) * preferredRange, y: target.y + Math.sin(angleAway) * preferredRange }, deltaTime);
-    } else if (dist > preferredRange * 1.2) {
-        dynamicMove(unit, target, deltaTime);
-    }
-
-    // 🔥 КАРТЕЧЬ (приоритет выше арты!)
-    if (dist <= unit.meleeRange && now - unit.lastMeleeAttack >= unit.meleeCooldown) {
-        if (typeof spaceAudio !== 'undefined') {
-            spaceAudio.play('melee', 100, 0.15, 0.6);
+    for (let c = minCol; c <= maxCol; c++) {
+      for (let r_idx = minRow; r_idx <= maxRow; r_idx++) {
+        // Проверяем, попадает ли центр клетки в круг камня для большей точности
+        const cellX = c * PATH_GRID_SIZE + PATH_GRID_SIZE / 2;
+        const cellY = r_idx * PATH_GRID_SIZE + PATH_GRID_SIZE / 2;
+        if (Math.hypot(cellX - rock.x, cellY - rock.y) < r) {
+          pathGrid[r_idx * gridCols + c] = 1;
         }
-        
-        const desiredAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
-        const pelletCount = 9;
-        const spreadAngle = 40 * Math.PI / 180;
-        
-        for (let i = 0; i < pelletCount; i++) {
-            const angleOffset = -spreadAngle / 2 + (spreadAngle * i) / (pelletCount - 1);
-            let pellet = new Bullet(unit.x, unit.y, desiredAngle + angleOffset, MELEE_BULLET_CONFIG.speed, unit, target);
-            pellet.lifetime = MELEE_BULLET_CONFIG.lifetime;
-            pellet.damage = MELEE_BULLET_CONFIG.damage;
-            pellet.isMelee = true;
-            pellet.color = "255,165,0";
-            gameState.bullets.push(pellet);
-        }
-        unit.lastMeleeAttack = now;
-    }
-
-    // 🔥 АРТИЛЛЕРИЯ (только если НЕТ врагов в упор!)
-    const noMeleeThreats = nearbyMeleeEnemies.length === 0;
-    if (noMeleeThreats && dist <= unit.artilleryRange && now - unit.lastArtilleryAttack >= unit.artilleryCooldown) {
-        if (typeof spaceAudio !== 'undefined') {
-            spaceAudio.play('artillery', 80, 0.6, 0.7);
-        }
-        
-        const desiredAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
-        const artilleryCount = 5 + Math.floor(Math.random() * 6);
-        
-        for (let i = 0; i < artilleryCount; i++) {
-            let artillery = new Bullet(unit.x, unit.y, desiredAngle + (Math.random() - 0.5) * 0.2, ARTILLERY_BULLET_CONFIG.speed, unit, target);
-            artillery.lifetime = ARTILLERY_BULLET_CONFIG.lifetime;
-            artillery.damage = ARTILLERY_BULLET_CONFIG.damage;
-            artillery.splashRadius = ARTILLERY_BULLET_CONFIG.splashRadius;
-            artillery.splashDamage = ARTILLERY_BULLET_CONFIG.splashDamage;
-            artillery.color = "0,255,0";
-            artillery.isArtillery = true;
-            gameState.bullets.push(artillery);
-        }
-        
-        unit.lastArtilleryAttack = now;
-        unit.postVolleyTimer = 0.4; // Было 0.6
-    }
-
-    // 🔥 ЛАЗЕР (средний приоритет)
-    if (dist <= unit.laserRange && now - unit.lastLaserAttack >= unit.laserCooldown) {
-        if (typeof spaceAudio !== 'undefined') {
-            spaceAudio.play('laser', 400, 0.15, 0.4);
-        }
-        
-        const laserAngle = Math.atan2(target.y - unit.y, target.x - unit.x);
-        unit.laserBeam = {
-            startX: unit.x,
-            startY: unit.y,
-            endX: unit.x + Math.cos(laserAngle) * unit.laserRange,
-            endY: unit.y + Math.sin(laserAngle) * unit.laserRange,
-            timestamp: now
-        };
-        
-        let hits = 0;
-        const enemyCandidates = gameState.units.concat(gameState.buildings)
-            .filter(e => e.owner !== unit.owner && e.health > 0)
-            .sort((a, b) => 
-                ((a.x - unit.x) * Math.cos(laserAngle) + (a.y - unit.y) * Math.sin(laserAngle)) - 
-                ((b.x - unit.x) * Math.cos(laserAngle) + (b.y - unit.y) * Math.sin(laserAngle))
-            );
-        
-        for (let enemy of enemyCandidates) {
-            const proj = ((enemy.x - unit.x) * Math.cos(laserAngle) + (enemy.y - unit.y) * Math.sin(laserAngle));
-            if (proj > 0 && proj < unit.laserRange) {
-                const perp = Math.abs(-Math.sin(laserAngle) * (enemy.x - unit.x) + Math.cos(laserAngle) * (enemy.y - unit.y));
-                if (perp < 20) {
-                    if (typeof onDamage === "function") {
-                        onDamage(enemy, 50);
-                    } else {
-                        enemy.health -= 50;
-                        if (enemy.health <= 0) {
-                            if (enemy.width !== undefined) { 
-                                spawnParticles(enemy.x, enemy.y, "red"); 
-                                gameState.buildings = gameState.buildings.filter(b => b !== enemy); 
-                            } else { 
-                                gameState.units = gameState.units.filter(u => u !== enemy); 
-                                selectedUnits = selectedUnits.filter(u => u !== enemy); 
-                            }
-                        }
-                    }
-                    hits++; 
-                    if (hits >= 3) break;
-                }
-            }
-        }
-        unit.lastLaserAttack = now;
-    }
-}
-function checkForEnemiesAndAttack(unit) {
-  if (!unit || !unit.range || unit.isRetreating || unit.health <= 0) return;
-    // Это разрывает злосчастный цикл
-  if (unit.returnToBattleCooldown && performance.now() < unit.returnToBattleCooldown) {
-    return; // Юнит ещё "остывает" — не ищем врагов
-  }
-  fxSanitizeOrders(unit); // 🔥 Чистим призрачные приказы перед поиском
-  const enemiesInRange = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
-    .filter(e => e.owner !== unit.owner && e.health > 0 && fxValidTarget(e));
-  if (enemiesInRange.length > 0) {
-    // Если уже атакуем эту цель, ничего не меняем
-    if (unit.target && unit.target.health > 0 && enemiesInRange.includes(unit.target)) {
-      return;
-    }
-    // Сохраняем прерванную задачу
-    if (unit.commandQueue.length > 0 && !unit.suspendedQueue) {
-      unit.suspendedQueue = [...unit.commandQueue];
-    }
-    // Очищаем текущую очередь и цель движения, чтобы включить боевую физику
-    unit.commandQueue = [];
-    unit.moveTarget = null;
-    unit.moveCallback = null;
-    // Находим ближайшего врага
-    unit.target = enemiesInRange.sort((a, b) =>
-      Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
-    )[0];
-    // Ставим приоритетную команду атаки
-    unit.commandQueue.push({ type: "attack", target: unit.target });
-  } else {
-    // Врагов нет. Проверяем, нужно ли вернуться к старой задаче.
-    if (unit.suspendedQueue && unit.suspendedQueue.length > 0) {
-      const nextTask = unit.suspendedQueue[0];
-      let isTaskValid = true;
-      if ((nextTask.type === "move" || nextTask.type === "attack") && nextTask.target) {
-        if (!fxValidTarget(nextTask.target)) isTaskValid = false;
-      }
-      if (isTaskValid) {
-        unit.commandQueue = [...unit.suspendedQueue];
-        unit.suspendedQueue = null;
-        unit.target = null;
-        fxSanitizeOrders(unit); // 🔥 Чистим восстановленную очередь
-      } else {
-        unit.suspendedQueue = null;
-        unit.target = null;
-      }
-    } else {
-      if (unit.target && !fxValidTarget(unit.target)) {
-        unit.target = null;
       }
     }
   }
 }
-function startRepairmanCycle(repairman) {
-  let idleStartTime = performance.now();
-  
-  function loop() {
-    if (!gameState.units.includes(repairman)) return;
+// 🔥 2: A* Pathfinding с Min-Heap (O(log N) вместо O(N log N))
+function findPath(startX, startY, endX, endY) {
+  updatePathfindingGrid();
+
+  const startCol = Math.floor(startX / PATH_GRID_SIZE);
+  const startRow = Math.floor(startY / PATH_GRID_SIZE);
+  const endCol = Math.floor(endX / PATH_GRID_SIZE);
+  const endRow = Math.floor(endY / PATH_GRID_SIZE);
+
+  if (startCol === endCol && startRow === endRow) return [];
+
+  // 🔥 ИСПОЛЬЗУЕМ MIN-HEAP ВМЕСТО МАССИВА + SORT
+  const openSet = new MinHeap();
+  const closedSet = new Uint8Array(gridCols * gridRows);
+  const cameFrom = new Int32Array(gridCols * gridRows).fill(-1);
+  const gScore = new Float32Array(gridCols * gridRows).fill(Infinity);
+  const fScore = new Float32Array(gridCols * gridRows).fill(Infinity);
+
+  const startIndex = startRow * gridCols + startCol;
+  gScore[startIndex] = 0;
+  fScore[startIndex] = Math.hypot(endX - startX, endY - startY);
+  openSet.push({ index: startIndex, f: fScore[startIndex] });
+
+  const directions = [
+    { dc: 0, dr: -1 }, { dc: 1, dr: -1 }, { dc: 1, dr: 0 }, { dc: 1, dr: 1 },
+    { dc: 0, dr: 1 }, { dc: -1, dr: 1 }, { dc: -1, dr: 0 }, { dc: -1, dr: -1 }
+  ];
+
+  let iterations = 0;
+  const MAX_ITERATIONS = 500;
+
+  // 🔥 openSet.size вместо openSet.length
+  while (openSet.size > 0 && iterations < MAX_ITERATIONS) {
+    iterations++;
     
-    const isIdle = !repairman.busyRepair && repairman.commandQueue.length === 0;
-    const isOutside = !repairman.hidden;
-    
-    if (isIdle) {
-       // 🔥 ИСПРАВЛЕНИЕ 1: Жесткий радиус поиска 250 (как ты и хотел)
-       const repairRadius = 250; 
-       
-       // 🔥 ИСПРАВЛЕНИЕ 2: Ищем ВСЕХ раненых в радиусе, фильтруем "призраков" и сортируем по близости!
-       const damagedUnits = gameState.units.filter(u => 
-         u.owner === repairman.owner && 
-         fxValidTarget(u) && // <-- Ключевое: цель должна быть живой и валидной!
-         u.health > 0 && 
-         u.health < u.maxHealth * 0.95 && 
-         u !== repairman &&
-         Math.hypot(u.x - repairman.x, u.y - repairman.y) <= repairRadius
-       ).sort((a, b) => 
-         // Сортируем: сначала самые близкие
-         Math.hypot(a.x - repairman.x, a.y - repairman.y) - Math.hypot(b.x - repairman.x, b.y - repairman.y)
-       );
-       
-       const damagedUnit = damagedUnits[0]; // Берем ближайшего живого раненого
-       
-       if (damagedUnit) {
-         const distance = Math.hypot(damagedUnit.x - repairman.x, damagedUnit.y - repairman.y);
-         if (distance > 10) { 
-           repairman.commandQueue = [{ type: "repair", target: damagedUnit, workshop: repairman.homeWorkshop }]; 
-           processCommandQueue(repairman); 
-         } else { 
-           startRepairProcess(repairman, { target: damagedUnit, workshop: repairman.homeWorkshop }); 
-         }
-         repairman.busyRepair = true;
-       } else {
-         // Если раненых юнитов в радиусе 250 НЕТ — ищем поврежденные здания (тоже с проверкой валидности)
-         const damaged = gameState.buildings.find(b => 
-           b.owner === repairman.owner && 
-           fxValidTarget(b) && // <-- Здание не должно быть уничтожено или продано
-           b.health < b.maxHealth * 0.95 && 
-           (!b.repairmen || b.repairmen.length < 3 || b.repairmen.includes(repairman))
-         );
-         
-         if (damaged) {
-           if (!damaged.repairmen) damaged.repairmen = [];
-           if (!damaged.repairmen.includes(repairman)) damaged.repairmen.push(repairman);
-           
-           const distance = Math.hypot(damaged.x - repairman.x, damaged.y - repairman.y);
-           if (distance > 10) { 
-             repairman.commandQueue = [{ type: "repair", target: damaged, workshop: repairman.homeWorkshop }]; 
-             processCommandQueue(repairman); 
-           } else { 
-             startRepairProcess(repairman, { target: damaged, workshop: repairman.homeWorkshop }); 
-           }
-           repairman.busyRepair = true;
-         } else if (isOutside && performance.now() - idleStartTime > 5000) {
-           // Возврат в мастерскую, если делать нечего
-           const w = repairman.homeWorkshop;
-           if (w && fxValidTarget(w)) {
-             animateMoveAndScale(repairman, w.x, w.y, 0.1, 700, () => { 
-               repairman.hidden = true; 
-               repairman.inWorkshop = w; 
-             });
-           }
-         }
-       }
-     } else { 
-       idleStartTime = performance.now(); 
-     }
-     requestAnimationFrame(loop);
-  }
-  requestAnimationFrame(loop);
-}
-function startRepairProcess(repairman, command) {
-  const target = command.target;
-  
-  // 🔥 ДОБАВЛЕНО: !fxValidTarget(target)
-  if (!target || !fxValidTarget(target) || target.health >= target.maxHealth || target.health <= 0) {
-    repairman.busyRepair = false;
-    if (target && target.repairmen) {
-      target.repairmen = target.repairmen.filter(r => r !== repairman);
-    }
-    processCommandQueue(repairman);
-    return;
-  }
-  
-  const repairRate = 15;
-  const intervalTime = 100;
-  const REPAIR_COST = { gold: 1, silicon: 4, plasma: 3 };
-  const intervalsPerCycle = 5000 / intervalTime;
-  const costGoldPerInterval = REPAIR_COST.gold / intervalsPerCycle;
-  const costSiliconPerInterval = REPAIR_COST.silicon / intervalsPerCycle;
-  const costPlasmaPerInterval = REPAIR_COST.plasma / intervalsPerCycle;
-  
-  repairman.repairIntervalId = setInterval(() => {
-    // 🔥 ПРОВЕРКА ДИСТАНЦИИ И ВАЛИДНОСТИ: если юнит улетел ИЛИ умер/уничтожен
-    const distToTarget = Math.hypot(repairman.x - target.x, repairman.y - target.y);
-    
-    if (distToTarget > 50 || !fxValidTarget(target) || target.health <= 0) {
-      clearInterval(repairman.repairIntervalId);
-      repairman.repairIntervalId = null;
-      repairman.busyRepair = false;
-      if (target && target.repairmen) {
-        target.repairmen = target.repairmen.filter(r => r !== repairman);
+    // 🔥 pop() вместо sort() + shift() — в 10-50 раз быстрее!
+    const current = openSet.pop();
+    const cRow = Math.floor(current.index / gridCols);
+    const cCol = current.index % gridCols;
+
+    if (cCol === endCol && cRow === endRow) {
+      const path = [];
+      let curr = current.index;
+      while (curr !== -1) {
+        path.push({
+          x: (curr % gridCols) * PATH_GRID_SIZE + PATH_GRID_SIZE / 2,
+          y: Math.floor(curr / gridCols) * PATH_GRID_SIZE + PATH_GRID_SIZE / 2
+        });
+        curr = cameFrom[curr];
       }
-      processCommandQueue(repairman);
-      return;
+      return path.reverse();
     }
-    
-    if (target.health >= target.maxHealth || target.health <= 0) {
-       clearInterval(repairman.repairIntervalId);
-       repairman.repairIntervalId = null;
-       repairman.busyRepair = false;
-       if (target.repairmen) {
-         target.repairmen = target.repairmen.filter(r => r !== repairman);
-       }
-       processCommandQueue(repairman);
-       return;
-     }
-     
-     const resources = target.owner === playerId ? gameState.playerResources : gameState.aiResources;
-     if (resources.gold < costGoldPerInterval || resources.silicon < costSiliconPerInterval || resources.plasma < costPlasmaPerInterval) {
-       if (target.owner === playerId) showWarning("Недостаточно ресурсов для ремонта");
-       clearInterval(repairman.repairIntervalId);
-       repairman.repairIntervalId = null;
-       repairman.busyRepair = false;
-       if (target.repairmen) {
-         target.repairmen = target.repairmen.filter(r => r !== repairman);
-       }
-       processCommandQueue(repairman);
-       return;
-     }
-     
-     resources.gold -= costGoldPerInterval;
-     resources.silicon -= costSiliconPerInterval;
-     resources.plasma -= costPlasmaPerInterval;
-     updateResourceUI();
-     
-     target.health += (repairRate * intervalTime) / 5000;
-     if (target.health > target.maxHealth) {
-       target.health = target.maxHealth;
-     }
-     
-     if (!repairman.sparkTimer) repairman.sparkTimer = 0;
-     repairman.sparkTimer += intervalTime;
-     if (repairman.sparkTimer >= 1000) {
-       const dist = Math.hypot(repairman.x - target.x, repairman.y - target.y);
-       if (dist <= 50) {
-         spawnSparkEffect(target.x, target.y);
-         spawnSparkEffect(target.x, target.y);
-       }
-       repairman.sparkTimer = 0;
-     }
-  }, intervalTime);
+
+    closedSet[current.index] = 1;
+
+    for (const dir of directions) {
+      const nCol = cCol + dir.dc;
+      const nRow = cRow + dir.dr;
+
+      if (nCol < 0 || nCol >= gridCols || nRow < 0 || nRow >= gridRows) continue;
+      
+      const nIndex = nRow * gridCols + nCol;
+      if (closedSet[nIndex] || pathGrid[nIndex] === 1) continue;
+
+      const isDiagonal = dir.dc !== 0 && dir.dr !== 0;
+      const moveCost = isDiagonal ? 1.414 : 1.0;
+      const tentativeGScore = gScore[current.index] + moveCost * PATH_GRID_SIZE;
+
+      if (tentativeGScore < gScore[nIndex]) {
+        cameFrom[nIndex] = current.index;
+        gScore[nIndex] = tentativeGScore;
+        const hScore = Math.hypot(endX - (nCol * PATH_GRID_SIZE + PATH_GRID_SIZE / 2), endY - (nRow * PATH_GRID_SIZE + PATH_GRID_SIZE / 2));
+        fScore[nIndex] = gScore[nIndex] + hScore;
+        
+        // 🔥 push() в MinHeap вместо push() в массив
+        openSet.push({ index: nIndex, f: fScore[nIndex] });
+      }
+    }
+  }
+  
+  return [{ x: endX, y: endY }];
 }
-function updateResources(deltaTime) {
-  gameState.resources.forEach(resource => {
-    if (resource.type === "gold" && resource.rotationSpeed) resource.rotation += resource.rotationSpeed * deltaTime;
-    if (resource.amount <= 0) resource.depleted = true;
-  });
-  cleanupResources();
-}
-function cleanupResources() {
-  gameState.resources = gameState.resources.filter(resource => resource.amount > 0);
+// Превращает ломаную линию сетки в несколько ключевых точек поворота
+function simplifyPath(rawPath) {
+  if (rawPath.length <= 2) return rawPath;
+  const waypoints = [rawPath[0]];
+  let currentDir = { x: rawPath[1].x - rawPath[0].x, y: rawPath[1].y - rawPath[0].y };
+  
+  for (let i = 2; i < rawPath.length; i++) {
+    const nextDir = { x: rawPath[i].x - rawPath[i-1].x, y: rawPath[i].y - rawPath[i-1].y };
+    // Если направление изменилось, добавляем точку как waypoint
+    if (Math.abs(currentDir.x - nextDir.x) > 0.1 || Math.abs(currentDir.y - nextDir.y) > 0.1) {
+      waypoints.push(rawPath[i-1]);
+      currentDir = nextDir;
+    }
+  }
+  waypoints.push(rawPath[rawPath.length - 1]);
+  return waypoints;
 }
 function checkVictoryConditions() {
   if (gameState.gameEnded) return;
@@ -1503,51 +533,82 @@ function initFogOfWar() {
   }
 }
 function updateFogOfWar() {
-  if (!fogMap || fogMap.length === 0 || !fogMap[0]) return;
+  if (!fogMap || !fogMap.length || !fogMap[0]) return;
   const invScale = 1 / camera.scale;
-  const viewLeft = -camera.offsetX * invScale, viewTop = -camera.offsetY * invScale;
-  const viewRight = viewLeft + canvas.width * invScale, viewBottom = viewTop + canvas.height * invScale;
-  const margin = 100;
-  const startCol = Math.max(0, Math.floor((viewLeft - margin) / FOG_CELL_SIZE));
-  const endCol = Math.min(fogMap[0].length - 1, Math.floor((viewRight + margin) / FOG_CELL_SIZE));
-  const startRow = Math.max(0, Math.floor((viewTop - margin) / FOG_CELL_SIZE));
-  const endRow = Math.min(fogMap.length - 1, Math.floor((viewBottom + margin) / FOG_CELL_SIZE));
-  for (let r = startRow; r <= endRow; r++) {
-    for (let c = startCol; c <= endCol; c++) fogMap[r][c] = 0;
-  }
-  const visionSources = gameState.units.filter(u => u.owner === playerId).concat(gameState.buildings.filter(b => b.owner === playerId));
+  const viewLeft = -camera.offsetX * invScale;
+  const viewTop = -camera.offsetY * invScale;
+  const viewRight = viewLeft + canvas.width * invScale;
+  const viewBottom = viewTop + canvas.height * invScale;
+
+  // 1. Сброс видимости на экране
+  const sCol = Math.max(0, Math.floor(viewLeft / FOG_CELL_SIZE));
+  const eCol = Math.min(fogMap[0].length - 1, Math.floor(viewRight / FOG_CELL_SIZE));
+  const sRow = Math.max(0, Math.floor(viewTop / FOG_CELL_SIZE));
+  const eRow = Math.min(fogMap.length - 1, Math.floor(viewBottom / FOG_CELL_SIZE));
+  for (let r = sRow; r <= eRow; r++)
+    for (let c = sCol; c <= eCol; c++) fogMap[r][c] = 0;
+
+  // 2. Raycast от источников
+  const visionSources = gameState.units
+    .filter(u => u.owner === playerId)
+    .concat(gameState.buildings.filter(b => b.owner === playerId));
+
   visionSources.forEach(source => {
     const visionRadius = source.visionRadius || VISION_RADIUS;
-    const sCol = Math.max(0, Math.floor((source.x - visionRadius - margin) / FOG_CELL_SIZE));
-    const eCol = Math.min(fogMap[0].length - 1, Math.floor((source.x + visionRadius + margin) / FOG_CELL_SIZE));
-    const sRow = Math.max(0, Math.floor((source.y - visionRadius - margin) / FOG_CELL_SIZE));
-    const eRow = Math.min(fogMap.length - 1, Math.floor((source.y + visionRadius + margin) / FOG_CELL_SIZE));
-    for (let r = sRow; r <= eRow; r++) {
-      for (let c = sCol; c <= eCol; c++) {
-        const cellCenterX = c * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
-        const cellCenterY = r * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
-        if (Math.hypot(source.x - cellCenterX, source.y - cellCenterY) <= visionRadius) {
-          fogMap[r][c] = 1;
-          persistentFogMap[r][c] = 1;
+
+    // 🔥 Камни рядом с источником — собираем ОДИН раз на источник
+    const nearbyRocks = gameState.resources.filter(r =>
+      r.hp > 0 && Math.hypot(r.x - source.x, r.y - source.y) < visionRadius + 40
+    );
+
+    const rays = 48; // больше лучей = глаже тени
+    const angleStep = (Math.PI * 2) / rays;
+    const step = FOG_CELL_SIZE * 0.5;
+
+    for (let i = 0; i < rays; i++) {
+      const angle = i * angleStep;
+      const dx = Math.cos(angle), dy = Math.sin(angle);
+
+      for (let d = 0; d < visionRadius; d += step) {
+        const cx = source.x + dx * d;
+        const cy = source.y + dy * d;
+        const col = Math.floor(cx / FOG_CELL_SIZE);
+        const row = Math.floor(cy / FOG_CELL_SIZE);
+        if (row < 0 || row >= fogMap.length || col < 0 || col >= fogMap[0].length) break;
+
+        fogMap[row][col] = 1;
+        persistentFogMap[row][col] = 1;
+
+        // 🔥 Луч упёрся в камень — клетка камня ещё видна, дальше ТЕНЬ
+        let blocked = false;
+        for (const rock of nearbyRocks) {
+          const r = rock.getCurrentRadius ? rock.getCurrentRadius() : rock.baseRadius;
+          if ((rock.x - cx) * (rock.x - cx) + (rock.y - cy) * (rock.y - cy) < r * r) {
+            blocked = true; break;
+          }
         }
+        if (blocked) break;
       }
     }
   });
+
+  // 3. Разведка-зоны (без LoS — перк «взламывает» туман)
   const now = Date.now();
   reconZones.forEach(zone => {
     if (now > zone.start + zone.duration) return;
-    const { x, y } = zone; const radius = 80;
-    const sCol = Math.max(0, Math.floor((x - radius) / FOG_CELL_SIZE));
-    const eCol = Math.min(fogMap[0].length - 1, Math.floor((x + radius) / FOG_CELL_SIZE));
-    const sRow = Math.max(0, Math.floor((y - radius) / FOG_CELL_SIZE));
-    const eRow = Math.min(fogMap.length - 1, Math.floor((y + radius) / FOG_CELL_SIZE));
-    for (let r = sRow; r <= eRow; r++) {
-      for (let c = sCol; c <= eCol; c++) {
+    const radius = 80;
+    const s = Math.max(0, Math.floor((zone.x - radius) / FOG_CELL_SIZE));
+    const e = Math.min(fogMap[0].length - 1, Math.floor((zone.x + radius) / FOG_CELL_SIZE));
+    const sr = Math.max(0, Math.floor((zone.y - radius) / FOG_CELL_SIZE));
+    const er = Math.min(fogMap.length - 1, Math.floor((zone.y + radius) / FOG_CELL_SIZE));
+    for (let r = sr; r <= er; r++)
+      for (let c = s; c <= e; c++) {
         const cx = c * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
         const cy = r * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
-        if (Math.hypot(x - cx, y - cy) <= radius) { fogMap[r][c] = 1; persistentFogMap[r][c] = 1; }
+        if (Math.hypot(zone.x - cx, zone.y - cy) <= radius) {
+          fogMap[r][c] = 1; persistentFogMap[r][c] = 1;
+        }
       }
-    }
   });
 }
 function showVictoryScreen(message) {
@@ -1577,223 +638,34 @@ function showVictoryScreen(message) {
   victoryScreen.appendChild(container);
   stopAllIntervals();
 }
-function startFighterCycle(fighter) {
-  if (!fighter) return;
-  function cycle() {
-    if (fighter.health <= 0) return;
-    
-    // 🔥 ИСПРАВЛЕНИЕ: Если юнит отступает, пропускаем фазу атаки и даем ему двигаться
-    if (fighter.isRetreating) {
-      requestAnimationFrame(cycle);
-      return;
-    }
-
-    if (fighter.commandQueue.length > 0) { 
-      processCommandQueue(fighter); 
-      requestAnimationFrame(cycle); 
-      return; 
-    }
-    
-    // 🔥 ФИКС: Проверяем, что цель существует, ЖИВА и принадлежит ДРУГОМУ владельцу
-    if (fighter.target && fighter.target.health > 0 && fighter.target.owner !== fighter.owner) {
-      dynamicAttack(fighter, fighter.target, 1/60); 
-    } else {
-      // Цель потеряна или мертва — ищем новую
-      fighter.target = null;
-      
-      // Используем безопасный поиск через utils.js
-      let enemies = getEnemiesInRange({ x: fighter.x, y: fighter.y }, fighter.range)
-        .filter(e => e.owner !== fighter.owner && e.health > 0);
-        
-      if (enemies.length > 0) {
-        fighter.target = enemies.sort((a, b) => 
-          Math.hypot(a.x - fighter.x, a.y - fighter.y) - Math.hypot(b.x - fighter.x, b.y - fighter.y)
-        )[0];
-      }
-    }
-    requestAnimationFrame(cycle);
-  }
-  cycle();
-}
-function processResourceDepletion() {
-  gameState.resources.slice().forEach(resource => {
-    if (resource.amount <= 10 && !resource.depleted) {
-      resource.depleted = true;
-      spawnSupernovaEffect(resource);
-      setTimeout(() => {
-        const idx = gameState.resources.indexOf(resource);
-        if (idx !== -1) gameState.resources.splice(idx, 1);
-        setTimeout(() => {
-          const x = Math.random() * (worldWidth - 40) + 10;
-          const y = Math.random() * (worldHeight - 40) + 10;
-          gameState.resources.push(new Resource(resource.type, x, y, resource.max, resource.max));
-        }, 50000);
-      }, 500);
-    }
-  });
-}
-// === МИКРО-РЕФЛЕКСЫ ЮНИТОВ (Спинной мозг) ===
-function applyUnitMicroReflexes(unit, now) {
-  if (unit.health <= 0 || unit.type === "worker" || unit.type === "repairman") return;
-
-  // 1. АВТО-ПЕРЕНАЦЕЛИВАНИЕ
-  if (unit.target && unit.target.health <= 0) {
-    unit.target = null;
-    unit.lastAutonomousActionTime = now;
-  }
-
-  // 2. ВКЛЮЧЕНИЕ ОТСТУПЛЕНИЯ (< 20% HP) — с поиском БЛИЖАЙШЕЙ мастерской
-  if (unit.health < unit.maxHealth * 0.20 && !unit.isRetreating) {
-    // 🔥 ИЩЕМ БЛИЖАЙШУЮ АКТИВНУЮ МАСТЕРСКУЮ (а не базу!)
-    const workshops = gameState.buildings.filter(b => 
-      b.owner === unit.owner && 
-      b.type === 'repairWorkshop' && 
-      b.active && 
-      b.health > 0
-    );
-    
-    let retreatTarget = null;
-    if (workshops.length > 0) {
-      // Сортируем по расстоянию и берём ближайшую
-      retreatTarget = workshops.sort((a, b) => 
-        Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
-      )[0];
-    } else {
-      // 🔥 FALLBACK: Если мастерских нет — летим к базе
-      retreatTarget = unit.owner === "player" ? playerBase : aiBase;
-    }
-    
-    if (!retreatTarget) {
-      // Своих построек нет вообще — не входим в отступление, чтобы не застрять
-      return;
-    }
-    
-    // 🔥 СОХРАНЯЕМ ЦЕЛЬ ОТСТУПЛЕНИЯ ПРЯМО В ЮНИТЕ
-    unit.retreatTarget = retreatTarget;
-    unit.isRetreating = true;
-    unit.commandQueue = []; 
-    unit.target = null;
-    unit.lastAutonomousActionTime = now;
-    
-    // 🔥 НОВОЕ: Кулдаун на возвращение в бой (5 секунд после выхода из отступления)
-    unit.returnToBattleCooldown = 0;
-    
-    return;
-  }
-
-  // 3. ВЫХОД ИЗ ОТСТУПЛЕНИЯ — только когда юнит ПОЧТИ ЗДОРОВ (>80% HP)
-  // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: порог поднят с 25% до 80%!
-  if (unit.isRetreating && unit.health >= unit.maxHealth * 0.80) {
-    unit.isRetreating = false;
-    unit.retreatTarget = null;
-    
-    // 🔥 НОВОЕ: Даём юниту 5 секунд "остыть" перед возвращением в бой
-    // Это разрывает цикл "вылечился → сразу атаковал → снова ранен → снова отступил"
-    unit.returnToBattleCooldown = performance.now() + 5000;
-    unit.lastAutonomousActionTime = performance.now() + 5000;
-  }
-}
-function updateUnits(deltaTime) {
-  const now = performance.now();
-  
-  // 1. Обработка зон шока
-  shockZones = shockZones.filter(zone => {
-    const elapsed = now - zone.start;
-    if (elapsed < 5000) {
-      gameState.units.forEach(unit => {
-        if (unit.owner !== playerId && Math.hypot(unit.x - zone.x, unit.y - zone.y) < shockRadius) {
-          unit.shockedUntil = Math.max(unit.shockedUntil || 0, zone.start + 5000);
-        }
-      });
-      return true;
-    }
-    return false;
-  });
-
-  // 2. Основной цикл юнитов
-  gameState.units.forEach(unit => {
-    // Сначала микро-рефлексы (они только ставят флаг isRetreating, но не двигают юнита)
-    applyUnitMicroReflexes(unit, now);
-
-    // 🔥 ЕДИНАЯ ТОЧКА ОБНОВЛЕНИЯ ПОЗИЦИИ (двигает юнита, в том числе при отступлении)
-    applyUnitMovement(unit, deltaTime);
-
-    const isShocked = unit.shockedUntil && now < unit.shockedUntil;
-
-    // Логика горения
-    if (unit.burning) {
-      const elapsed = now - unit.burnTime;
-      if (elapsed < unit.burnDuration) {
-        if (!unit.lastBurnTick || now - unit.lastBurnTick > 500) { 
-          unit.health -= 10; 
-          unit.lastBurnTick = now; 
-          spawnSparkEffect(unit.x, unit.y); 
-        }
-      } else { 
-        unit.burning = false; 
-      }
-    }
-
-    // Логика шока (только для ИИ, чтобы дать ему передышку)
-    if (isShocked && unit.owner === "ai") {
-      if (!unit.lastShockEffect || now - unit.lastShockEffect > 500) { 
-        spawnShockEffect(unit.x, unit.y); 
-        unit.lastShockEffect = now; 
-      }
-      unit.shocked = true; 
-      unit.commandQueue = []; 
-      unit.target = null;
-      unit.lastAutonomousActionTime = now + 3000; 
-      return; // Выходим из обработки этого юнита на этом кадре
-    } else { 
-      unit.shocked = false; 
-    }
-
-    // 🔥 ИСПРАВЛЕНИЕ БАГА С ЗАВИСАНИЕМ:
-    // Мы убрали "!unit.isRetreating" из условий. 
-    // Теперь processCommandQueue вызывается ВСЕГДА, даже при отступлении.
-    // Это позволяет игроку отменить отступление, просто кликнув правой кнопкой мыши (новая команда перезапишет старую).
-    if (unit.health > 0 && !unit.shocked) {
-      if (unit.type === "elite" || unit.type === "assault" || unit.type === "fighter" || unit.type === "repairman") { 
-        processCommandQueue(unit, deltaTime); 
-      } else { 
-        unit.idleTimer += deltaTime; 
-      }
-    }
-  });
-
-  // 3. Очистка мертвых юнитов
-  gameState.units = gameState.units.filter(unit => {
-    if (unit.health <= 0) { 
-      removeUnit(unit); 
-      return false; 
-    }
-    return true;
-  });
-
-  // 4. Поведение роя (если нужно)
-  swarmFrameCounter++;
-  if (swarmFrameCounter % 5 === 0) updateSwarmBehavior(deltaTime);
-  if (swarmFrameCounter > 1000) swarmFrameCounter = 0;
-}
 // 🔥 ЕДИНАЯ ТОЧКА НАНЕСЕНИЯ УРОНА (пули + сплэш)
 function fxApplyDamage(entity, damage, source) {
   if (!entity || !(entity.health > 0) || !(damage > 0) || entity.destroyed) return;
+  
   if (source) entity.__lastAttacker = source;
-  // 🛡️ Устанавливаем флаг ДО onDamage, чтобы onDamage мог нарисовать осколки,
-  // а removeUnit — пропустить свой вызов (иначе двойные осколки)
-  entity.__fragmentsSpawned = true;
+  
+  // 🔥 ШАГ 2 (КРИТИЧНО): УДАЛЕНО entity.__fragmentsSpawned = true; 
+  // Этим флагом должен управлять ТОЛЬКО removeUnit или onBuildingDestroyed в момент реального спавна осколков!
+  // Иначе removeUnit думает, что осколки уже были, и пропускает их создание.
+
   if (typeof onDamage === "function") {
-    onDamage(entity, damage);
+    // 🔥 ШАГ 1.5 (КРИТИЧНО): ПЕРЕДАЕМ source, чтобы GnnEventHooks.onUnitDamaged знал, кто нанес урон!
+    onDamage(entity, damage, source); 
   } else {
     entity.health -= damage;
-    if (typeof window.GnnEventHooks !== 'undefined') window.GnnEventHooks.onUnitDamaged(entity, damage, source);
+    if (typeof window.GnnEventHooks !== 'undefined') {
+      window.GnnEventHooks.onUnitDamaged(entity, damage, source);
+    }
   }
+  
   // Страховка добивания: если onDamage не убрал труп — убираем сами, ровно один раз
   if (entity.health <= 0 && !entity.__removed) {
     const isBld = (typeof Building !== "undefined" && entity instanceof Building);
     if (isBld) {
-      if (gameState.buildings.indexOf(entity) !== -1) { entity.__removed = true; onBuildingDestroyed(entity); }
+      if (gameState.buildings.indexOf(entity) !== -1) { 
+        entity.__removed = true; 
+        onBuildingDestroyed(entity); 
+      }
     } else {
       removeUnit(entity, source || entity.__lastAttacker || null);
     }
@@ -1805,7 +677,7 @@ function updateBullets(deltaTime) {
   for (let i = gameState.bullets.length - 1; i >= 0; i--) {
     let bullet = gameState.bullets[i];
     
-    // Самонаведение ракеты (без создания новых объектов)
+    // 1. Самонаведение ракеты (без создания новых объектов)
     if (bullet.isMissile && bullet.target && bullet.target.health > 0) {
       let desiredAngle = Math.atan2(bullet.target.y - bullet.y, bullet.target.x - bullet.x);
       let angleDiff = desiredAngle - bullet.angle;
@@ -1816,7 +688,7 @@ function updateBullets(deltaTime) {
     bullet.x += Math.cos(bullet.angle) * bullet.speed * deltaTime;
     bullet.y += Math.sin(bullet.angle) * bullet.speed * deltaTime;
     
-    // Быстрая проверка на истечение времени жизни или потерю цели
+    // 2. Быстрая проверка на истечение времени жизни или потерю цели
     if (!bullet.shooter || !bullet.target || bullet.lifetime <= 0) {
       if (bullet.isMissile || bullet.isArtillery) applySplashDamage(bullet);
       releaseBulletToPool(bullet);
@@ -1824,26 +696,93 @@ function updateBullets(deltaTime) {
       continue;
     }
 
-    // Оптимизированный поиск коллизий через Quadtree (ВМЕСТО .filter)
-    const range = 10;
+    // 3. Оптимизированный поиск коллизий через Quadtree
+    const range = 15; // Чуть увеличили радиус для надёжного попадания по большим камням
     const queryRect = { x: bullet.x - range, y: bullet.y - range, width: range * 2, height: range * 2 };
     const candidates = quadtree ? quadtree.query(queryRect) : [];
     let hit = false;
 
- for (let j = 0; j < candidates.length; j++) {
-   let target = candidates[j];
-   if (!target || target === bullet.shooter) continue;
-   if (target.owner === bullet.shooter.owner || !(target.health > 0) || target.destroyed) continue;
-   hit = true;
-   fxApplyDamage(target, bullet.damage, bullet.shooter);   // 🔥 урон РОВНО один раз
-   if (bullet.isMissile || bullet.isArtillery) {
-     applySplashDamage(bullet);
-   } else {
-     spawnSparkEffect(bullet.x, bullet.y);
-   }
-   break; // Пуля поражает первую цель и исчезает
- }
+    for (let j = 0; j < candidates.length; j++) {
+      let target = candidates[j];
+      if (!target || target === bullet.shooter) continue;
 
+      // 🔥 НОВАЯ ЛОГИКА: ПРОВЕРКА НА КАМЕНЬ (РЕСУРС)
+      // У ресурсов есть свойство amount, у юнитов/зданий его нет
+      const isRock = target.amount !== undefined;
+
+      // 🔥 НОВАЯ ЛОГИКА: ПРОВЕРКА НА КАМЕНЬ (РЕСУРС)
+      if (isRock && target.hp > 0) {
+        const dist = Math.hypot(bullet.x - target.x, bullet.y - target.y);
+        const rockRadius = typeof target.getCurrentRadius === "function" ? target.getCurrentRadius() : (target.baseRadius || 20);
+
+        if (dist < rockRadius) {
+          hit = true;
+
+          if (bullet.isMissile || bullet.isArtillery) {
+            const impulse = bullet.isArtillery ? 15 : 8;
+            const damage = bullet.isArtillery ? 8 : 4;
+
+            if (typeof target.applyImpulse === "function") target.applyImpulse(bullet.angle, impulse);
+            
+            // 🔥 ЗАЩИТА ОТ МУЛЬТИ-ХИТА ЗАЛПА: токен спавнится не чаще раза в 400мс
+            const now = performance.now();
+            if (!target._lastTokenDrop || now - target._lastTokenDrop > 400) {
+              target._lastTokenDrop = now;
+              
+              if (!gameState.resourceTokens) gameState.resourceTokens = [];
+              const tokenCount = 1 + Math.floor(Math.random() * 2); // 1-2 токена за залп (не за снаряд!)
+              const dropPerToken = Math.max(1, Math.floor(damage * 2));
+              
+              for (let i = 0; i < tokenCount; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const speed = 40 + Math.random() * 40;
+                const spawnDist = rockRadius + 8; // 🔥 за границей камня!
+                
+                gameState.resourceTokens.push({
+                  x: target.x + Math.cos(angle) * spawnDist,
+                  y: target.y + Math.sin(angle) * spawnDist,
+                  vx: Math.cos(angle) * speed,
+                  vy: Math.sin(angle) * speed,
+                  type: target.type,
+                  amount: dropPerToken,
+                  life: 20.0,
+                  maxLife: 20.0,
+                  isGround: true
+                });
+              }
+            }
+
+            if (typeof target.takeDamage === "function") {
+              const isDestroyed = target.takeDamage(damage);
+              if (isDestroyed && typeof destroyResource === "function") {
+                destroyResource(target);
+              }
+            }
+            spawnSparkEffect(bullet.x, bullet.y);
+            if (bullet.splashRadius > 0) applySplashDamage(bullet);
+          } else {
+            if (typeof target.takeDamage === "function") target.takeDamage(8);
+            spawnSparkEffect(bullet.x, bullet.y);
+          }
+          break;
+        }
+      }
+
+      // 4. СТАРАЯ ЛОГИКА: ПРОВЕРКА НА ЮНИТОВ И ЗДАНИЯ
+      if (target.owner === bullet.shooter.owner || !(target.health > 0) || target.destroyed) continue;
+      
+      hit = true;
+      fxApplyDamage(target, bullet.damage, bullet.shooter); // Урон РОВНО один раз
+
+      if (bullet.isMissile || bullet.isArtillery) {
+        applySplashDamage(bullet);
+      } else {
+        spawnSparkEffect(bullet.x, bullet.y);
+      }
+      break; // Пуля поражает первую цель (юнит/здание) и исчезает
+    }
+
+    // 5. Очистка пули
     if (hit) {
       releaseBulletToPool(bullet);
       gameState.bullets.splice(i, 1);
@@ -2147,203 +1086,29 @@ function updateShockZones(deltaTime) {
     }
   });
 }
-// Токены ресурсов (визуальное отображение переносимого ресурса)
-function spawnResourceToken(worker, resourceType) {
-  const token = {
-    type: "resourceToken",
-    resourceType: resourceType,
-    offsetX: 1,
-    offsetY: -2,
-    x: worker.x + 10,
-    y: worker.y - 5
-  };
-  worker.carriedResourceToken = token;
-}
-function startWorkerCycle(worker, warehouse) {
-  // 🔥 ИСПРАВЛЕНИЕ: Если нейросеть дала рабочему боевую команду — отменяем её
-  if (worker.commandQueue && worker.commandQueue.length > 0) {
-    const hasForeignCommand = worker.commandQueue.some(cmd => 
-      cmd.type === "attack" || 
-      (cmd.type === "move" && !worker.assignedResource) // move не к ресурсу = чужеродный
-    );
-    if (hasForeignCommand) {
-      worker.commandQueue = [];
-      worker.target = null;
-      worker.defending = false;
-      if (worker.currentMovementAnimation) {
-        cancelAnimationFrame(worker.currentMovementAnimation);
-        worker.currentMovementAnimation = null;
-      }
-    }
-  }
-
-  // 🏠 Проверка склада
-  if (
-    !worker.homeWarehouse ||
-    gameState.buildings.indexOf(worker.homeWarehouse) === -1 ||
-    worker.homeWarehouse.type !== "warehouse" ||
-    !worker.homeWarehouse.active
-  ) {
-    worker.homeWarehouse = findNearestDeliveryBuilding(worker.x, worker.y, worker.owner);
-  }
-
-  // 🚚 Если рабочий несёт ресурс — доставляем
-  if (worker.carrying > 0) {
-    if (worker.delivering) {
-      // Если уже в процессе доставки, просто ждём (не возвращаемся)
-      return;
-    }
-    
-    worker.delivering = true;
-    worker.lastDeliveryStart = performance.now();
-
-    let deliveryBuilding;
-    if (worker.homeWarehouse && gameState.buildings.indexOf(worker.homeWarehouse) !== -1) {
-      deliveryBuilding = worker.homeWarehouse;
-    } else {
-      deliveryBuilding = findNearestDeliveryBuilding(worker.x, worker.y, worker.owner);
-    }
-
-    if (deliveryBuilding) {
-      if ((deliveryBuilding.currentDeliveryWorkers || 0) >= deliveryBuilding.maxDeliveryWorkers) {
-        // Склад переполнен, ждём
-        worker.delivering = false;
-        setTimeout(() => startWorkerCycle(worker, warehouse), 1000);
-        return;
-      }
-
-      deliveryBuilding.currentDeliveryWorkers = (deliveryBuilding.currentDeliveryWorkers || 0) + 1;
-
-      moveUnit(worker, deliveryBuilding.x, deliveryBuilding.y, () => {
-        if (worker.carriedResourceToken) {
-          worker.carriedResourceToken = null;
-        }
-        deliveryBuilding.lidOpenUntil = performance.now() + 400;
-        const resType = worker.assignedResourceType || "gold";
-        const ownerRes = (worker.owner === playerId) ? gameState.playerResources : gameState.aiResources;
-        ownerRes[resType] += worker.carrying;
-        worker.carrying = 0;
-        worker.delivering = false;
-        deliveryBuilding.currentDeliveryWorkers--;
-        worker.assignedResourceType = null;
-        setTimeout(() => startWorkerCycle(worker, warehouse), 500);
-      });
-    } else {
-      worker.delivering = false;
-      setTimeout(() => startWorkerCycle(worker, warehouse), 500);
-    }
-    return;
-  }
-
-  // ⚖️ Назначение типа ресурса по наименьшей загрузке
-      // ⚖️ УМНОЕ НАЗНАЧЕНИЕ РЕСУРСА: Баланс "сколько в казне" vs "сколько рабочих"
-      if (!worker.assignedResourceType) {
-        const types = ["gold", "silicon", "plasma"];
-        const available = types.filter(type =>
-          gameState.resources.some(r => !r.depleted && r.type === type)
-        );
-        
-        if (available.length === 0) {
-          setTimeout(() => startWorkerCycle(worker, warehouse), 3000);
-          return;
-        }
-
-        // Определяем, чей это рабочий, чтобы смотреть правильную казну
-        const res = worker.owner === playerId ? gameState.playerResources : gameState.aiResources;
-        const resourceScores = {};
-        
-        available.forEach(type => {
-          // 1. Сколько этого ресурса сейчас в казне
-          const treasuryAmount = res[type] || 0;
-          
-          // 2. Сколько рабочих УЖЕ добывает этот тип
-          const workersCount = gameState.units.filter(u => 
-            u.type === "worker" && u.assignedResourceType === type
-          ).length;
-          
-          // 3. ФОРМУЛА ПРИОРИТЕТА: (Ресурс в казне) / (Рабочие + 1)
-          // +1 предотвращает деление на ноль и дает шанс новому рабочему
-          resourceScores[type] = treasuryAmount / (workersCount + 1);
-        });
-
-        // 4. Сортируем: сначала идет тот ресурс, у которого НАИМЕНЬШИЙ приоритет (его меньше всего)
-        available.sort((a, b) => resourceScores[a] - resourceScores[b]);
-        
-        // 5. ПОРОГ ПЕРЕКЛЮЧЕНИЯ: Если разница между самым отстающим и следующим больше 10 единиц,
-        // мы принудительно направляем рабочего на отстающий ресурс.
-        if (available.length >= 2) {
-          const diff = resourceScores[available[1]] - resourceScores[available[0]];
-          if (diff > 10) { 
-            worker.assignedResourceType = available[0]; // Берем самый отстающий
-          } else {
-            // Иначе распределяем равномерно, чтобы не было простоя
-            const countByType = {};
-            types.forEach(t => {
-              countByType[t] = gameState.units.filter(u => u.type === "worker" && u.assignedResourceType === t).length;
-            });
-            const minCount = Math.min(...available.map(t => countByType[t]));
-            worker.assignedResourceType = available.filter(t => countByType[t] === minCount)[0];
-          }
-        } else {
-          worker.assignedResourceType = available[0];
-        }
-      }
-
-  const type = worker.assignedResourceType;
-
-  // 🔎 Ищем ресурсы
-  const allResources = gameState.resources.filter(r =>
-    r.type === type && !r.depleted
-  );
-
-  if (allResources.length === 0) {
-    worker.assignedResourceType = null;
-    setTimeout(() => startWorkerCycle(worker, warehouse), 1000);
-    return;
-  }
-
-  allResources.sort((a, b) =>
-    Math.hypot(a.x - worker.x, a.y - worker.y) - Math.hypot(b.x - worker.x, b.y - worker.y)
-  );
-
-  const nearestResource = allResources[0];
-
-  if (nearestResource.currentWorkers >= nearestResource.maxWorkers) {
-    worker.assignedResource = null;
-    setTimeout(() => startWorkerCycle(worker, warehouse), 1000);
-    return;
-  }
-
-  nearestResource.currentWorkers++;
-  worker.assignedResource = nearestResource;
-
-  moveUnit(worker, nearestResource.x, nearestResource.y, () => {
-    setTimeout(() => {
-      if (nearestResource.amount > 0) {
-        nearestResource.amount--;
-        worker.carrying = (worker.carrying || 0) + 5;
-        if (!worker.carriedResourceToken) {
-          spawnResourceToken(worker, type);
-        }
-        spawnSparkEffect(nearestResource.x, nearestResource.y);
-      }
-      nearestResource.currentWorkers--;
-      worker.assignedResource = null;
-      startWorkerCycle(worker, warehouse);
-    }, 2000);
-  });
-}
 function startTurretCycle(turret) {
   turret.lastFireTime = 0; turret.active = true;
   function cycle() {
     if (!turret.active || turret.health <= 0) return;
-    if (!turret.target || turret.target.health <= 0 || (Math.hypot(turret.target.x - turret.x, turret.target.y - turret.y) > turret.range)) {
-      const candidates = getEnemiesInRange({ x: turret.x, y: turret.y }, turret.range, turret.owner);
+
+    // 🔥 Цель невалидна: мертва, вне радиуса ИЛИ перекрыта камнем — ищем новую
+    if (
+      !turret.target ||
+      turret.target.health <= 0 ||
+      Math.hypot(turret.target.x - turret.x, turret.target.y - turret.y) > turret.range ||
+      isLineOfSightBlocked(turret.x, turret.y, turret.target.x, turret.target.y)
+    ) {
+      const candidates = getEnemiesInRange({ x: turret.x, y: turret.y }, turret.range, turret.owner)
+        .filter(e => !isLineOfSightBlocked(turret.x, turret.y, e.x, e.y)); // 🔥 только с прямой видимостью
       turret.target = candidates.length > 0 ? candidates[0] : null;
     }
+
     if (turret.target) {
       const now = performance.now();
-      if (now - turret.lastFireTime >= turret.fireRate) { fireBullet(turret, turret.target); turret.lastFireTime = now; }
+      if (now - turret.lastFireTime >= turret.fireRate) {
+        fireBullet(turret, turret.target);
+        turret.lastFireTime = now;
+      }
     }
     turret.turretCycleId = requestAnimationFrame(cycle);
   }
@@ -2390,10 +1155,6 @@ function releaseUnusedMemory() {
   }
   if (quadtree) quadtree.clear();
 }
-// Продажа зданий / очередь продаж ИИ
-window.aiSaleQueue = window.aiSaleQueue || [];
-window.aiSaleCooldown = window.aiSaleCooldown || false;
-window.soldBuildings = window.soldBuildings || [];
 function queueSale(building) {
   if (!building) return;
   if (building.isSelling) return;
@@ -2517,57 +1278,6 @@ function processAISaleQueue() {
     window.aiSaleCooldown = false;
   }, 6000);
 }
-// Обработка очереди производства юнитов
-let unitIdCounter = 0;
-function generateUniqueUnitId() {
-  // 🔥 Используем комбинацию счётчика, времени и случайного числа
-  const uniqueId = 'unit_' + (unitIdCounter++) + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-  return uniqueId;
-}
-function processProductionQueue(building) {
-  if (!building) return;
-  if (!building.productionQueue || building.productionQueue.length === 0) return;
-  if (!building.active) return;
-
-  const order = building.productionQueue[0];
-  const now = performance.now();
-
-  if (now >= order.timeStart + order.productionTime) {
-    // Производство завершено
-    building.productionQueue.shift();
-
-    const { spawn, target } = spawnAtBoundary(building, 10);
-    const unit = getUnitFromPool(order.unitType, building.owner, spawn.x, spawn.y);
-
-    unit.id = generateUniqueUnitId(); // Уникальный ID для синхронизации
-    addUnit(unit);
-    moveUnit(unit, target.x, target.y);
-
-    if (unit.type === "worker") {
-      unit.homeWarehouse = building;
-      startWorkerCycle(unit, building);
-    } else if (unit.type === "repairman") {
-      unit.homeWorkshop = building;
-      startRepairmanCycle(unit);
-    } else if (unit.type === "fighter") {
-      startFighterCycle(unit);
-    } else if (unit.type === "assault" || unit.type === "elite") {
-      startAssaultEliteCycle(unit);
-    }
-
-    // === 🔁 Синхронизация в PvP: только если игрок создаёт
-    if (gameMode === "pvp" && building.owner === playerId) {
-      sendPvpAction({
-        type: "hire",
-        unitType: order.unitType,
-        playerId: playerId,
-        x: unit.x,
-        y: unit.y,
-        unitId: unit.id
-      });
-    }
-  }
-}
 // Пример: при уничтожении здания (или продаже) вызываем функцию для маркировки зоны
 function onBuildingDestroyed(building) {
   // 🛡️ Помечаем здание как уничтоженное ДО удаления из массива,
@@ -2638,27 +1348,19 @@ function onBuildingDestroyed(building) {
   //mobilizeDefendersAround(building);
 }
 function updateGameState(deltaTime) {
-  // Обновляем квадродерево
+  // 1. Обновляем квадродерево
   quadtree.clear();
   gameState.buildings.forEach(b => quadtree.insert(b));
   gameState.units.forEach(u => quadtree.insert(u));
   gameState.resources.forEach(r => quadtree.insert(r));
 
-  // Обновляем токены ресурсов
-  gameState.resourceTokens = [];
+  // 🔥 Возвращаем! Кубик в руках обязан следовать за рабочим каждый кадр.
+  // Наземный массив gameState.resourceTokens НЕ трогаем!
   gameState.units.forEach(unit => {
     if (unit.type === "worker" && unit.carriedResourceToken) {
       updateWorkerResourceToken(unit);
-      gameState.resourceTokens.push(unit.carriedResourceToken);
     }
   });
-}
-function updateWorkerResourceToken(worker) {
-  if (worker.carriedResourceToken) {
-    const token = worker.carriedResourceToken;
-    token.x = worker.x + token.offsetX;
-    token.y = worker.y + token.offsetY;
-  }
 }
 function gameLoop(time) {
   if (gameState.gameEnded) {
@@ -2685,14 +1387,31 @@ function gameLoop(time) {
   updateBuildingsActivation();
   updateUnits(deltaTime);
   updateResources(deltaTime);
+  updateResourceTokens(deltaTime);
   updateFragments(deltaTime);
   updateParticles(deltaTime);
-  updateFogOfWar();
   quadtree.clear();
   gameState.buildings.forEach(b => quadtree.insert(b));
   gameState.units.forEach(u => quadtree.insert(u));
   gameState.resources.forEach(r => quadtree.insert(r));
+    // 🔥 КОНТРОЛЬ ЧАСТОТЫ ОБНОВЛЕНИЯ ТУМАНА
+  fogUpdateTimer += deltaTime;
+  if (fogUpdateTimer >= FOG_UPDATE_INTERVAL) {
+    updateFogOfWar();
+    fogUpdateTimer = 0; // Сбрасываем таймер
+  }
   updateBullets(deltaTime);
+  updateResourcePhysics(deltaTime);
+
+  rockBuildingAuditTimer += deltaTime;
+  if (rockBuildingAuditTimer >= 1.0) {
+    rockBuildingAuditTimer = 0;
+    if (typeof pushRockOutOfAllBuildings === "function") {
+      gameState.resources.forEach(rock => {
+        if (rock.hp > 0 && !rock.destroyed) pushRockOutOfAllBuildings(rock, 20);
+      });
+    }
+  }
   updateLasers(); 
   autoRepairDamagedObjects();
   gameState.buildings.forEach(building => {
@@ -2768,43 +1487,6 @@ function createCapturePointsForBase(base) {
   for(let i=0; i<4; i++) pts.push({ x: xMin + Math.random() * (xMax - xMin), y: yMin + Math.random() * (yMax - yMin) });
   return pts;
 }
-function startAssaultEliteCycle(unit) {
-  if (!unit) return;
-  // 🛡️ Каждая новая "жизнь" юнита получает новый epoch.
-  // Когда юнит умрёт и будет выдан из пула заново, fxResetTransient сбросит __epoch,
-  // и старый requestAnimationFrame умрёт сам.
-  const epoch = (unit.__epoch = (unit.__epoch || 0) + 1);
-  function cycle() {
-    if ((unit.__epoch || 0) !== epoch) { FX_STATE.stats.zombie++; return; }
-    if (unit.health <= 0 || !gameState.units.includes(unit)) return;
-    if (unit.isRetreating) {
-      requestAnimationFrame(cycle);
-      return;
-    }
-    if (unit.commandQueue && unit.commandQueue.length > 0) {
-      processCommandQueue(unit);
-      requestAnimationFrame(cycle);
-      return;
-    }
-    if (unit.target && unit.target.health > 0) {
-      if (unit.type === "assault") {
-        dynamicAttackAssault(unit, unit.target, 1/60);
-      } else if (unit.type === "elite") {
-        dynamicAttackElite(unit, unit.target, 1/60);
-      }
-    } else {
-      let enemies = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
-                    .filter(e => e.owner !== unit.owner && e.health > 0);
-      if (enemies.length > 0) {
-        unit.target = enemies.sort((a, b) =>
-          Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
-        )[0];
-      }
-    }
-    requestAnimationFrame(cycle);
-  }
-  cycle();
-}
 function spawnWaveFromCapturePoint(cp) {
   const side = cp.owner;
   if (!side) return;
@@ -2843,38 +1525,6 @@ function animateMoveAndScale(unit, targetX, targetY, targetScale, duration, call
   }
   step();
 }
-function recallRepairmenFromWorkshop(workshop) {
-  const recalledRepairmen = gameState.units.filter(u =>
-    u.owner === playerId &&
-    u.type === "repairman" &&
-    u.hidden && u.inWorkshop === workshop
-  );
-
-  if (recalledRepairmen.length > 0) {
-    recalledRepairmen.forEach(u => {
-      if (u.currentMovementAnimation) {
-        cancelAnimationFrame(u.currentMovementAnimation);
-        u.currentMovementAnimation = null;
-      }
-      if (u.waitingAnimation) {
-        cancelAnimationFrame(u.waitingAnimation);
-        u.waitingAnimation = null;
-      }
-
-      const exitOffset = 20;
-      const angle = Math.random() * Math.PI * 2;
-      const exitX = workshop.x + exitOffset * Math.cos(angle);
-      const exitY = workshop.y + exitOffset * Math.sin(angle);
-
-      animateMoveAndScale(u, exitX, exitY, 1, 500, () => {
-        u.hidden = false;
-        u.inWorkshop = null;
-      });
-    });
-  } else {
-    hireRepairmanForPlayer(workshop);
-  }
-}
 function spawnAtBoundary(building, offset = 10) {
   const edge = Math.floor(Math.random() * 4);
   let spawn = { x: building.x, y: building.y }, target = { x: building.x, y: building.y };
@@ -2883,13 +1533,6 @@ function spawnAtBoundary(building, offset = 10) {
   else if (edge === 2) { spawn.x = building.x + (Math.random() - 0.5) * building.width; spawn.y = building.y + building.height / 2; target.x = spawn.x; target.y = spawn.y + offset; } 
   else if (edge === 3) { spawn.x = building.x - building.width / 2; spawn.y = building.y + (Math.random() - 0.5) * building.height; target.x = spawn.x - offset; target.y = spawn.y; }
   return { spawn, target };
-}
-function findNearestDeliveryBuilding(x, y, owner) {
-  const queryRadius = 500;
-  const candidates = getObjectsInRange({ x: x, y: y }, queryRadius).filter(b => b.owner === owner && b.type === "warehouse" && (b.currentDeliveryWorkers || 0) < b.maxDeliveryWorkers);
-  if (candidates.length === 0) return null;
-  candidates.sort((a, b) => Math.hypot(a.x - x, a.y - y) - Math.hypot(b.x - x, b.y - y));
-  return candidates[0];
 }
 function isBaseVisible(base) {
   if (!base) return false;
@@ -2928,160 +1571,6 @@ function seededRandom(seed) {
   let state = seed % 2147483647;
   if (state <= 0) state += 2147483646;
   return function () { state = state * 16807 % 2147483647; return (state - 1) / 2147483646; };
-}
-function generateResources(countPerType = 50, seed = 777) {
-  const rand = seededRandom(seed);
-  const resourceTypes = ["gold", "silicon", "plasma"];
-  
-  resourceTypes.forEach(type => {
-    // 🔥 ИСПРАВЛЕНО: теперь количество берется из параметра countPerType, а не захардкожено!
-    for (let i = 0; i < countPerType; i++) {
-      const x = rand() * (worldWidth - 20) + 10;
-      const y = rand() * (worldHeight - 20) + 10;
-      
-      // Если вы также хотите изменить количество ресурса В ОДНОМ месторождении, меняйте цифры здесь:
-      const max = type === "gold" ? 150 : type === "silicon" ? 100 : 75;
-      
-      gameState.resources.push(new Resource(type, x, y, max, max));
-    }
-  });
-}
-function getUnitFromPool(type, owner, x, y) {
-if (!unitPools[type]) unitPools[type] = [];
-// 🧹 Выкидываем из пула дубли и объекты, которые уже в игре
-if (unitPools[type].length > 0) {
-  const live = new Set(gameState.units), seen = new Set(), clean = [];
-  for (const p of unitPools[type]) {
-    if (!p || seen.has(p) || live.has(p)) { FX_STATE.stats.dupPool++; continue; }
-    seen.add(p); clean.push(p);
-  }
-  unitPools[type] = clean;
-}
-const pool = unitPools[type];
-let unit;
-  
-  if (pool.length > 0) {
-    unit = pool.pop();
-    // 🔥 ПОЛНЫЙ СБРОС ВСЕХ ПОЛЕЙ ЮНИТА
-    unit.x = x;
-    unit.y = y;
-    unit.owner = owner;
-    unit.alive = true;
-    unit.hidden = false;
-    unit.hiding = false;
-    unit.inWorkshop = null;
-    unit.target = null;
-    unit.commandQueue = [];
-    unit.defending = false;
-    unit.group = undefined;
-    unit.selected = false;
-    unit.maneuvering = false;
-    unit.formationBuff = null;
-    unit.burning = false;
-    unit.burnTime = 0;
-    unit.burnDuration = 0;
-    unit.shocked = false;
-    unit.shockedUntil = 0;
-    unit.frozen = false;
-    unit.freezeTimer = 0;
-    unit.idleTimer = 0;
-    unit.idlePhase = undefined;
-    unit.vx = 0;
-    unit.vy = 0;
-    unit.angle = 0;
-    unit.scale = 1;
-    unit.carrying = 0;
-    unit.delivering = false;
-    unit.carriedResourceToken = null;
-    unit.assignedResource = null;
-    unit.assignedResourceType = null;
-    unit.homeWarehouse = null;
-    unit.homeWorkshop = null;
-    unit.homeBuilding = null;
-    unit.busyRepair = false;
-    unit.laserBeam = null;
-    unit.lastFireTime = 0;
-    unit.lastMachineGunFireTime = 0;
-    unit.lastRocketFireTime = 0;
-    unit.lastMeleeAttack = 0;
-    unit.lastArtilleryAttack = 0;
-    unit.lastLaserAttack = 0;
-    unit.attackCooldown = 0;
-    unit.damage = undefined; // Сбрасываем бафф урона от формации
-    unit.speed = undefined;  // Сбрасываем бафф скорости
-    
-    // 🔥 ПЕРЕСЧЁТ ХАРАКТЕРИСТИК ПО ТИПУ (критично!)
-    switch (type) {
-      case "worker":
-        unit.health = 100; unit.maxHealth = 100;
-        unit.visionRadius = VISION_RADIUS;
-        break;
-      case "fighter":
-        unit.health = 250; unit.maxHealth = 250;
-        unit.range = 180; unit.fireRate = 350;
-        unit.orbitRadius = undefined; unit.orbitAngle = undefined;
-        unit.engagementRadius = 500;
-        unit.visionRadius = FIGHTER_VISION_RANGE;
-        unit.strafeDirection = Math.random() > 0.5 ? 1 : -1;
-        unit.strafeTimer = Math.random() * 2000 + 1000;
-        unit.strafeInterval = Math.random() * 2000 + 1000;
-        unit.orbitPhase = Math.random() * Math.PI * 2;
-        // 🔥 НОВОЕ: Поля для рывка (прорыв в тыл)
-        unit.dashTimer = Math.random() * 4000 + 4000; // Первый рывок через 4-8 сек
-        unit.orbitDirection = Math.random() > 0.5 ? 1 : -1; // 🔥 Индивидуальное направление орбиты
-        unit.dashInterval = Math.random() * 4000 + 4000; // Интервал между рывками
-        unit.isDashing = false;
-        unit.dashEndTime = 0;
-        unit.dashVector = { x: 0, y: 0 };
-        break;
-      case "repairman":
-        unit.health = 150; unit.maxHealth = 150;
-        unit.engagementRadius = 500;
-        unit.scale = 0.4;
-        unit.visionRadius = VISION_RADIUS;
-        break;
-      case "assault":
-        unit.health = 300; unit.maxHealth = 300;
-        unit.machineGunRange = 200;
-        unit.machineGunFireRate = 250;
-        unit.rocketRange = 280;
-        unit.rocketCooldown = 3000;
-        unit.engagementRadius = 500;
-        unit.range = 280;
-        unit.visionRadius = ASSAULT_VISION_RANGE;
-        unit.strafeDirection = Math.random() > 0.5 ? 1 : -1;
-        unit.strafeTimer = Math.random() * 3000 + 1000;
-        unit.strafeInterval = Math.random() * 3000 + 1000;
-        unit.combatPhase = 'approach'; // Начальная фаза: сближение
-        unit.phaseTimer = 0;
-        unit.figure8Phase = Math.random() * Math.PI * 2;
-        unit.rocketBurstCount = 0;
-        unit.rocketBurstTimer = 0;
-        break;
-      case "elite":
-        unit.health = 750; unit.maxHealth = 750;
-        unit.range = 500;
-        unit.meleeRange = 200;
-        unit.artilleryRange = 500;
-        unit.laserRange = 300;
-        unit.meleeCooldown = 1000;
-        unit.artilleryCooldown = 10000;
-        unit.laserCooldown = 5000;
-        unit.visionRadius = ELITE_VISION_RANGE;
-        break;
-    }
-    
- unit.id = generateUniqueUnitId();
-} else {
-unit = new Unit(type, owner, x, y);
-}
-// 🧹 Единая зачистка + гарантия боевых полей (лечит undefined → NaN)
-fxResetTransient(unit);
-fxEnsureCombat(unit);
-unit.__inPool = false;
-unit.__removed = false;
-unit.__inGame = false;   // в игру юнита ставит addUnit — это шаг 3
-return unit;
 }
 function startLaserEffect(laser) {
   const shooter = laser.shooter;
@@ -3427,17 +1916,4 @@ function triggerPerkSlot(slotIndex) {
   if (perkId === "shock") activateShockPerk(slotIndex);
   else if (perkId === "bomb") activateBombPerk(slotIndex);
   else if (perkId === "recon") activateReconPerk(slotIndex);
-}
-function getResourcesByOwner(owner) {
-  if (gameMode === "pvp") return owner === playerId ? gameState.playerResources : gameState.aiResources;
-  return owner === "ai" ? gameState.aiResources : gameState.playerResources;
-}
-function getMissingResources(cost, owner) {
-  const resources = gameMode === "pvp" ? gameState.playerResources : (owner === "ai" ? gameState.aiResources : gameState.playerResources);
-  const reserved = getReservedResources(owner);
-  return {
-    gold: Math.max(0, cost.gold + reserved.gold - resources.gold),
-    silicon: Math.max(0, cost.silicon + reserved.silicon - resources.silicon),
-    plasma: Math.max(0, cost.plasma + reserved.plasma - resources.plasma)
-  };
 }

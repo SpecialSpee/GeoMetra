@@ -6,7 +6,6 @@ function hasBuilding(buildingType, owner) {
   const found = gameState.buildings.some(b => b.owner === owner && b.type === buildingType);
   return found;
 }
-
 const buildingPrerequisites = {
   "base2": ["barracks"],
   "barracks2": ["base2"],
@@ -14,7 +13,6 @@ const buildingPrerequisites = {
   "base3": ["barracks2"],
   "barracks3": ["base3"]
 };
-
 function canBuild(buildingType) {
   const prereqs = buildingPrerequisites[buildingType];
   if (!prereqs) return true;
@@ -25,7 +23,6 @@ function canBuild(buildingType) {
   }
   return true;
 }
-
 function onDamage(entity, damage, source = null) {
   // 1. Базовая защита от мертвых целей или отрицательного урона
   if (!entity || entity.health <= 0 || damage <= 0) return;
@@ -94,11 +91,9 @@ function processBuildQueue() {
     }
   }
 }
-
 function markConstructionFailure(x, y) {
   failedClusters.push({ x, y, timestamp: performance.now() });
 }
-
 function cleanupFailedClusters() {
   const timeout = 30000; // 30 секунд
   const now = performance.now();
@@ -164,7 +159,6 @@ function scheduleAIBuilding(type, x, y, delay = 2000) {
   
   buildQueue.push({ type, x, y, plannedAt: performance.now(), delay });
 }
-
 function aiPlaceBuilding(buildingType, x, y) {
   x = Math.max(0, Math.min(worldWidth, x));
   y = Math.max(0, Math.min(worldHeight, y));
@@ -205,6 +199,11 @@ function aiPlaceBuilding(buildingType, x, y) {
   building.active = false;
   building.builtAt = performance.now();
   gameState.buildings.push(building);
+
+  // 🔥 НОВОЕ: Выталкиваем камни
+  if (typeof pushRocksOutOfBuilding === "function") {
+    pushRocksOutOfBuilding(building, 25);
+  }
 
   return building;
 }
@@ -269,7 +268,6 @@ function canSpendResources(cost, owner) {
     (resources.plasma || 0) >= (cost.plasma || 0)
   );
 }
-
 function aiEnqueueMilitaryUnit(unitType, building) {
   if (!building.active) return false;
 
@@ -290,12 +288,4 @@ function aiEnqueueMilitaryUnit(unitType, building) {
   
   building.productionQueue.push({ unitType, timeStart, productionTime });
   return true;
-}
-
-function isValidAiBuildLocation(x, y) {
-  return gameState.buildings.some(b => b.owner === "ai" && distance(b.x, b.y, x, y) < 320);
-}
-
-function distance(x1, y1, x2, y2) {
-  return Math.hypot(x2 - x1, y2 - y1);
 }

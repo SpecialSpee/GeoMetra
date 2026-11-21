@@ -4,13 +4,11 @@
 "use strict";
 
 Object.assign(window.GnnAI, {
-
   // === DPS юнитов ===
   getUnitDps: function(type) {
     const dps = { fighter: 15, assault: 35, elite: 60, turret: 20, turret2: 40, turret3: 70, worker: 0, repairman: 0 };
     return dps[type] || 0;
   },
-
   // === Ценность юнита/здания ===
   getUnitValue: function(type) {
     const values = {
@@ -21,7 +19,6 @@ Object.assign(window.GnnAI, {
     };
     return values[type] || 20;
   },
-
   // === Инициализация БД ===
   initWeightDB: async function () {
     return new Promise((resolve, reject) => {
@@ -44,7 +41,6 @@ Object.assign(window.GnnAI, {
       };
     });
   },
-
   // === Главная инициализация ===
   init: async function () {
     if (this.initialized) return;
@@ -157,7 +153,6 @@ Object.assign(window.GnnAI, {
     this._initializing = false;
     console.log(`[GnnAI] ✅ Модель (v7.7) готова. Backend: ${tf.getBackend()}`);
   },
-
   // === Инференс ===
   predictData: function (state) {
     if (!this.model) return null;
@@ -173,7 +168,6 @@ Object.assign(window.GnnAI, {
       return { logits: logitsData, value: valueData };
     });
   },
-
   // === Главный тик ===
   tick: async function () {
     if (!gameStarted || gameState.gameEnded || gameMode !== "gnn") return;
@@ -249,7 +243,6 @@ Object.assign(window.GnnAI, {
       this._doTrainStep();
     }
   },
-
   // === Оценка угроз (ИСПРАВЛЕНО: учет угрозы для экспансий) ===
   assessThreats: function () {
     const enemyUnits = gameState.units.filter(u => u.owner === "player" && u.health > 0);

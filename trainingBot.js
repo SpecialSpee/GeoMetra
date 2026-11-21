@@ -3,15 +3,12 @@
 // ============================================================
 (function () {
   "use strict";
-
   if (window.TrainingBot) {
     return;
   }
-  
-  window.OPPONENT_PROFILES = [
+    window.OPPONENT_PROFILES = [
     { name: "Rush", aggression: 0.9, eco: 0.5, expand: 0.5 },
   ];
-
   const TrainingBot = {
     active: false,
     lastActionTime: 0,
@@ -498,11 +495,9 @@
       return null;
     }
   };
-
   window.TrainingBot = TrainingBot;
   window.startTrainingBot = function () { TrainingBot.init(); };
   window.stopTrainingBot = function () { TrainingBot.stop(); };
-
   const origGameLoop = window.gameLoop;
   if (typeof origGameLoop === "function") {
     window.gameLoop = function (timestamp) {
@@ -512,6 +507,5 @@
   } else {
     setInterval(() => { if (TrainingBot.active) TrainingBot.tick(); }, 200);
   }
-
   console.log("[TrainingBot] 🤖 v2 активен: восстановление + ремонтники + реакция на атаку.");
 })();
