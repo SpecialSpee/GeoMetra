@@ -1432,7 +1432,7 @@ function renderGame() {
     }
     ctx.restore();
   });
-
+//ЮНИТЫ
   gameState.units.forEach(unit => {
     if (unit.hidden) return;
         // 🔥 НОВОЕ: враг невидим в тумане ИЛИ за камнем (только для чужих юнитов)
@@ -1451,6 +1451,22 @@ function renderGame() {
     }
     ctx.save();
     ctx.translate(unit.x, unit.y);
+
+  // 🔥 БЕЛЫЙ ШЛЕЙФ ДЛЯ ОТСТУПАЮЩИХ ЮНИТОВ (эффект потери кислорода)
+  if (unit.isRetreating && Math.random() < 0.3) {
+    gameState.particles.push({
+      x: unit.x - Math.cos(unit.angle) * 8,
+      y: unit.y - Math.sin(unit.angle) * 8,
+      vx: (Math.random() - 0.5) * 10,
+      vy: (Math.random() - 0.5) * 10,
+      life: 0.5 + Math.random() * 0.3,
+      maxLife: 0.8,
+      radius: 2 + Math.random() * 2,
+      color: "rgba(200, 220, 255, 0.6)",
+      type: "spark"
+    });
+  }
+
     ctx.scale(unit.scale, unit.scale);
     if (["fighter", "worker", "repairman", "assault", "elite"].includes(unit.type)) {
       const isCombat = ["fighter", "assault", "elite"].includes(unit.type);

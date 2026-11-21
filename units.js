@@ -142,7 +142,7 @@ unit.alive = false;
 function applyUnitMovement(unit, deltaTime) {
   if (unit.shocked || unit.health <= 0) return;
 
-  // 🔥 ПРИОРИТЕТ 0: ОТСТУПЛЕНИЕ (Полностью изолированный блок)
+  // 🔥 ПРИОРИТЕТ 0: ОТСТУПЛЕНИЕ
   if (unit.isRetreating) {
     let target = unit.retreatTarget;
     
@@ -167,6 +167,23 @@ function applyUnitMovement(unit, deltaTime) {
       unit.retreatTarget = null;
       unit.target = null;
       return;
+    }
+    
+    // 🔥 НОВОЕ: ОТСТРЕЛ ВО ВРЕМЯ ОТСТУПЛЕНИЯ
+    // Если враг в радиусе — стреляем, но НЕ переключаем цель и НЕ добавляем в очередь
+    const nearbyEnemies = getEnemiesInRange({x: unit.x, y: unit.y}, unit.range)
+      .filter(e => e.owner !== unit.owner && e.health > 0);
+    
+    if (nearbyEnemies.length > 0) {
+      const nearestEnemy = nearbyEnemies.sort((a, b) =>
+        Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
+      )[0];
+      
+      const now = performance.now();
+      if (now - unit.lastFireTime >= unit.fireRate) {
+        fireBullet(unit, nearestEnemy);
+        unit.lastFireTime = now;
+      }
     }
     
     const dist = Math.hypot(target.x - unit.x, target.y - unit.y);
@@ -198,7 +215,17 @@ function applyUnitMovement(unit, deltaTime) {
           }
         } else {
           unit.angle = Math.atan2(dy, dx);
-          const speed = unit.speed || (["fighter", "assault", "elite"].includes(unit.type) ? 120 : WORKER_SPEED);
+          
+          // 🔥 НЕСТАБИЛЬНАЯ СКОРОСТЬ ОТСТУПЛЕНИЯ (40-70% от обычной, эффект троющего двигателя)
+          let baseSpeed = ["fighter", "assault", "elite"].includes(unit.type) ? 120 : WORKER_SPEED;
+          // Используем unit.__epoch как уникальный числовой идентификатор юнита для синуса
+          const fluctuation = Math.sin(performance.now() / 800 + (unit.__epoch || 0)) * 0.15; // ±15%
+          const damageFactor = 0.55 + (unit.health / unit.maxHealth) * 0.15; // База 55-70% в зависимости от HP
+          let retreatSpeed = baseSpeed * (damageFactor + fluctuation);
+          retreatSpeed = Math.max(baseSpeed * 0.4, Math.min(baseSpeed * 0.7, retreatSpeed)); // Жесткое ограничение 40-70%
+          
+          const speed = retreatSpeed;
+          
           unit.vx = (dx / d) * speed;
           unit.vy = (dy / d) * speed;
           
@@ -233,10 +260,6 @@ function applyUnitMovement(unit, deltaTime) {
   if (["fighter", "assault", "elite"].includes(unit.type) && unit.target && unit.target.health > 0) {
     const distToTarget = Math.hypot(unit.target.x - unit.x, unit.target.y - unit.y);
     
-    // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: 
-    // Если у юнита есть активный A* путь (moveTarget) и он еще не в радиусе атаки,
-    // мы НЕ перехватываем управление боевой физикой! Даем A* довести юнита до позиции,
-    // чтобы он мог красиво обогнуть камни по пути к цели.
     if (unit.moveTarget && distToTarget > unit.range * 1.2) {
       // Пропускаем боевую физику, код пойдет дальше к ПРИОРИТЕТУ 2 (стандартное движение по A*)
     } else {
