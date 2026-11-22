@@ -10,7 +10,6 @@ Object.assign(window.GnnAI, {
     UNIT_PRODUCTION_GRACE: 10000, EARLY_GAME: 2.0, MID_GAME: 5.0, LATE_GAME: 10.0,
     WORKER_COST: 13, WAREHOUSE_COST: 20, BARRACKS_COST: 108, BASE2_COST: 216, BEACON_COST: 77,
   },
-
   // === Экономический паралич (ЭВРИСТИКА, без replay) ===
   checkEconomicParalysis: function(now) {
     if (!this.lastEcoCheck || now - this.lastEcoCheck < 10000) return;
@@ -27,7 +26,6 @@ Object.assign(window.GnnAI, {
       // Эвристика: можно добавить логику экстренного найма, но в replay не пишем
     }
   },
-
   // === Миссии (ЕДИНСТВЕННЫЙ ИСТОЧНИК НАГРАД ДЛЯ REPLAY) ===
   evaluateMissions: function () {
     for (let i = this.missionCache.length - 1; i >= 0; i--) {
@@ -160,7 +158,17 @@ Object.assign(window.GnnAI, {
               rewardDelta = -5.0; reason = "DEFENSE_FAILED";
             } else if (enemiesNow > 0 && aliveDefenders > 0) {
               rewardDelta = 1.0; reason = "DEFENSE_ONGOING";
-            } else { rewardDelta = -1.0; reason = "DEFENSE_NO_THREAT"; }
+            } else {
+              // 🔥 УСИЛЕННЫЙ ШТРАФ: защита от НЕВИДИМОГО врага = пассивность в темноте
+              const enemiesVisibleNow = this.countVisibleEnemies();
+              if (enemiesVisibleNow === 0) {
+                rewardDelta = -5.0;
+                reason = "HIDING_IN_DARKNESS: враг невидим, надо РАЗВЕДЫВАТЬ!";
+              } else {
+                rewardDelta = -1.0;
+                reason = "DEFENSE_NO_THREAT";
+              }
+            }
           }
         }
       }
@@ -208,6 +216,110 @@ Object.assign(window.GnnAI, {
             }
           } else { rewardDelta = -2.0; reason = "BUILD_TIMEOUT"; }
         }
+      }
+
+      // 🔥 4.5. РАЗВЕДКА (НЕПРЕРЫВНАЯ + ЦЕЛЕВАЯ)
+      else if (mission.intent.type === "recon") {
+        const elapsed = (performance.now() - mission.snapshot.time) / 1000;
+        const unitIds = mission.intent.unitIds || [];
+        const aliveRecon = unitIds.filter(id => {
+          const u = gameState.units.find(x => x.id === id);
+          return u && u.health > 0;
+        }).length;
+
+        // Текущие показатели видимости
+        const fogNow = this.countExploredCells();
+        const enemiesNow = this.countVisibleEnemies();
+        const basesNow = this.countVisibleEnemyBases();
+        
+        const fogAtStart = mission.intent.fogCountAtStart || fogNow;
+        const enemiesAtStart = mission.intent.enemiesAtStart || 0;
+        const basesAtStart = mission.intent.basesAtStart || 0;
+
+        const totalNewCells = Math.max(0, fogNow - fogAtStart);
+        const newEnemies = Math.max(0, enemiesNow - enemiesAtStart);
+        const newBases = Math.max(0, basesNow - basesAtStart);
+
+        // 🔥 1. НЕПРЕРЫВНАЯ МИКРО-НАГРАДА (каждые 2 секунды)
+        if (elapsed > 2 && aliveRecon > 0) {
+          if (mission._lastReconTick === undefined) {
+            mission._lastReconTick = 0;
+            mission._lastCellCount = fogAtStart;
+          }
+          if (elapsed - mission._lastReconTick >= 2.0) {
+            const currentCells = this.countExploredCells();
+            const newCellsSinceLastTick = Math.max(0, currentCells - (mission._lastCellCount || fogAtStart));
+            
+            if (newCellsSinceLastTick > 0) {
+              // +0.05 за каждую новую клетку! Модель поймет, что двигаться выгодно.
+              mission.replayEntry.reward += newCellsSinceLastTick * 0.05; 
+            }
+            mission._lastCellCount = currentCells;
+            mission._lastReconTick = elapsed;
+          }
+        }
+
+        // 🔥 2. ЖЕСТКИЕ УСЛОВИЯ ЗАВЕРШЕНИЯ (Чтобы не останавливалась после 1 клетки)
+        const MIN_RECON_TIME = 15.0;   // Минимум 15 секунд в пути
+        const MIN_RECON_CELLS = 50;    // Или открыть минимум 50 клеток
+
+        if (newBases > 0) {
+          // ГЛАВНЫЙ КУШ: обнаружена вражеская база! Миссия выполнена мгновенно.
+          isResolved = true;
+          rewardDelta = 25.0 + (totalNewCells * 0.1);
+          reason = `RECON_FOUND_BASE: база открыта! (+${totalNewCells} клеток)`;
+        } 
+        else if (newEnemies > 0 && elapsed > 3) {
+          // Найдены вражеские юниты/здания — миссия выполнена
+          isResolved = true;
+          rewardDelta = 10.0 + (newEnemies * 2.0) + (totalNewCells * 0.05);
+          reason = `RECON_FOUND_ENEMIES: ${newEnemies} целей, (+${totalNewCells} клеток)`;
+        } 
+                // 🔥 СТРАХОВКА: Если разведчики улетели слишком далеко в пустоту (далеко за пределы карты)
+        const wW = typeof worldWidth !== 'undefined' ? worldWidth : 2000;
+        const wH = typeof worldHeight !== 'undefined' ? worldHeight : 2000;
+        let isLostInSpace = false;
+        
+        unitIds.forEach(id => {
+          const u = gameState.units.find(x => x.id === id);
+          if (u && u.health > 0) {
+            // Если юнит дальше чем на 600px за пределами карты, считаем его "потерянным в космосе"
+            if (u.x < -600 || u.x > wW + 600 || u.y < -600 || u.y > wH + 600) {
+              isLostInSpace = true;
+            }
+          }
+        });
+
+        if (isLostInSpace) {
+          isResolved = true;
+          rewardDelta = -5.0;
+          reason = "RECON_LOST_IN_SPACE: улетел слишком далеко, возвращайся!";
+        }
+        else if (aliveRecon === 0 && unitIds.length > 0) {
+          // Все разведчики мертвы
+          isResolved = true;
+          rewardDelta = totalNewCells > 50 ? 3.0 : -2.0;
+          reason = totalNewCells > 50 ? "RECON_DIED_BUT_EXPLORED" : "RECON_FAILED_DEAD";
+        }
+        else if (aliveRecon === 0 && unitIds.length > 0) {
+          // Все разведчики мертвы
+          isResolved = true;
+          rewardDelta = totalNewCells > MIN_RECON_CELLS ? 3.0 : -2.0;
+          reason = totalNewCells > MIN_RECON_CELLS ? "RECON_DIED_BUT_EXPLORED" : "RECON_FAILED_DEAD";
+        } 
+        else if (elapsed >= MIN_RECON_TIME) {
+          // Таймаут: проверяем, достигли ли мы минимальной цели по клеткам
+          isResolved = true;
+          if (totalNewCells >= MIN_RECON_CELLS) {
+            rewardDelta = 5.0 + (totalNewCells * 0.05);
+            reason = `RECON_SUCCESS: открыто ${totalNewCells} клеток за ${elapsed.toFixed(1)}с`;
+          } else {
+            rewardDelta = -3.0;
+            reason = `RECON_TIMEOUT_USELESS: всего ${totalNewCells} клеток (нужно ${MIN_RECON_CELLS})`;
+          }
+        }
+        // ⚠️ ВАЖНО: Если elapsed < MIN_RECON_TIME и клеток < MIN_RECON_CELLS, 
+        // isResolved остается false, и миссия ПРОДОЛЖАЕТСЯ, накапливая микро-награды!
       }
       
       // 5. БЕЗДЕЙСТВИЕ
@@ -262,22 +374,16 @@ Object.assign(window.GnnAI, {
       }
     }
   },
-
-  // === ВСЕ ОСТАЛЬНЫЕ ФУНКЦИИ: ТОЛЬКО ЭВРИСТИКИ, БЕЗ REPLAY.PUSH ===
-  // (Мертвый код с if (reward !== 0) полностью удален для экономии CPU)
-
   evaluateEconomyEfficiency: function (now) {
     if (!this.lastEcoEffCheck || now - this.lastEcoEffCheck < 10000) return;
     this.lastEcoEffCheck = now;
     // Эвристики можно добавить сюда, но replay.push запрещен
   },
-
   evaluateOpponentGap: function (now) {
     if (!this.lastGapCheck || now - this.lastGapCheck < 10000) return;
     this.lastGapCheck = now;
     // Эвристики, без replay.push
   },
-
   evaluateStagnation: function (now) {
     if (now - this.lastStagnationCheck < 10000) return;
     this.lastStagnationCheck = now;
@@ -289,38 +395,31 @@ Object.assign(window.GnnAI, {
     this.lastBuildingCount = m.aiBuildings;
     this.lastResourceTotal = m.resTotal;
   },
-
   evaluateMilitaryBalance: function (now) {
     if (!this.lastMilitaryCheck || now - this.lastMilitaryCheck < 10000) return;
     this.lastMilitaryCheck = now;
   },
-
   evaluateArmyActivity: function (now) {
     if (!this.lastArmyActivityCheck || now - this.lastArmyActivityCheck < 10000) return;
     this.lastArmyActivityCheck = now;
   },
-
   checkTechStagnation: function (now) {
     if (!this.lastTechStagnationCheck || now - this.lastTechStagnationCheck < 10000) return;
     this.lastTechStagnationCheck = now;
     this.lastResourceTotal = this.metrics().resTotal;
   },
-
   evaluatePhaseRewards: function (now) {
     if (!this.lastPhaseCheck || now - this.lastPhaseCheck < 10000) return;
     this.lastPhaseCheck = now;
   },
-
   evaluateResourceControl: function (now) {
     if (!this.lastResourceControlCheck || now - this.lastResourceControlCheck < 5000) return;
     this.lastResourceControlCheck = now;
   },
-
   evaluateExpansion: function (now) {
     if (!this.lastExpansionCheck || now - this.lastExpansionCheck < 5000) return;
     this.lastExpansionCheck = now;
   },
-
   evaluateCombatEfficiency: function (now) {
     if (!this.lastCombatEfficiencyCheck || now - this.lastCombatEfficiencyCheck < 6000) return;
     this.lastCombatEfficiencyCheck = now;
@@ -343,27 +442,22 @@ Object.assign(window.GnnAI, {
     this._lastKillCount = killedEnemies;
     this._lastDeathCount = lostAllies;
   },
-
   evaluateTargetSelection: function (now) {
     if (!this.lastTargetSelectionCheck || now - this.lastTargetSelectionCheck < 8000) return;
     this.lastTargetSelectionCheck = now;
   },
-
   evaluateArmyPreservation: function (now) {
     if (!this.lastArmyPreservationCheck || now - this.lastArmyPreservationCheck < 8000) return;
     this.lastArmyPreservationCheck = now;
   },
-
   evaluateRecon: function (now) {
     if (!this.lastReconCheck || now - this.lastReconCheck < 3000) return;
     this.lastReconCheck = now;
   },
-
   evaluateReconDiscovery: function (now) {
     if (!this.lastReconDiscoveryCheck || now - this.lastReconDiscoveryCheck < 2000) return;
     this.lastReconDiscoveryCheck = now;
   },
-
   evaluateStrategicAdaptation: function (now) {
     if (!this.lastAdaptationCheck || now - this.lastAdaptationCheck < 15000) return;
     this.lastAdaptationCheck = now;
@@ -374,7 +468,6 @@ Object.assign(window.GnnAI, {
       this.strategicMemory.wasEnemyAggressive = isEnemyAggressive;
     }
   },
-
   evaluateBuildingLiquidation: function(now) {
     if (!this.lastLiquidationCheck || now - this.lastLiquidationCheck < 4000) {
       this.lastLiquidationCheck = now;

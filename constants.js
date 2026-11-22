@@ -28,7 +28,7 @@ window.gameMode = "single"; // или просто: gameMode = "single";
     LR: 0.00005,
     DECISION_MS: 500,
     MIN_COMMIT_MS: 30000,
-    WORLD_WIDTH: 2200,
+    WORLD_WIDTH: 4200,
     WORLD_HEIGHT: 2200,
     BUILD_QUEUE_MS: 400,
     ECO_MS: 1500,

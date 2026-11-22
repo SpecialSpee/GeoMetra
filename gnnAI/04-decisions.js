@@ -1,9 +1,5 @@
-// ============================================================
 // 04-decisions.js — Решения: decide, execute, validActionMask,
-//                    sampleMasked, findBuildPos, tryBuildSpecific
-// ============================================================
 "use strict";
-
 Object.assign(window.GnnAI, {
   // === Разделение армии на группы для фланговой атаки ===
   splitArmyIntoGroups: function(freeUnits, numGroups = 2) {
@@ -22,8 +18,8 @@ Object.assign(window.GnnAI, {
     // ПРОВЕРКА: есть ли активные макро-операции?
     const activeMacroMissions = this.missionCache.filter(m => 
       !m.resolved && 
-      (m.intent.type === "attack" || m.intent.type === "defend") &&
-      (now - m.snapshot.time) < 30000 // операция активна < 30 секунд
+      (m.intent.type === "attack" || m.intent.type === "defend" || m.intent.type === "recon") &&
+      (now - m.snapshot.time) < 45000 // разведка может идти до 45 секунд
     );
     
     // Если армия уже выполняет макро-задачу, пропускаем макро-решение
@@ -338,23 +334,77 @@ Object.assign(window.GnnAI, {
   execute: function (action, actionIndex, state) {
     const now = performance.now();
 
-  const isUnitAvailable = (u) => {
-    if (!u || u.health <= 0) return false;
-    if (u.isRetreating || u.forceRetreat) return false; // 🔥 ЗАПРЕТ: юнит в режиме паники/ремонта
-    if (u.target && u.target.health > 0) return false; // 🔥 ЗАПРЕТ: не прерывать активный бой
-    if (!u.missionLog) return true;
-    return (now - u.missionLog.startTime) > 6000; // 6 секунд неприкосновенности
-  };
-
-    const tacticalActions = [
-      "strike_weak", "focus_fire", "retreat_regroup", "flank_attack",
-      "harass_economy", "all_in_base", "defend",
-      "tactic_all_in", "tactic_harass", "tactic_push", "tactic_defend"
-    ];
+    const isUnitAvailable = (u) => {
+      if (!u || u.health <= 0) return false;
+      if (u.isRetreating || u.forceRetreat) return false;
+      if (u.target && u.target.health > 0) return false;
+      if (!u.missionLog) return true;
+      return (now - u.missionLog.startTime) > 6000;
+    };
 
     try {
+      // 🔥 УНИВЕРСАЛЬНЫЙ FALLBACK НА РАЗВЕДКУ (с "Разведывательным периметром")
+      const sendToRecon = (units, actionName) => {
+        if (!units || units.length === 0) return false;
+        console.warn(`[GnnAI 🛰️] ${actionName} выбрана, но цель скрыта туманом! Юниты (${units.length} шт.) отправляются на РАЗВЕДКУ.`);
+        
+        const reconNode = state.nodes.find(n => n.valid && n.isVirtual && n.virtualType === "recon");
+        let tx, ty;
+        
+        // 🔥 НОВОЕ: "Разведывательный периметр". 
+        // Мы разрешаем маневры ЗА краем карты (для флангов), но не даем улететь в бесконечность.
+        const scoutMargin = 250; // 250 пикселей за границей карты — зона для фланговых маневров
+        const wW = typeof worldWidth !== 'undefined' ? worldWidth : 2000;
+        const wH = typeof worldHeight !== 'undefined' ? worldHeight : 2000;
+        
+        const minX = -scoutMargin;
+        const maxX = wW + scoutMargin;
+        const minY = -scoutMargin;
+        const maxY = wH + scoutMargin;
+
+        if (reconNode) {
+          // Если есть виртуальная точка разведки, берем её, но ОБРЕЗАЕМ по периметру
+          tx = Math.max(minX, Math.min(maxX, reconNode.x));
+          ty = Math.max(minY, Math.min(maxY, reconNode.y));
+        } else {
+          // Если точки нет, выбираем случайную точку ВНУТРИ разведывательного периметра
+          // (а не относительно базы, чтобы они не улетали в космос, если база в центре)
+          tx = minX + Math.random() * (maxX - minX);
+          ty = minY + Math.random() * (maxY - minY);
+        }
+        
+        units.forEach((u, index) => {
+          // Добавляем разброс, чтобы группа не шла гуськом в одну точку
+          const spreadX = (Math.random() - 0.5) * 200;
+          const spreadY = (Math.random() - 0.5) * 200;
+          
+          // 🔥 Финальная защита: разброс тоже не должен выкидывать их за периметр
+          const finalX = Math.max(minX, Math.min(maxX, tx + spreadX));
+          const finalY = Math.max(minY, Math.min(maxY, ty + spreadY));
+          
+          u.commandQueue = [{ type: "move", x: finalX, y: finalY }];
+        });
+        
+        // Snapshot для системы наград
+        const snapshot = {
+          unitIds: units.map(u => u.id),
+          fogCountAtStart: this.countExploredCells(),
+          enemiesAtStart: this.countVisibleEnemies(),
+          basesAtStart: this.countVisibleEnemyBases()
+        };
+        
+        this.registerAction(actionName, state, { 
+          type: "recon", 
+          tactic: actionName, 
+          units: units.length,
+          ...snapshot
+        }, actionIndex);
+        return true;
+      };
+
       // DEFEND
       if (action === "defend") {
+        console.log(`[GnnAI 🧠] Попытка выполнить: defend`);
         const freeUnits = gameState.units.filter(u => 
           u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0 && isUnitAvailable(u)
         );
@@ -374,38 +424,63 @@ Object.assign(window.GnnAI, {
 
       // TACTIC_*
       if (action.startsWith("tactic_")) {
+        console.log(`[GnnAI 🧠] Попытка выполнить: ${action}`);
         const freeUnits = gameState.units.filter(u =>
           u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && isUnitAvailable(u)
         );
-        if (freeUnits.length === 0) {
-          this.replay.push({ X: state.X, A_distance: state.A_distance, A_threat: state.A_threat, actionIndex: actionIndex, reward: -1.0 });
-          return false;
-        }
+        if (freeUnits.length === 0) return sendToRecon([], action);
         
+        const getKnownTargets = (types) => {
+          return state.nodes.filter(n => 
+            n.valid && n.owner === "player" && n.hp > 0 && 
+            (types ? (Array.isArray(types) ? types.includes(n.type) : n.type === types) : true)
+          );
+        };
+
         let target = null;
         let forcePercentage = 0.5;
+        let isRecon = false;
+
         if (action === "tactic_all_in") {
-          target = gameState.buildings.find(b => b.owner === "player" && b.type === "base") || gameState.buildings.find(b => b.owner === "player" && b.health > 0);
+          const knownBases = getKnownTargets(["base", "base2", "base3"]);
+          target = knownBases.length > 0 ? knownBases[0].obj : null;
           forcePercentage = 0.90;
-        } else if (action === "tactic_harass") {
-          const vulnerable = [...gameState.units.filter(u => u.owner === "player" && u.type === "worker"),
-            ...gameState.buildings.filter(b => b.owner === "player" && (b.type === "warehouse" || b.type === "repairWorkshop"))];
-          target = vulnerable.length > 0 ? vulnerable[0] : gameState.buildings.find(b => b.owner === "player" && b.health > 0);
+        } 
+        else if (action === "tactic_harass") {
+          const knownEco = getKnownTargets(["worker", "warehouse", "repairWorkshop"]);
+          target = knownEco.length > 0 ? knownEco[0].obj : null;
           forcePercentage = 0.30;
-        } else if (action === "tactic_push") {
-          const enemies = [...gameState.units.filter(u => u.owner === "player" && u.health > 0), ...gameState.buildings.filter(b => b.owner === "player" && b.health > 0)];
-          target = enemies.reduce((best, o) => Math.hypot(o.x - aiBase.x, o.y - aiBase.y) < Math.hypot(best.x - aiBase.x, best.y - aiBase.y) ? o : best, enemies[0]);
+        } 
+        else if (action === "tactic_push") {
+          const knownEnemies = getKnownTargets(null);
+          if (knownEnemies.length > 0) {
+            knownEnemies.sort((a, b) => {
+              const distA = Math.hypot(a.x - aiBase.x, a.y - aiBase.y);
+              const distB = Math.hypot(b.x - aiBase.x, b.y - aiBase.y);
+              return distA - distB;
+            });
+            target = knownEnemies[0].obj;
+          }
           forcePercentage = 0.60;
-        } else if (action === "tactic_defend") {
-          const threats = gameState.units.filter(u => u.owner === "player" && u.health > 0);
-          target = threats.reduce((closest, u) => Math.hypot(u.x - aiBase.x, u.y - aiBase.y) < Math.hypot(closest.x - aiBase.x, closest.y - aiBase.y) ? u : closest, {x: aiBase.x, y: aiBase.y, health: 9999});
+        } 
+        else if (action === "tactic_defend") {
+          const knownThreats = getKnownTargets(null);
+          if (knownThreats.length > 0) {
+            knownThreats.sort((a, b) => {
+              const distA = Math.hypot(a.x - aiBase.x, a.y - aiBase.y);
+              const distB = Math.hypot(b.x - aiBase.x, b.y - aiBase.y);
+              return distA - distB;
+            });
+            target = knownThreats[0].obj;
+          } else {
+            target = { x: aiBase.x, y: aiBase.y, type: "aiBase", owner: "ai", health: 9999 };
+          }
           forcePercentage = 0.80;
         }
         
-        if (!target || target.health <= 0) {
-          // Динамический поиск альтернативы, если главная цель мертва
-          target = gameState.units.find(u => u.owner === "player" && u.health > 0) || gameState.buildings.find(b => b.owner === "player" && b.health > 0);
-          if (!target) return false;
+        // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Если цель НЕ НАЙДена, отправляем на разведку!
+        if (!target) {
+          return sendToRecon(freeUnits.slice(0, Math.ceil(freeUnits.length * forcePercentage)), action);
         }
 
         freeUnits.sort((a, b) => {
@@ -420,7 +495,7 @@ Object.assign(window.GnnAI, {
         attackers.forEach(u => {
           const physicalTarget = (target.obj && target.obj.units) ? target.obj.units[0] : target;
           u.commandQueue = [
-            { type: "move", x: target.x + (Math.random()-0.5)*40, y: target.y + (Math.random()-0.5)*40 }, // Небольшой разброс, чтобы не слипаться
+            { type: "move", x: target.x + (Math.random()-0.5)*40, y: target.y + (Math.random()-0.5)*40 },
             { type: "attack", target: physicalTarget }
           ];
         });
@@ -518,14 +593,14 @@ Object.assign(window.GnnAI, {
 
       // STRIKE_WEAK
       if (action === "strike_weak") {
-        // 🔥 ИСПРАВЛЕНО: полное объявление targets + защита от атаки своих
+        console.log(`[GnnAI 🧠] Попытка выполнить: strike_weak`);
         const targets = state.nodes.filter(n => 
-          n.valid && 
-          n.owner === "player" && 
-          n.owner !== "ai" && 
-          ["warehouse","barracks","beacon","base","base2","base3"].includes(n.type) && 
-          n.hp > 0
+          n.valid && n.owner === "player" && n.owner !== "ai" && 
+          ["warehouse","barracks","beacon","base","base2","base3"].includes(n.type) && n.hp > 0
         );
+        
+        const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0 && isUnitAvailable(u));
+        if (targets.length === 0) return sendToRecon(freeUnits, "strike_weak");
         
         targets.forEach(target => {
           const nearbyEnemies = state.nodes.filter(n => 
@@ -550,9 +625,6 @@ Object.assign(window.GnnAI, {
         const target = targets[0];
         if (!target || target.hp <= 0) return false;
         
-        const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0 && isUnitAvailable(u));
-        if (freeUnits.length === 0) return false;
-        
         const maxAttackers = Math.min(freeUnits.length, target.type === "warehouse" ? 4 : 8);
         const attackers = freeUnits.slice(0, maxAttackers);
         
@@ -573,7 +645,6 @@ Object.assign(window.GnnAI, {
           
         attackers.forEach(u => {
           const physicalTarget = (target.obj && target.obj.units) ? target.obj.units[0] : target.obj;
-          // 🔥 УНИВЕРСАЛЬНАЯ ЗАЩИТА: не атаковать своих
           if (physicalTarget && physicalTarget.owner === u.owner) {
             console.warn(`[GnnAI ⚠️] БЛОКИРОВКА: юнит ${u.type} пытался атаковать своего ${physicalTarget.type}`);
             return;
@@ -587,35 +658,26 @@ Object.assign(window.GnnAI, {
 
       // FOCUS_FIRE
       if (action === "focus_fire") {
-        const enemyTargets = state.nodes.filter(n => 
-          n.valid && 
-          n.owner === "player" && 
-          n.owner !== "ai" &&  // 🔥 ЗАПРЕТ своих
-          n.hp > 0
-        );
-        if (enemyTargets.length === 0) return false;
+        console.log(`[GnnAI 🧠] Попытка выполнить: focus_fire`);
+        const enemyTargets = state.nodes.filter(n => n.valid && n.owner === "player" && n.owner !== "ai" && n.hp > 0);
+        const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0 && isUnitAvailable(u));
+        if (enemyTargets.length === 0) return sendToRecon(freeUnits, "focus_fire");
         
         enemyTargets.sort((a, b) => {
           const aIsBuilding = ["base","warehouse","barracks","turret"].includes(a.type) ? 0 : 1;
           const bIsBuilding = ["base","warehouse","barracks","turret"].includes(b.type) ? 0 : 1;
           if (aIsBuilding !== bIsBuilding) return aIsBuilding - bIsBuilding;
-          // Приоритет: цель с наименьшим HP, но высоким приоритетом (добивание)
           if (a.targetPriority === b.targetPriority) return a.hp - b.hp; 
           return b.targetPriority - a.targetPriority;
         });
         
         let target = enemyTargets[0];
-        // АНАЛИЗ: Если цель уже почти мертва (hp < 0.1), возможно, фокусить её уже не нужно, берем следующую
         if (target.hp < 0.1 && enemyTargets.length > 1) {
           target = enemyTargets[1];
         }
         
-        const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0 && isUnitAvailable(u));
-        if (freeUnits.length === 0) return false;
-        
         freeUnits.forEach(u => {
           const physicalTarget = (target.obj && target.obj.units) ? target.obj.units[0] : target.obj;
-          // Добавляем команду "преследовать" или просто атаковать
           u.commandQueue = [{
             type: "attack",
             target: physicalTarget || {x: target.x, y: target.y, type: target.type, owner: "player", health: target.hp * 100}
@@ -626,96 +688,94 @@ Object.assign(window.GnnAI, {
         return true;
       }
 
-  // RETREAT_REGROUP (УМНАЯ ПАНИКА)
-  if (action === "retreat_regroup") {
-    const wounded = gameState.units.filter(u =>
-      u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) &&
-      u.health > 0 && u.health < u.maxHealth * 0.65 // Отступаем при 65% HP, чтобы успеть уйти
-    );
-    
-    if (wounded.length === 0) return false;
+      // RETREAT_REGROUP
+      if (action === "retreat_regroup") {
+        console.log(`[GnnAI 🧠] Попытка выполнить: retreat_regroup`);
+        const wounded = gameState.units.filter(u =>
+          u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) &&
+          u.health > 0 && u.health < u.maxHealth * 0.65
+        );
+        
+        if (wounded.length === 0) return false;
 
-    const repairWorkshop = gameState.buildings.find(b => b.owner === "ai" && b.type === "repairWorkshop" && b.active);
-    const rallyPoint = repairWorkshop || aiBase;
+        const repairWorkshop = gameState.buildings.find(b => b.owner === "ai" && b.type === "repairWorkshop" && b.active);
+        const rallyPoint = repairWorkshop || aiBase;
 
-    wounded.forEach(u => {
-      // 1. ЖЕСТКИЙ СБРОС: уничтожаем старые команды и логи, чтобы юнит "забыл" атаку
-      u.commandQueue = [];
-      u.missionLog = null;
-      u.isRetreating = true;
-      u.forceRetreat = true; // Дополнительный флаг-страж
+        wounded.forEach(u => {
+          u.commandQueue = [];
+          u.missionLog = null;
+          u.isRetreating = true;
+          u.forceRetreat = true;
 
-      // 2. Находим ближайшую угрозу (вражеский юнит или турель)
-      const threats = [
-        ...gameState.units.filter(e => e.owner === "player" && e.health > 0),
-        ...gameState.buildings.filter(e => e.owner === "player" && e.type?.startsWith("turret") && e.health > 0)
-      ];
+          const threats = [
+            ...gameState.units.filter(e => e.owner === "player" && e.health > 0),
+            ...gameState.buildings.filter(e => e.owner === "player" && e.type?.startsWith("turret") && e.health > 0)
+          ];
 
-      let nearestThreat = null;
-      let minDist = Infinity;
-      threats.forEach(t => {
-        const d = Math.hypot(t.x - u.x, t.y - u.y);
-        if (d < minDist) { minDist = d; nearestThreat = t; }
-      });
+          let nearestThreat = null;
+          let minDist = Infinity;
+          threats.forEach(t => {
+            const d = Math.hypot(t.x - u.x, t.y - u.y);
+            if (d < minDist) { minDist = d; nearestThreat = t; }
+          });
 
-      let escapeX = u.x;
-      let escapeY = u.y;
+          let escapeX = u.x;
+          let escapeY = u.y;
 
-      // 3. Если угроза близко (< 350px), сначала делаем рывок в ПРОТИВОПОЛОЖНУЮ сторону
-      if (nearestThreat && minDist < 350) {
-        const angle = Math.atan2(u.y - nearestThreat.y, u.x - nearestThreat.x); // Вектор ОТ угрозы
-        const evadeDist = 200; // Дистанция рывка из зоны прямого обстрела
-        escapeX = u.x + Math.cos(angle) * evadeDist;
-        escapeY = u.y + Math.sin(angle) * evadeDist;
+          if (nearestThreat && minDist < 350) {
+            const angle = Math.atan2(u.y - nearestThreat.y, u.x - nearestThreat.x);
+            const evadeDist = 200;
+            escapeX = u.x + Math.cos(angle) * evadeDist;
+            escapeY = u.y + Math.sin(angle) * evadeDist;
+          }
+
+          u.commandQueue = [
+            { type: "move", x: escapeX, y: escapeY },
+            { type: "move", x: rallyPoint.x + (Math.random() - 0.5) * 80, y: rallyPoint.y + (Math.random() - 0.5) * 80 }
+          ];
+        });
+
+        this.registerAction(action, state, {type: "retreat", anchor: rallyPoint, units: wounded.length}, actionIndex);
+        return true;
       }
-
-      // 4. Формируем новую очередь: Сначала рывок в безопасность, потом движение к ремонту
-      // ВАЖНО: Команды "attack" здесь НЕТ. Только движение.
-      u.commandQueue = [
-        { type: "move", x: escapeX, y: escapeY },
-        { type: "move", x: rallyPoint.x + (Math.random() - 0.5) * 80, y: rallyPoint.y + (Math.random() - 0.5) * 80 }
-      ];
-    });
-
-    this.registerAction(action, state, {type: "retreat", anchor: rallyPoint, units: wounded.length}, actionIndex);
-    return true;
-  }
 
       // FLANK_ATTACK
       if (action === "flank_attack") {
+        console.log(`[GnnAI 🧠] Попытка выполнить: flank_attack`);
         const flankNodes = state.nodes.filter(n => n.valid && n.isVirtual && n.virtualType === "flank");
         const freeUnits = gameState.units.filter(u => u.owner === "ai" && ["fighter","assault","elite"].includes(u.type) && u.health > 0 && isUnitAvailable(u));
         
-        if (freeUnits.length < 2) return false;
+        if (freeUnits.length < 2) return sendToRecon(freeUnits, "flank_attack");
         
         const groups = this.splitArmyIntoGroups(freeUnits, 2);
         const targetNode = state.nodes.find(n =>
-          n.valid && 
-          n.owner === "player" && 
-          n.owner !== "ai" &&  // 🔥 ЗАПРЕТ своих
-          (n.type.includes("base") || ["fighter","assault","elite","warehouse","barracks"].includes(n.type)) && 
-          n.hp > 0
+          n.valid && n.owner === "player" && n.owner !== "ai" &&
+          (n.type.includes("base") || ["fighter","assault","elite","warehouse","barracks"].includes(n.type)) && n.hp > 0
         );
         
-        // Если главная цель пропала, ищем любую другую вражескую единицу
-        const fallbackTarget = targetNode ? targetNode.obj : gameState.units.find(u => u.owner === "player" && u.health > 0) || gameState.buildings.find(b => b.owner === "player" && b.health > 0);
-        if (!fallbackTarget) return false;
+        // 🔥 ИСПРАВЛЕНО: Если цели нет, не return false, а отправляем фланговые группы на разведку!
+        if (!targetNode) {
+          console.warn("[GnnAI 🛰️] Flank attack: цель не видна. Группы отправляются на разведку по фланговым точкам.");
+          groups.forEach((group, idx) => {
+            const flankPoint = flankNodes.length > idx ? flankNodes[idx] : { x: aiBase.x + (idx === 0 ? -400 : 400), y: aiBase.y };
+            group.forEach(u => {
+              u.commandQueue = [{type: "move", x: flankPoint.x, y: flankPoint.y}];
+            });
+          });
+          this.registerAction(action, state, { type: "recon", tactic: "flank_attack", units: freeUnits.length }, actionIndex);
+          return true;
+        }
 
         groups.forEach((group, idx) => {
-          const flankPoint = flankNodes.length > idx ? flankNodes[idx] : { x: fallbackTarget.x + (idx === 0 ? -200 : 200), y: fallbackTarget.y };
+          const flankPoint = flankNodes.length > idx ? flankNodes[idx] : { x: targetNode.x + (idx === 0 ? -200 : 200), y: targetNode.y };
           group.forEach(u => {
-            const physicalTarget = (targetNode && targetNode.obj && targetNode.obj.units)
-              ? targetNode.obj.units[0]
-              : fallbackTarget;
-            
-            // АНАЛИЗ: Даем команду двигаться  точке фланга, но как только враг в радиусе атаки, движок игры сам должен переключить на атаку.
+            const physicalTarget = (targetNode.obj && targetNode.obj.units) ? targetNode.obj.units[0] : targetNode.obj;
             const scale = typeof window.getWorldScale === 'function' ? window.getWorldScale() : 1.0;
-            const distToTarget = Math.hypot(u.x - fallbackTarget.x, u.y - fallbackTarget.y);
+            const distToTarget = Math.hypot(u.x - targetNode.x, u.y - targetNode.y);
             if (distToTarget < (300 * scale)) { 
-              // 🔥 УНИВЕРСАЛЬНАЯ ЗАЩИТА: не атаковать своих
               if (physicalTarget && physicalTarget.owner === u.owner) {
                 console.warn(`[GnnAI ⚠️] БЛОКИРОВКА: юнит ${u.type} пытался атаковать своего ${physicalTarget.type}`);
-                return false;
+                return;
               }
               u.commandQueue = [{type: "attack", target: physicalTarget}];
             } else {
@@ -736,31 +796,24 @@ Object.assign(window.GnnAI, {
 
       // HARASS_ECONOMY
       if (action === "harass_economy") {
+        console.log(`[GnnAI 🧠] Попытка выполнить: harass_economy`);
         const ecoTargets = state.nodes.filter(n =>
-          n.valid && 
-          n.owner === "player" && 
-          n.owner !== "ai" &&  // 🔥 ЗАПРЕТ своих
-          ["warehouse","repairWorkshop","worker"].includes(n.type) && 
-          n.hp > 0
+          n.valid && n.owner === "player" && n.owner !== "ai" &&
+          ["warehouse","repairWorkshop","worker"].includes(n.type) && n.hp > 0
         );
-        if (ecoTargets.length === 0) return false;
+        const fighters = gameState.units.filter(u => u.owner === "ai" && u.type === "fighter" && u.health > 0 && isUnitAvailable(u));
+        if (ecoTargets.length === 0) return sendToRecon(fighters, "harass_economy");
         
         ecoTargets.sort((a, b) => {
           const distA = Math.hypot(a.x - aiBase.x, a.y - aiBase.y);
           const distB = Math.hypot(b.x - aiBase.x, b.y - aiBase.y);
-          return distA - distB; // Ближайшая цель
+          return distA - distB;
         });
         
         const target = ecoTargets[0];
-        const fighters = gameState.units.filter(u =>
-          u.owner === "ai" && u.type === "fighter" && u.health > 0 && isUnitAvailable(u)
-        );
-        if (fighters.length === 0) return false;
         
         fighters.forEach(u => {
           const physicalTarget = (target.obj && target.obj.units) ? target.obj.units[0] : target.obj;
-          
-          // АНАЛИЗ ОПЕРАЦИИ: Если юнит уже ранен (>30% потерь), заставляем его отступать вместо атаки
           if (u.health < u.maxHealth * 0.7) {
             u.commandQueue = [{type: "move", x: aiBase.x + (Math.random()-0.5)*100, y: aiBase.y + (Math.random()-0.5)*100}];
           } else {
@@ -1055,5 +1108,4 @@ Object.assign(window.GnnAI, {
     }
     return null;
   }
-
 });

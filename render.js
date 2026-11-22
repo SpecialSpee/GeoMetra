@@ -1179,7 +1179,9 @@ function renderGame() {
 
   gameState.resources.forEach(resource => renderResource(resource));
 
-  gameState.buildings.forEach(building => {
+gameState.buildings.forEach(building => {
+    // 🔥 DEBUG: не рисуем чужие здания в тумане, если X-RAY выключен
+    if (!window.DEBUG_XRAY && building.owner !== playerId && isInFogOfWar(building.x, building.y)) return;
     ctx.save();
     ctx.translate(building.x, building.y);
     const glowRadius = 42 * 0.7;
@@ -1433,14 +1435,14 @@ function renderGame() {
     ctx.restore();
   });
 //ЮНИТЫ
-  gameState.units.forEach(unit => {
+gameState.units.forEach(unit => {
     if (unit.hidden) return;
-        // 🔥 НОВОЕ: враг невидим в тумане ИЛИ за камнем (только для чужих юнитов)
-    if (unit.owner !== playerId) {
+    
+    // 🔥 DEBUG: если включен режим X-RAY, рисуем ВСЕХ врагов
+    if (!window.DEBUG_XRAY && unit.owner !== playerId) {
       if (isInFogOfWar(unit.x, unit.y)) return;
-      const viewer = playerBase; // источник обзора базы
+      const viewer = playerBase;
       if (viewer && isLineOfSightBlocked(viewer.x, viewer.y, unit.x, unit.y)) {
-        // Проверяем, есть ли хоть один союзник с LoS на врага
         const hasAnySight = gameState.units.some(u =>
           u.owner === playerId && u.health > 0 && !isLineOfSightBlocked(u.x, u.y, unit.x, unit.y)
         ) || gameState.buildings.some(b =>
@@ -1679,7 +1681,7 @@ function renderGame() {
   ctx.restore(); 
   
   // 🔥 ТУМАН ВОЙНЫ — строго после restore()
-  renderPersistentFog();
+  //renderPersistentFog();
 
   // 🔥 НАЗЕМНЫЕ ОСКОЛКИ — строго после restore(), один раз
   renderResourceTokens();

@@ -1,46 +1,33 @@
-// ============================================================
 // script.js — Инициализация, глобальное состояние и поток
-// ============================================================
-
 if (typeof unitPools !== "object") {
   window.unitPools = { worker: [], repairman: [], fighter: [], assault: [], elite: [] };
 }
-
 let reconActive = false, reconCooldown = 20000, reconZones = [];
 const scoreCounterEl = document.getElementById("scoreCounter");
-
 function loadPlayerScore() {
   const savedScore = localStorage.getItem("playerScore");
   gameState.playerScore = savedScore !== null ? parseFloat(savedScore, 10) : 0;
   updateScoreUI();
 }
-
 function updateScoreUI() {
   if (scoreCounterEl) {
     scoreCounterEl.innerHTML = "GEO: " + gameState.playerScore.toLocaleString('ru-RU', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
   }
 }
-
 function savePlayerScore() {
   localStorage.setItem("playerScore", gameState.playerScore);
 }
-
 window.addEventListener("beforeunload", () => { savePlayerScore(); });
-
 let fogMap = [], persistentFogMap = [];
 const margin = 200, minBaseDistancePercent = 60;
-// ============================================================
 // ОРИГИНАЛЬНЫЕ ФУНКЦИИ МЕНЮ СТРОИТЕЛЬСТВА (С КАРТИНКАМИ)
-// ============================================================
 function canAfford(cost, owner) {
   const res = owner === "ai" ? gameState.aiResources : gameState.playerResources;
   return res.gold >= (cost.gold || 0) &&
          res.silicon >= (cost.silicon || 0) &&
          res.plasma >= (cost.plasma || 0);
 }
-// ============================================================
 // ПРОВЕРКИ ДОСТУПНОСТИ СТРОИТЕЛЬСТВА
-// ============================================================
 const playerBuildingPrerequisites = {
   "barracks": ["warehouse", "repairWorkshop"],
   "turret": ["warehouse", "repairWorkshop"],
@@ -52,7 +39,6 @@ const playerBuildingPrerequisites = {
   "barracks3": ["base3"],
   "turret3": ["base3"]
 };
-
 function canPlayerBuild(buildingType) {
   if (gameMode === "tutorial") {
     // Разрешаем только эти здания в туториале
@@ -82,7 +68,6 @@ function canPlayerBuild(buildingType) {
 
   return true;
 }
-
 function getMenuItem(buildingType, label) {
   const div = document.createElement("div");
   let available = false;
@@ -176,7 +161,6 @@ function getMenuItem(buildingType, label) {
 
   return div;
 }
-
 function updateBuildMenu(menu, building) {
   const types = [
     { type: "warehouse", label: "Склад" },
@@ -199,7 +183,6 @@ function updateBuildMenu(menu, building) {
     }
   });
 }
-
 function showBuildingMenu(building) {
   if (building.owner !== playerId && !(gameMode === "single" && building.owner === "player")) return;
 
@@ -252,9 +235,7 @@ function showBuildingMenu(building) {
     menu.style.top = `${y}px`;
   }, 0);
 }
-
 function clamp(value, min, max) { return Math.max(min, Math.min(value, max)); }
-
 if (typeof playerBase !== 'undefined' && typeof aiBase !== 'undefined' && playerBase && aiBase && !gameState.capturePoints) {
   gameState.capturePoints = [];
   const playerPoints = createCapturePointsForBase(playerBase);
@@ -266,7 +247,6 @@ if (typeof playerBase !== 'undefined' && typeof aiBase !== 'undefined' && player
     gameState.capturePoints.push({ x: pos.x, y: pos.y, width: 30, height: 30, color: "white", owner: null, turrets: [], turretSpawnCount: 0, waveSpawnInterval: null, turretSpawnScheduled: false });
   });
 }
-
 async function startNeuralGame() {
   neuralAIActive = true;
   startAutoReloadModel(100000);
@@ -332,30 +312,46 @@ if (resetBtn) {
   gameState.aiResources = { gold: 100, silicon: 100, plasma: 50 };
   gameState.playerScore = 0;
 
-  const m = 300;
-  playerBase = new Building("base", "player", m, m);
-  aiBase = new Building("base", "ai", worldWidth - m, worldHeight - m);
-  playerBase.active = true; aiBase.active = true;
-  gameState.buildings.push(playerBase, aiBase);
+  // 🔥 ШАГ 4.2: Рандомизация баз в neural-режиме
+  // Сначала генерируем ресурсы, чтобы база не заспавнилась в камень
   generateResources(50);
+  
+  const m = 200;
+  const playerPos = getRandomBasePosition(m, null);
+  playerBase = new Building("base", "player", playerPos.x, playerPos.y);
+  playerBase.active = true;
+  gameState.buildings.push(playerBase);
+  
+  const aiPos = getRandomBasePosition(m, playerBase, 0.6);
+  aiBase = new Building("base", "ai", aiPos.x, aiPos.y);
+  aiBase.active = true;
+  gameState.buildings.push(aiBase);
+  
+  console.log(`[Base Spawn] Player: (${playerPos.x.toFixed(0)}, ${playerPos.y.toFixed(0)}) | AI: (${aiPos.x.toFixed(0)}, ${aiPos.y.toFixed(0)})`);
   camera.offsetX = canvas.width / 2 - playerBase.x * camera.scale;
   camera.offsetY = canvas.height / 2 - playerBase.y * camera.scale;
   document.getElementById("controlsWrapper").style.display = "block";
   playerId = "player";
   requestAnimationFrame(gameLoop);
 }
-
 function initSinglePlayerBases() {
   const m = 200;
-  const playerPos = getRandomBasePosition(m);
-  playerBase = new Building("base", "player", playerPos.x, playerPos.y);
-  const aiPos = getRandomBasePosition(m, playerBase);
+  playerBase = new Building("base", "player", 0, 0); // временная позиция
+  
+  // Сначала ищем позицию для игрока
+  const playerPos = getRandomBasePosition(m, null);
+  playerBase.x = playerPos.x;
+  playerBase.y = playerPos.y;
+  gameState.buildings.push(playerBase);
+  
+  // Теперь ищем позицию для ИИ с учетом базы игрока
+  const aiPos = getRandomBasePosition(m, playerBase, 0.6);
   aiBase = new Building("base", "ai", aiPos.x, aiPos.y);
-  gameState.buildings.push(playerBase, aiBase);
+  gameState.buildings.push(aiBase);
+  
   camera.offsetX = canvas.width / 2 - playerBase.x * camera.scale;
   camera.offsetY = canvas.height / 2 - playerBase.y * camera.scale;
 }
-
 function startNewGame() {
   if (gameMode === "pvp") return;
   playerId = "player"; opponentId = null;
@@ -380,7 +376,6 @@ function startNewGame() {
     setTimeout(() => { controlsWrapper.style.opacity = 1; }, 100);
   }
 }
-
 const imageCache = {};
 const iconMap = {
   warehouse: "/src/models/warehouse.png", repairWorkshop: "/src/models/repairWorkshop.png",
@@ -388,18 +383,15 @@ const iconMap = {
   turret: "/src/models/turret.png", turret2: "/src/models/turret2.png", turret3: "/src/models/turret3.png",
   beacon: "/src/models/beacon.png", base: "/src/models/base.png", base2: "/src/models/base2.png", base3: "/src/models/base3.png"
 };
-
 function preloadImage(src) {
   const img = new Image();
   img.onload = () => { imageCache[src] = img; };
   img.src = src;
 }
-
 function openPerkMenu(slotIndex) {
   selectedSlotIndex = slotIndex;
   if (typeof perkMenuEl !== 'undefined' && perkMenuEl) perkMenuEl.style.display = "flex";
 }
-
 function startMatrixEffect() {
   const mCanvas = document.getElementById("matrixCanvas");
   if (!mCanvas) return;
@@ -423,7 +415,6 @@ function startMatrixEffect() {
   setInterval(drawMatrix, 50);
 }
 startMatrixEffect();
-
 function animateLogoLetters() {
   const letters = document.querySelectorAll("#logoText .logo-letter");
   letters.forEach(letter => {
@@ -432,7 +423,6 @@ function animateLogoLetters() {
   });
 }
 document.addEventListener("DOMContentLoaded", () => { animateLogoLetters(); });
-
 function startPresentationTextAnimation() {
   const presentsEl = document.getElementById("presentsText");
   if (!presentsEl) return;
@@ -464,7 +454,6 @@ function startPresentationTextAnimation() {
   }, INITIAL_DELAY);
 }
 startPresentationTextAnimation();
-
 document.addEventListener("DOMContentLoaded", () => {
   const letters = document.querySelectorAll("#logoText .logo-letter");
   letters.forEach(letter => {
@@ -477,40 +466,32 @@ document.addEventListener("DOMContentLoaded", () => {
     letters.forEach(letter => { letter.style.transform = "translate(0, 0)"; letter.style.opacity = 1; });
   }, 50);
 });
-// ============================================================
 // ПЕРКИ: АКТИВАЦИЯ С СОВРЕМЕННЫМ ВИЗУАЛОМ
-// ============================================================
 // Глобальные переменные состояния перков
 let activeReconTarget = null;
 let reconConfirmCallback = null;
 let reconCancelCallback = null;
-
 // Кулдауны перков (в миллисекундах)
 const SHOCK_COOLDOWN = 25000;
 const BOMB_COOLDOWN = 45000;
 const RECON_COOLDOWN = 20000;
-
 const SHOCK_RADIUS = 180;
 const BOMB_RADIUS = 140;
 const BOMB_DELAY = 2000; // задержка перед взрывом
 const BOMB_MAX_DAMAGE = 200;
 const RECON_RADIUS = 250;
 const RECON_DURATION = 12000;
-
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-// ============================================================
 const availablePerks = [
   { id: "shock", name: "ЭМИ-удар", icon: "⚡", cooldown: 25000 },
   { id: "bomb", name: "Плазменная бомба", icon: "💣", cooldown: 45000 },
   { id: "recon", name: "Разведка", icon: "🛰️", cooldown: 20000 }
 ];
-
 let equippedPerks = [null, null, null];
 let perkCooldowns = [0, 0, 0];
 let selectedSlotIndex = 0;
 const perkMenuEl = document.getElementById("perkMenu");
 const perkSlots = [...document.querySelectorAll(".perk-slot")];
-
 function renderPerkMenu() {
   if (!perkMenuEl) return;
   perkMenuEl.innerHTML = "";
@@ -530,13 +511,11 @@ function renderPerkMenu() {
     perkMenuEl.appendChild(icon);
   });
 }
-
 function openPerkMenu(slotIndex) {
   selectedSlotIndex = slotIndex;
   renderPerkMenu(); // 🔥 ВЫЗЫВАЕМ РЕНДЕР МЕНЮ
   if (perkMenuEl) perkMenuEl.style.display = "flex";
 }
-
 function updatePerkSlots() {
   if (!perkSlots) return;
   perkSlots.forEach((slot, index) => {
@@ -584,12 +563,10 @@ function updatePerkSlots() {
 window.addEventListener("load", () => {
   updatePerkSlots();
 });
-
 const neuralButton = document.getElementById("neuralButton");
 if (neuralButton) {
   neuralButton.addEventListener("click", () => { startNeuralGame(); });
 }
-
 window.addEventListener("load", () => {
   resizeCanvas();
   const startButton = document.getElementById("startButton");
@@ -607,9 +584,7 @@ window.addEventListener("load", () => {
     });
   }
 });
-// ============================================================
 // Принудительное отключение проверки ориентации на ПК
-// ============================================================
 window.addEventListener("load", () => {
   const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
   if (!isMobile) {
@@ -620,11 +595,7 @@ window.addEventListener("load", () => {
     document.body.style.overflow = "auto"; // Разрешаем скролл на ПК
   }
 });
-
-// ============================================================
 // ФУНКЦИИ НАЙМА ЮНИТОВ (ПОЛНЫЙ ОРИГИНАЛЬНЫЙ КОД)
-// ========================================================
-// ✅ Показывает реальный дефицит, без искусственного резерва
 function getMissingResources(cost, owner) {
   const resources = getResourcesByOwner(owner);
   return {
@@ -889,9 +860,7 @@ function hireEliteForPlayer(barracks3) {
 
   barracks3.productionQueue.push(order);
 }
-// ============================================================
 // ФУНКЦИЯ ПОКАЗА ПРЕДУПРЕЖДЕНИЙ
-// ============================================================
 function showWarning(message) {
   const warningDiv = document.createElement("div");
   warningDiv.innerText = message;

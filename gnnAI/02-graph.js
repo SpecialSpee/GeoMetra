@@ -3,9 +3,7 @@
 //               buildGraphState, nodeFeatures, generateVirtualNodes
 // ============================================================
 "use strict";
-
 Object.assign(window.GnnAI, {
-
   // === Глобальные признаки (39 штук) ===
   getGlobalFeatures: function () {
     if (!window.gameState || !window.aiBase) return new Array(CFG.GLOBAL_FEATURES).fill(0);
@@ -122,7 +120,6 @@ Object.assign(window.GnnAI, {
       emptyWh, emptyRatio, income, enemyClusterThreat, ourClusterStrength, nearestEnemyClusterDist, flankOpportunity, localPowerBalance, ecoMomentum, macroPhase, progressToWin 
     ];
   },
-
   // === Кластеризация юнитов в отряды ===
   clusterUnits: function(units, maxDist = 150) {
     const squads = [];
@@ -157,7 +154,6 @@ Object.assign(window.GnnAI, {
     }
     return squads;
   },
-
   // === Построение графа состояния ===
   buildGraphState: function () {
     if (!gameState || !aiBase || !aiBase.maxHealth || aiBase.maxHealth <= 0 || aiBase.health < 0) return null;
@@ -416,7 +412,6 @@ Object.assign(window.GnnAI, {
     }
     return { X, A_distance, A_threat, nodes: raw };
   },
-
   // === Признаки узла (58 штук) ===
   nodeFeatures: function (n) {
     if (!n || !n.valid) return new Array(CFG.NODE_FEATURES).fill(0);
@@ -588,7 +583,6 @@ Object.assign(window.GnnAI, {
       freshness, isStale, threatDensity, isStagingArea, isRetreating, overkillRisk
     ].map(v => isFinite(v) ? v : 0);
   },
-
   // === Генерация виртуальных узлов ===
   generateVirtualNodes: function(nodes) {
     const virtualNodes = [];
@@ -702,7 +696,6 @@ Object.assign(window.GnnAI, {
 
     return virtualNodes;
   },
-
   // === Поиск лучшего кластера ресурсов ===
   findBestResourceCluster: function () {
     const res = gameState.resources.filter(r => r.amount > 20);
@@ -717,5 +710,4 @@ Object.assign(window.GnnAI, {
     }
     return best;
   }
-
 });

@@ -1457,34 +1457,103 @@ function findNearestAIBuilding(x, y) {
   });
   return nearest;
 }
-function getRandomBasePosition(margin, existingBase = null) {
-  let pos, valid = false;
-  while (!valid) {
-    const side = Math.floor(Math.random() * 4);
-    let x, y;
-    switch (side) {
-      case 0: x = margin + Math.random() * (worldWidth - 2 * margin); y = margin; break;
-      case 1: x = worldWidth - margin; y = margin + Math.random() * (worldHeight - 2 * margin); break;
-      case 2: x = margin + Math.random() * (worldWidth - 2 * margin); y = worldHeight - margin; break;
-      case 3: x = margin; y = margin + Math.random() * (worldHeight - 2 * margin); break;
-    }
-    pos = { x, y };
-    if (existingBase) {
-      const dist = Math.hypot(pos.x - existingBase.x, pos.y - existingBase.y);
-      if (dist >= worldWidth * 0.6) valid = true;
-    } else { valid = true; }
+// 🔥 ШАГ 4 (ФИНАЛ): Детерминированный спавн баз с гарантированным разделением
+function getRandomBasePosition(margin = 200, existingBase = null, minDistanceRatio = 0.5) {
+  const wW = (typeof worldWidth !== 'undefined' && worldWidth > 0) ? worldWidth : 4200;
+  const wH = (typeof worldHeight !== 'undefined' && worldHeight > 0) ? worldHeight : 2200;
+  
+  const safeMin = margin;
+  const safeMaxX = wW - margin;
+  const safeMaxY = wH - margin;
+  
+  // === СЛУЧАЙНАЯ БАЗА (для первой) ===
+  if (!existingBase) {
+    return {
+      x: safeMin + Math.random() * (safeMaxX - safeMin),
+      y: safeMin + Math.random() * (safeMaxY - safeMin)
+    };
   }
-  return pos;
+  
+  // === ВТОРАЯ БАЗА: ищем в ПРОТИВОПОЛОЖНОЙ части карты ===
+  // Определяем, в какой четверти находится существующая база
+  const ex = existingBase.x, ey = existingBase.y;
+  const cx = wW / 2, cy = wH / 2;
+  
+  // Зона: противоположная половина по обеим осям
+  // Если ex < cx → ищем во правой половине, и наоборот
+  const xMin = (ex < cx) ? cx : safeMin;
+  const xMax = (ex < cx) ? safeMaxX : cx;
+  // Аналогично по Y
+  const yMin = (ey < cy) ? cy : safeMin;
+  const yMax = (ey < cy) ? safeMaxY : cy;
+  
+  const minDist = Math.hypot(wW, wH) * minDistanceRatio;
+  
+  // Пытаемся найти случайную точку в противоположной четверти
+  for (let attempt = 0; attempt < 300; attempt++) {
+    const x = xMin + Math.random() * (xMax - xMin);
+    const y = yMin + Math.random() * (yMax - yMin);
+    
+    // Проверка 1: расстояние до существующей базы
+    const dist = Math.hypot(x - ex, y - ey);
+    if (dist < minDist) continue;
+    
+    // Проверка 2: нет камней рядом
+    let rockConflict = false;
+    for (const rock of gameState.resources) {
+      if (rock.hp <= 0) continue;
+      const r = (typeof rock.getCurrentRadius === "function" ? rock.getCurrentRadius() : 20) + 120;
+      if (Math.hypot(rock.x - x, rock.y - y) < r) { rockConflict = true; break; }
+    }
+    if (rockConflict) continue;
+    
+    return { x, y };
+  }
+  
+  // 🔥 УМНЫЙ FALLBACK: если случайный поиск не удался — берем ПРОТИВОПОЛОЖНЫЙ УГОЛ
+  console.warn("[Base Spawn] Случайный поиск не удался, использую детерминированный угол");
+  const fallbackX = (ex < cx) ? safeMaxX - 100 : safeMin + 100;
+  const fallbackY = (ey < cy) ? safeMaxY - 100 : safeMin + 100;
+  return { x: fallbackX, y: fallbackY };
 }
 function createCapturePointsForBase(base) {
-  const edgeMargin = 10, centerMargin = 30, halfWidth = worldWidth / 2;
-  let xMin, xMax;
-  const isLeftSide = base.owner === playerId;
-  if (isLeftSide) { xMin = edgeMargin; xMax = halfWidth - centerMargin; } 
-  else { xMin = halfWidth + centerMargin; xMax = worldWidth - edgeMargin; }
-  const yMin = edgeMargin, yMax = worldHeight - edgeMargin;
   const pts = [];
-  for(let i=0; i<4; i++) pts.push({ x: xMin + Math.random() * (xMax - xMin), y: yMin + Math.random() * (yMax - yMin) });
+  const innerMargin = 80;  // Не вплотную к базе
+  const outerMargin = 400; // Максимальный радиус разброса
+  
+  for (let i = 0; i < 4; i++) {
+    // Случайный угол и расстояние вокруг базы
+    const angle = (i / 4) * Math.PI * 2 + Math.random() * (Math.PI / 2);
+    const dist = innerMargin + Math.random() * (outerMargin - innerMargin);
+    
+    let x = base.x + Math.cos(angle) * dist;
+    let y = base.y + Math.sin(angle) * dist;
+    
+    // Ограничиваем границами карты
+    x = Math.max(30, Math.min(worldWidth - 30, x));
+    y = Math.max(30, Math.min(worldHeight - 30, y));
+    
+    // Проверяем, что точка не внутри камня
+    let valid = true;
+    for (const rock of gameState.resources) {
+      if (rock.hp <= 0) continue;
+      const r = (typeof rock.getCurrentRadius === "function" ? rock.getCurrentRadius() : 20) + 20;
+      if (Math.hypot(rock.x - x, rock.y - y) < r) { valid = false; break; }
+    }
+    
+    if (valid) {
+      pts.push({ x, y });
+    } else {
+      // Если точка в камне — смещаем её на случайный угол
+      const fallbackAngle = Math.random() * Math.PI * 2;
+      const fallbackDist = innerMargin + Math.random() * (outerMargin - innerMargin);
+      pts.push({
+        x: Math.max(30, Math.min(worldWidth - 30, base.x + Math.cos(fallbackAngle) * fallbackDist)),
+        y: Math.max(30, Math.min(worldHeight - 30, base.y + Math.sin(fallbackAngle) * fallbackDist))
+      });
+    }
+  }
+  
   return pts;
 }
 function spawnWaveFromCapturePoint(cp) {
@@ -1622,33 +1691,41 @@ function selectAllFighters() {
   selectedUnits = gameState.units.filter(u => u.owner === playerId && ["fighter", "assault", "elite"].includes(u.type));
 }
 function commandAttack() {
-    sanitizeSelectedUnits();
+  sanitizeSelectedUnits();
   if (!selectedUnits.length) return;
+
+  let targetFound = false;
+
   selectedUnits.forEach(unit => {
     const nearestEnemyBuilding = findNearestEnemyBuilding(unit.x, unit.y);
+    
     if (nearestEnemyBuilding) {
-      
-      // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Игрок дал прямой приказ! 
-      // Мы стираем любую "подвешенную" память, чтобы юнит не вернулся к старой задаче после этой атаки.
+      targetFound = true;
       unit.suspendedQueue = null;
-
       unit.commandQueue = [
         { type: "move", x: nearestEnemyBuilding.x, y: nearestEnemyBuilding.y }, 
         { type: "attack", target: nearestEnemyBuilding }
       ];
       unit.target = nearestEnemyBuilding;
-      
-      if (gameMode === "pvp") {
-        sendPvpAction({ 
-          type: "attack", 
-          unitId: unit.id, 
-          targetId: nearestEnemyBuilding.id, 
-          x: nearestEnemyBuilding.x, 
-          y: nearestEnemyBuilding.y 
-        });
-      }
     }
   });
+
+  // 🔥 НОВОЕ: Если враг не найден (все здания в тумане), отправляем выделенных юнитов на разведку!
+  if (!targetFound) {
+    if (typeof showFloatingHint === "function") {
+      showFloatingHint("🛰️ Враг не обнаружен! Отправляю выделенных юнитов на разведку...");
+    }
+    
+    selectedUnits.forEach(unit => {
+      unit.suspendedQueue = null;
+      unit.target = null;
+      // Используем существующую логику поиска тумана
+      const scoutTarget = scoutUnitToFog(unit); 
+      if (scoutTarget) {
+        unit.commandQueue = [{ type: "move", x: scoutTarget.x, y: scoutTarget.y }];
+      }
+    });
+  }
 }
 function commandDefence() {
     sanitizeSelectedUnits();
@@ -1681,12 +1758,25 @@ function commandScout() {
   });
 }
 function findNearestEnemyBuilding(x, y) {
-  let enemyBuildings = gameState.buildings.filter(b => b.owner !== playerId);
   let nearestBuilding = null, minDistance = Infinity;
-  enemyBuildings.forEach(building => {
-    const distance = Math.hypot(building.x - x, building.y - y);
-    if (distance < minDistance) { minDistance = distance; nearestBuilding = building; }
+  
+  gameState.buildings.forEach(building => {
+    // Проверяем только вражеские и живые здания
+    if (building.owner !== playerId && building.health > 0) {
+      
+      // 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Игнорируем здания, которые в тумане войны!
+      if (typeof isInFogOfWar === "function" && isInFogOfWar(building.x, building.y)) {
+        return; // Пропускаем скрытые здания
+      }
+
+      const distance = Math.hypot(building.x - x, building.y - y);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestBuilding = building;
+      }
+    }
   });
+  
   return nearestBuilding;
 }
 function setFormation(type) {
@@ -1851,39 +1941,50 @@ function scoutUnitToFog(unit) {
   unit.suspendedQueue = null;
   unit.target = null;
 
-  // 1. Приоритет: скрытые точки захвата
-  if (Array.isArray(gameState.capturePoints)) {
-    const hidden = gameState.capturePoints.find(p => {
-      const col = Math.floor(p.x / FOG_CELL_SIZE), row = Math.floor(p.y / FOG_CELL_SIZE);
-      return fogMap?.[row]?.[col] === 0;
-    });
-    if (hidden) { 
-      unit.commandQueue = [{ type: "move", x: hidden.x, y: hidden.y }]; 
-      return hidden; 
-    }
-  }
-  
-  // 2. Поиск ближайшей клетки тумана войны
   const startCol = Math.floor(unit.x / FOG_CELL_SIZE);
   const startRow = Math.floor(unit.y / FOG_CELL_SIZE);
-  const maxRadius = 50;
+  const maxRadius = 60; // Увеличили радиус поиска для масштабных карт
   
+  // 🔥 ПРИОРИТЕТ 1: Ищем абсолютно НЕИССЛЕДОВАННЫЕ клетки (persistentFogMap === 0)
+  // Это "белые пятна", где мы никогда не были.
   for (let r = 1; r < maxRadius; r++) {
     for (let dx = -r; dx <= r; dx++) {
       for (let dy = -r; dy <= r; dy++) {
-        if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue; // Проверяем только периметр квадрата
+        if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue; // Только периметр
         
         const col = startCol + dx, row = startRow + dy;
-        if (fogMap?.[row]?.[col] === 0) {
-          const x = col * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
-          const y = row * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
-          
-          unit.commandQueue = [{ type: "move", x, y }]; 
-          return { x, y };
+        if (row >= 0 && row < persistentFogMap.length && col >= 0 && col < persistentFogMap[0].length) {
+          if (persistentFogMap[row][col] === 0) {
+            const x = col * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
+            const y = row * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
+            unit.commandQueue = [{ type: "move", x, y }]; 
+            return { x, y, type: "unexplored" };
+          }
         }
       }
     }
   }
+
+  // 🔥 ПРИОРИТЕТ 2: Если всё исследовано, ищем клетки, которые СЕЙЧАС не видны (fogMap === 0)
+  // Это нужно, чтобы вернуть контроль над потерянной зоной.
+  for (let r = 1; r < maxRadius; r++) {
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+        
+        const col = startCol + dx, row = startRow + dy;
+        if (row >= 0 && row < fogMap.length && col >= 0 && col < fogMap[0].length) {
+          if (fogMap[row][col] === 0) {
+            const x = col * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
+            const y = row * FOG_CELL_SIZE + FOG_CELL_SIZE / 2;
+            unit.commandQueue = [{ type: "move", x, y }]; 
+            return { x, y, type: "hidden" };
+          }
+        }
+      }
+    }
+  }
+  
   return null;
 }
 function applyFormationBuff(units, formationType) {

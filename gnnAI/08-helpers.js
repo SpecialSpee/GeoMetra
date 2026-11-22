@@ -269,6 +269,38 @@ Object.assign(window.GnnAI, {
       }
     }
     return bestTarget;
-  }
+  },
+
+    // === ХЕЛПЕРЫ РАЗВЕДКИ (для системы наград) ===
+  countExploredCells: function () {
+    if (typeof persistentFogMap === "undefined" || !persistentFogMap || !persistentFogMap[0]) return 0;
+    let count = 0;
+    for (let r = 0; r < persistentFogMap.length; r++) {
+      const row = persistentFogMap[r];
+      for (let c = 0; c < row.length; c++) {
+        if (row[c] === 1) count++;
+      }
+    }
+    return count;
+  },
+  countVisibleEnemies: function () {
+    if (typeof gameState === "undefined" || typeof isInFogOfWar !== "function") return 0;
+    let count = 0;
+    for (const u of gameState.units) {
+      if (u.owner !== "ai" && u.health > 0 && !isInFogOfWar(u.x, u.y)) count++;
+    }
+    for (const b of gameState.buildings) {
+      if (b.owner !== "ai" && b.health > 0 && !isInFogOfWar(b.x, b.y)) count++;
+    }
+    return count;
+  },
+  countVisibleEnemyBases: function () {
+    if (typeof gameState === "undefined" || typeof isInFogOfWar !== "function") return 0;
+    let count = 0;
+    for (const b of gameState.buildings) {
+      if (b.owner !== "ai" && b.health > 0 && b.type.includes("base") && !isInFogOfWar(b.x, b.y)) count++;
+    }
+    return count;
+  },
 
 });

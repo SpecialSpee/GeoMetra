@@ -1,16 +1,7 @@
-// ============================================================
 // 05-training.js — Обучение: trainBatch(), _doTrainStep(),
-//                  updateTargetNetwork(), getEntropyCoef(),
-//                  calculateWeightStats()
-// ============================================================
 "use strict";
-
 Object.assign(window.GnnAI, {
-
-  // ============================================================
   // Полный PPO/BC батч. Оставлен для совместимости.
-  // Сейчас tick() использует лёгкий _doTrainStep().
-  // ============================================================
   trainBatch: function () {
     if (this.training || this.isSaving || this.replay.length < CFG.BATCH_SIZE) return;
     if (!this.model || !this.vars || this.vars.length === 0) return;
@@ -286,10 +277,7 @@ Object.assign(window.GnnAI, {
       this.isSaving = false;
     }
   },
-
-  // ============================================================
   // Лёгкий обучающий шаг по кадрам (ПОЛНАЯ ЗАМЕНА С ДЕТЕКТОРОМ ОШИБОК)
-  // ============================================================
   _doTrainStep: function () {
     if (!this._trainStepsPending || this._trainStepsPending <= 0) return;
     if (!this.model || !this.vars || this.vars.length === 0) return;
@@ -450,10 +438,7 @@ Object.assign(window.GnnAI, {
       requestAnimationFrame(() => this._doTrainStep());
     }
   },
-
-  // ============================================================
   // Мягкое обновление target-сети.
-  // ============================================================
   updateTargetNetwork: function () {
     if (!this.targetVars || !this.vars || this.vars.length !== this.targetVars.length) return;
 
@@ -466,13 +451,11 @@ Object.assign(window.GnnAI, {
       }
     });
   },
-
     // === ХЕЛПЕР: время МАТЧА в минутах (не страницы!) ===
   gameTimeMin: function () {
     const start = this.matchStartTime || performance.now();
     return (performance.now() - start) / 60000;
   },
-
   // === ДИНАМИЧЕСКАЯ ЭНТРОПИЯ ===
   getEntropyCoef: function () {
     const m = this.metrics();
@@ -496,11 +479,7 @@ Object.assign(window.GnnAI, {
     // Переходная зона: склады есть, армии ещё нет — мягкий режим
     return 0.03;
   },
-
-
-  // ============================================================
   // Статистика весов для UI/отладки.
-  // ============================================================
   calculateWeightStats: function () {
     if (!this.vars || this.vars.length === 0) return null;
 
@@ -579,5 +558,4 @@ Object.assign(window.GnnAI, {
 
     return stats;
   }
-
 });

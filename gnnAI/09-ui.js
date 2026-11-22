@@ -1,12 +1,7 @@
-// ============================================================
-// 09-ui.js — UI: buildQueue, startGnnGame, addMenuButton,
-//            patchScheduler, overlay, GnnEventHooks
-// ============================================================
+// 09-ui.js — UI
 "use strict";
-
 // === Очередь построек ===
 window.buildQueue = window.buildQueue || [];
-
 window.scheduleAIBuilding = function (type, x, y, delay = 0) {
   if (typeof canBuild === "function" && !canBuild(type)) return false;
   window.buildQueue.push({
@@ -18,7 +13,6 @@ window.scheduleAIBuilding = function (type, x, y, delay = 0) {
   //console.log(`[BUILD DEBUG] 📝 Запланировано: ${type} на (${x.toFixed(0)}, ${y.toFixed(0)})`);
   return true;
 };
-
 window.processBuildQueue = function () {
   const now = performance.now();
   for (let i = 0; i < window.buildQueue.length; i++) {
@@ -113,18 +107,30 @@ async function startGnnGame() {
   gameState.playerScore = 0;
   selectedUnits = [];
 
-  const m = 300;
-  playerBase = new Building("base", "player", m, m);
-  aiBase = new Building("base", "ai", worldWidth - m, worldHeight - m);
+  // 🔥 РАНДОМИЗАЦИЯ БАЗ ДЛЯ GNN РЕЖИМА
+  // 1. Сначала генерируем ресурсы, чтобы функция спавна могла избегать камней
+  if (typeof generateResources === "function") generateResources(100);
+
+  const m = 200; // Минимальный отступ от краев карты
+  
+  // 2. Спавним базу игрока в случайном месте
+  const playerPos = getRandomBasePosition(m, null);
+  playerBase = new Building("base", "player", playerPos.x, playerPos.y);
   playerBase.active = true;
+  gameState.buildings.push(playerBase);
+  
+  // 3. Спавним базу ИИ далеко от игрока (минимум 60% диагонали карты)
+  const aiPos = getRandomBasePosition(m, playerBase, 0.5);
+  aiBase = new Building("base", "ai", aiPos.x, aiPos.y);
   aiBase.active = true;
-  gameState.buildings.push(playerBase, aiBase);
+  gameState.buildings.push(aiBase);
+  
+  console.log(`[GNN Spawn] 🎲 Player Base: (${playerPos.x.toFixed(0)}, ${playerPos.y.toFixed(0)}) | AI Base: (${aiPos.x.toFixed(0)}, ${aiPos.y.toFixed(0)})`);
 
   // Динамическая синхронизация размера мира
-  GnnAI.cfg.WORLD_WIDTH = typeof worldWidth !== 'undefined' ? worldWidth : 2000;
-  GnnAI.cfg.WORLD_HEIGHT = typeof worldHeight !== 'undefined' ? worldHeight : 2000;
+  GnnAI.cfg.WORLD_WIDTH = typeof worldWidth !== 'undefined' ? worldWidth : 4200;
+  GnnAI.cfg.WORLD_HEIGHT = typeof worldHeight !== 'undefined' ? worldHeight : 2200;
 
-  if (typeof generateResources === "function") generateResources(100);
   if (typeof initFogOfWar === "function") initFogOfWar();
 
   camera.offsetX = canvas.width / 2 - playerBase.x * camera.scale;
@@ -269,7 +275,6 @@ window.updateTrainingOverlay = function() {
     if (typeof window.drawGradientChart === 'function') window.drawGradientChart();
 
 };
-
 window.drawGradientChart = function() {
   const canvas = document.getElementById('gnn-grad-canvas');
   if (!canvas || !window.GnnAI || !GnnAI.gradHistory || GnnAI.gradHistory.length < 2) return;
@@ -327,7 +332,6 @@ const drawLineSmooth = (key, color, maxVal, window = 3) => {
 drawLineSmooth('loss', '#ffff00', maxLoss, 3);
 drawLineSmooth('gradNorm', '#00ffff', maxGrad, 3);
 };
-
 // 🔥 ИСПРАВЛЕНИЕ: Надежное обновление UI через setInterval
 if (!window._gnnUiInterval) {
   window._gnnUiInterval = setInterval(() => {
@@ -438,5 +442,4 @@ window.GnnEventHooks = {
     }
   }
 };
-
 console.log("[GnnAI] 🎨 UI-модуль загружен.");
