@@ -464,11 +464,34 @@
     },
 
     sendAttackGroup: function (attackers) {
-      const target = aiBase;
+      if (!window.aiBase) return;
+      const target = window.aiBase;
+      
       attackers.forEach(u => {
-        u.commandQueue = [{ type: "move", x: target.x + (Math.random()-0.5)*100, y: target.y + (Math.random()-0.5)*100 }, { type: "attack", target: target }];
-        if (typeof processCommandQueue === "function") processCommandQueue(u);
+        // 🔥 1. ПОЛНЫЙ СБРОС: Очищаем всё, чтобы юнит забыл старые прямые пути
+        u.commandQueue = [];
+        u.target = null;
+        u.moveTarget = null;
+        u.pathWaypoints = null;
+        u.currentWaypointIndex = 0;
+        
+        // 🔥 2. ЦЕЛЬ С РАЗБРОСОМ: Атакуем не в одну пиксельную точку, а в зону вокруг базы
+        const offsetX = (Math.random() - 0.5) * 200;
+        const offsetY = (Math.random() - 0.5) * 200;
+        
+        // 🔥 3. НОВАЯ ОЧЕРЕДЬ: Сначала движемся (через A*), потом атакуем
+        u.commandQueue = [
+          { type: "move", x: target.x + offsetX, y: target.y + offsetY },
+          { type: "attack", target: target }
+        ];
+        
+        // 🔥 4. ЗАПУСК: processCommandQueue сам вызовет moveUnit -> findPath
+        if (typeof processCommandQueue === "function") {
+          processCommandQueue(u);
+        }
       });
+      
+      console.log(`[TrainingBot] ⚔️ Отправлено в атаку: ${attackers.length} юнитов`);
     },
 
     findBuildPos: function (type) {

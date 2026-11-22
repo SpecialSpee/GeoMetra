@@ -138,132 +138,77 @@ unit.alive = false;
   if (!unitPools[unit.type]) unitPools[unit.type] = [];
   unitPools[unit.type].push(unit);
 }
-// 2. ЕДИНАЯ функция обновления позиции (вызывается из updateUnits каждый кадр)
+// 2. ЕДИНАЯ функция обновления позиции (РЕЖИМ ЧИСТОГО A*)
 function applyUnitMovement(unit, deltaTime) {
   if (unit.shocked || unit.health <= 0) return;
 
-  // 🔥 ПРИОРИТЕТ 0: ОТСТУПЛЕНИЕ
+  // 🔥 ПРИОРИТЕТ 0: ОТСТУПЛЕНИЕ (Работает отлично, оставляем)
   if (unit.isRetreating) {
     let target = unit.retreatTarget;
-    
-    // Проверяем валидность цели
     if (!target || target.health <= 0 || !target.active) {
-      const workshops = gameState.buildings.filter(b => 
-        b.owner === unit.owner && b.type === 'repairWorkshop' && b.active && b.health > 0
-      );
-      if (workshops.length > 0) {
-        target = workshops.sort((a, b) => 
-          Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
-        )[0];
-        unit.retreatTarget = target;
-      } else {
-        target = unit.owner === "player" ? playerBase : aiBase;
-        unit.retreatTarget = target;
-      }
+      const workshops = gameState.buildings.filter(b => b.owner === unit.owner && b.type === 'repairWorkshop' && b.active && b.health > 0);
+      target = workshops.length > 0 ? workshops.sort((a, b) => Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y))[0] : (unit.owner === "player" ? playerBase : aiBase);
+      unit.retreatTarget = target;
     }
-    
-    if (!target) {
-      unit.isRetreating = false;
-      unit.retreatTarget = null;
-      unit.target = null;
-      return;
-    }
-    
-    // 🔥 НОВОЕ: ОТСТРЕЛ ВО ВРЕМЯ ОТСТУПЛЕНИЯ
-    // Если враг в радиусе — стреляем, но НЕ переключаем цель и НЕ добавляем в очередь
-    const nearbyEnemies = getEnemiesInRange({x: unit.x, y: unit.y}, unit.range)
-      .filter(e => e.owner !== unit.owner && e.health > 0);
-    
+    if (!target) { unit.isRetreating = false; unit.retreatTarget = null; unit.target = null; return; }
+
+    const nearbyEnemies = getEnemiesInRange({x: unit.x, y: unit.y}, unit.range || 150).filter(e => e.owner !== unit.owner && e.health > 0);
     if (nearbyEnemies.length > 0) {
-      const nearestEnemy = nearbyEnemies.sort((a, b) =>
-        Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
-      )[0];
-      
-      const now = performance.now();
-      if (now - unit.lastFireTime >= unit.fireRate) {
-        fireBullet(unit, nearestEnemy);
-        unit.lastFireTime = now;
-      }
+        const nearest = nearbyEnemies.sort((a, b) => Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y))[0];
+        const now = performance.now();
+        if (!unit.lastFireTime || (now - unit.lastFireTime >= (unit.fireRate || 350))) {
+            fireBullet(unit, nearest);
+            unit.lastFireTime = now;
+        }
     }
-    
+
     const dist = Math.hypot(target.x - unit.x, target.y - unit.y);
     const arrivalThreshold = target.type === 'repairWorkshop' ? 40 : 25;
     
     if (dist > arrivalThreshold) {
-      // Двигаемся к цели
-      if (!unit.moveTarget || Math.hypot(unit.moveTarget.x - target.x, unit.moveTarget.y - target.y) > 10) {
-          moveUnit(unit, target.x, target.y);
-      }
+      if (!unit.moveTarget || Math.hypot(unit.moveTarget.x - target.x, unit.moveTarget.y - target.y) > 15) moveUnit(unit, target.x, target.y);
       
-      // 🔥 ВЫПОЛНЯЕМ ДВИЖЕНИЕ ПО WAYPOINTS ПРЯМО ЗДЕСЬ
       if (unit.moveTarget) {
-        const dx = unit.moveTarget.x - unit.x;
-        const dy = unit.moveTarget.y - unit.y;
-        const d = Math.hypot(dx, dy);
-        
+        const dx = unit.moveTarget.x - unit.x, dy = unit.moveTarget.y - unit.y, d = Math.hypot(dx, dy);
         if (d < 15) {
           unit.currentWaypointIndex++;
           if (unit.pathWaypoints && unit.currentWaypointIndex < unit.pathWaypoints.length) {
             unit.moveTarget = unit.pathWaypoints[unit.currentWaypointIndex];
             unit.angle = Math.atan2(unit.moveTarget.y - unit.y, unit.moveTarget.x - unit.x);
           } else {
-            unit.x = unit.moveTarget.x;
-            unit.y = unit.moveTarget.y;
-            unit.moveTarget = null;
-            unit.pathWaypoints = null;
-            unit.currentWaypointIndex = 0;
+            unit.x = unit.moveTarget.x; unit.y = unit.moveTarget.y;
+            unit.moveTarget = null; unit.pathWaypoints = null; unit.currentWaypointIndex = 0;
           }
         } else {
           unit.angle = Math.atan2(dy, dx);
-          
-          // 🔥 НЕСТАБИЛЬНАЯ СКОРОСТЬ ОТСТУПЛЕНИЯ (40-70% от обычной, эффект троющего двигателя)
           let baseSpeed = ["fighter", "assault", "elite"].includes(unit.type) ? 120 : WORKER_SPEED;
-          // Используем unit.__epoch как уникальный числовой идентификатор юнита для синуса
-          const fluctuation = Math.sin(performance.now() / 800 + (unit.__epoch || 0)) * 0.15; // ±15%
-          const damageFactor = 0.55 + (unit.health / unit.maxHealth) * 0.15; // База 55-70% в зависимости от HP
-          let retreatSpeed = baseSpeed * (damageFactor + fluctuation);
-          retreatSpeed = Math.max(baseSpeed * 0.4, Math.min(baseSpeed * 0.7, retreatSpeed)); // Жесткое ограничение 40-70%
-          
-          const speed = retreatSpeed;
-          
-          unit.vx = (dx / d) * speed;
-          unit.vy = (dy / d) * speed;
-          
-          unit.x += unit.vx * deltaTime;
-          unit.y += unit.vy * deltaTime;
-          
-          // 🔥 ПРОВЕРКА КОЛЛИЗИЙ С КАМНЯМИ ДЛЯ ОТСТУПАЮЩИХ ЮНИТОВ
-          if (typeof checkRockCollision === "function") {
-            checkRockCollision(unit);
-          }
+          let retreatSpeed = Math.max(baseSpeed * 0.4, Math.min(baseSpeed * 0.7, baseSpeed * (0.55 + (unit.health / unit.maxHealth) * 0.15 + Math.sin(performance.now() / 800 + (unit.__epoch || 0)) * 0.15)));
+          unit.vx = (dx / d) * retreatSpeed; unit.vy = (dy / d) * retreatSpeed;
+          unit.x += unit.vx * deltaTime; unit.y += unit.vy * deltaTime;
+          if (typeof checkRockCollision === "function") checkRockCollision(unit);
         }
       }
     } else {
-      // 🔥 МЫ ДОБРАЛИСЬ! Останавливаемся и ЖДЕМ лечения.
-      unit.vx = 0;
-      unit.vy = 0;
-      unit.moveTarget = null;
-      unit.pathWaypoints = null;
-      unit.currentWaypointIndex = 0;
-      unit.commandQueue = [];
-      
-      if (target.type === 'repairWorkshop' && unit.health < unit.maxHealth) {
-        unit.health = Math.min(unit.maxHealth, unit.health + 0.8);
-      }
+      unit.vx = 0; unit.vy = 0; unit.moveTarget = null; unit.pathWaypoints = null; unit.currentWaypointIndex = 0; unit.commandQueue = [];
+      if (target.type === 'repairWorkshop' && unit.health < unit.maxHealth) unit.health = Math.min(unit.maxHealth, unit.health + 0.8);
     }
-    
-    // 🔥 КРИТИЧЕСКИ ВАЖНО: прерываем функцию, чтобы боевая физика НЕ перехватила управление!
-    return;
+    return; 
   }
 
-  // 🔥 ПРИОРИТЕТ 1: Боевая физика
+  // 🔥 ПРИОРИТЕТ 1: ДИНАМИЧЕСКАЯ БОЕВАЯ ФИЗИКА (Виражи, стрейфы, пируэты)
+  // Включаем ТОЛЬКО когда юнит уже в радиусе атаки (или очень близко).
   if (["fighter", "assault", "elite"].includes(unit.type) && unit.target && unit.target.health > 0) {
     const distToTarget = Math.hypot(unit.target.x - unit.x, unit.target.y - unit.y);
     
-    if (unit.moveTarget && distToTarget > unit.range * 1.2) {
-      // Пропускаем боевую физику, код пойдет дальше к ПРИОРИТЕТУ 2 (стандартное движение по A*)
+    // Если мы еще ДАЛЕКО, проваливаемся к ПРИОРИТЕТУ 2 (A* подход)
+    if (distToTarget > unit.range * 1.1) {
+      // Ничего не делаем, пусть работает блок A* ниже
     } else {
-      // Юнит либо уже в радиусе атаки, либо потерял A* путь. Включаем боевую физику (орбита/стрейф).
+      // 🔥 МЫ В РАДИУСЕ БОЯ! Включаем динамику и отключаем A*, чтобы вектора не конфликтовали
+      unit.moveTarget = null;
+      unit.pathWaypoints = null;
+
+      // 1. Применяем физику движения (орбиты, рывки, восьмерки)
       if (unit.type === "assault") {
         updateAssaultPhysics(unit, unit.target, deltaTime);
       } else if (unit.type === "fighter") {
@@ -272,11 +217,17 @@ function applyUnitMovement(unit, deltaTime) {
       } else if (unit.type === "elite") {
         updateElitePhysics(unit, unit.target, deltaTime);
       }
-      return; // Выходим, боевая физика взяла управление
+
+      // 2. Сразу после физики даем команду на выстрел (если кулдаун позволяет)
+      if (unit.type === "elite") dynamicAttackElite(unit, unit.target, deltaTime);
+      else if (unit.type === "assault") dynamicAttackAssault(unit, unit.target, deltaTime);
+      else dynamicAttack(unit, unit.target, deltaTime);
+
+      return; // 🔥 ВАЖНО: Завершаем функцию. Боевая физика полностью управляет юнитом в этом кадре.
     }
   }
 
-  // ПРИОРИТЕТ 2: Стандартное движение к точке (с поддержкой Waypoints)
+  // 🔥 ПРИОРИТЕТ 2: ДВИЖЕНИЕ ПО A* (Подход к цели или движение рабочих)
   if (unit.moveTarget) {
     const dx = unit.moveTarget.x - unit.x;
     const dy = unit.moveTarget.y - unit.y;
@@ -288,70 +239,32 @@ function applyUnitMovement(unit, deltaTime) {
         unit.moveTarget = unit.pathWaypoints[unit.currentWaypointIndex];
         unit.angle = Math.atan2(unit.moveTarget.y - unit.y, unit.moveTarget.x - unit.x);
       } else {
-        unit.x = unit.moveTarget.x;
-        unit.y = unit.moveTarget.y;
+        unit.x = unit.moveTarget.x; unit.y = unit.moveTarget.y;
         const cb = unit.moveCallback;
-        unit.moveTarget = null;
-        unit.pathWaypoints = null;
-        unit.currentWaypointIndex = 0;
-        unit.moveCallback = null;
+        unit.moveTarget = null; unit.pathWaypoints = null; unit.currentWaypointIndex = 0; unit.moveCallback = null;
         if (typeof cb === "function") cb();
         return;
       }
     }
 
     unit.angle = Math.atan2(dy, dx);
-    const speed = unit.speed || (["fighter", "assault", "elite"].includes(unit.type) ? 120 : WORKER_SPEED);
+    const baseSpeed = unit.speed || (["fighter", "assault", "elite"].includes(unit.type) ? 120 : WORKER_SPEED);
     
-    let desiredVx = (dx / dist) * speed;
-    let desiredVy = (dy / dist) * speed;
+    let desiredVx = (dx / dist) * baseSpeed;
+    let desiredVy = (dy / dist) * baseSpeed;
     
     unit.vx = desiredVx;
     unit.vy = desiredVy;
     
-    applyLocalUnitAvoidance(unit);
-    
     unit.x += unit.vx * deltaTime;
     unit.y += unit.vy * deltaTime;
     
-    // 🔥 ДОБАВЛЯЕМ ПРОВЕРКУ КОЛЛИЗИЙ И СЮДА, чтобы обычные юниты тоже не пролетали сквозь камни
-    if (typeof checkRockCollision === "function") {
-      checkRockCollision(unit);
-    }
+    if (typeof checkRockCollision === "function") checkRockCollision(unit);
   }
 }
-// 🔥 ЛОКАЛЬНОЕ ИЗБЕГАНИЕ ЮНИТ-ЮНИТ (работает поверх A*)
+// 🔥 МИКРО-ИЗБЕГАНИЕ: Работает ТОЛЬКО при прямом наложении, не сбивает с пути A*
 function applyLocalUnitAvoidance(unit) {
-  const avoidRadius = 25; // Радиус, в котором юниты начинают расталкиваться
-  const neighbors = getObjectsInRange({x: unit.x, y: unit.y}, avoidRadius)
-    .filter(u => u !== unit && u instanceof Unit && u.health > 0);
-    
-  if (neighbors.length === 0) return;
-  
-  let pushX = 0, pushY = 0;
-  for (const other of neighbors) {
-    const dx = unit.x - other.x;
-    const dy = unit.y - other.y;
-    const dist = Math.hypot(dx, dy);
-    
-    if (dist < avoidRadius && dist > 0) {
-      const force = (avoidRadius - dist) / avoidRadius; // Чем ближе, тем сильнее толчок
-      pushX += (dx / dist) * force * 80; // Сила расталкивания
-      pushY += (dy / dist) * force * 80;
-    }
-  }
-  
-  // Накладываем расталкивание на текущий вектор движения
-  unit.vx += pushX * (1/60);
-  unit.vy += pushY * (1/60);
-  
-  // Ограничиваем максимальную скорость, чтобы юнит не ускорялся от толчков
-  const maxSpeed = unit.speed || 120;
-  const currentSpeed = Math.hypot(unit.vx, unit.vy);
-  if (currentSpeed > maxSpeed) {
-    unit.vx = (unit.vx / currentSpeed) * maxSpeed;
-    unit.vy = (unit.vy / currentSpeed) * maxSpeed;
-  }
+  return; 
 }
 // 3. Очищенный менеджер очереди команд (без рекурсивных requestAnimationFrame)
 function processCommandQueue(unit, overrideDelta) {
@@ -373,20 +286,22 @@ function processCommandQueue(unit, overrideDelta) {
   const command = unit.commandQueue[0]; // Смотрим на первую команду, не удаляя её сразу
 
   if (command.type === "move") {
-    // Если мы уже движемся к этой цели, ничего не делаем, ждем достижения
-    if (!unit.moveTarget || unit.moveTarget.x !== command.x || unit.moveTarget.y !== command.y) {
+    // 🔥 ПРИНУДИТЕЛЬНЫЙ СБРОС БОЕВЫХ ЦЕЛЕЙ, если пришла команда движения (например, разведка)
+    if (unit.target) {
+      unit.target = null;
+      unit.moveTarget = null; // Сбрасываем старый путь, чтобы построить новый к точке разведки
+    }
+    
+    if (!unit.moveTarget || Math.hypot(unit.moveTarget.x - command.x, unit.moveTarget.y - command.y) > 10) {
       moveUnit(unit, command.x, command.y, () => {
-        unit.commandQueue.shift(); // Удаляем команду только после достижения
-        processCommandQueue(unit); // Рекурсивно обрабатываем следующую
+        unit.commandQueue.shift();
+        processCommandQueue(unit);
       });
     }
-  } 
+  }
 else if (command.type === "attack") {
   const target = command.target;
-  
-  // 🔥 УНИВЕРСАЛЬНАЯ ПРОВЕРКА ЖИВОСТИ (для юнитов, зданий И ресурсов)
-  const isTargetDead = !target || 
-    (target.amount !== undefined ? (target.hp || 0) <= 0 : target.health <= 0);
+  const isTargetDead = !target || (target.amount !== undefined ? (target.hp || 0) <= 0 : target.health <= 0);
   
   if (isTargetDead) {
     unit.target = null;
@@ -398,34 +313,24 @@ else if (command.type === "attack") {
   unit.target = target;
   const dist = Math.hypot(unit.x - target.x, unit.y - target.y);
   
-  if (["fighter", "assault", "elite"].includes(unit.type)) {
-    if (dist <= unit.range) {
-      // В радиусе поражения — атакуем
-      unit.moveTarget = null;
-      unit.moveCallback = null;
-      if (unit.type === "elite") dynamicAttackElite(unit, target, overrideDelta || 1/60);
-      else if (unit.type === "assault") dynamicAttackAssault(unit, target, overrideDelta || 1/60);
-      else dynamicAttack(unit, target, overrideDelta || 1/60);
-    } else {
-      // 🔥 НОВОЕ: Вне радиуса поражения — подходим к цели!
-      // (Для камня координаты target.x/y уже смещены к его краю в contextmenu)
-      if (!unit.moveTarget || Math.hypot(unit.moveTarget.x - target.x, unit.moveTarget.y - target.y) > 15) {
-        moveUnit(unit, target.x, target.y);
-      }
-    }
-  } else {
-    // Для не-военных юнитов (если вдруг)
-    if (dist > unit.range) {
-      moveUnit(unit, target.x, target.y, () => {
-        unit.commandQueue.shift();
-        processCommandQueue(unit);
-      });
-    } else {
-      unit.moveTarget = null;
-      unit.moveCallback = null;
-      if (typeof dynamicAttack === "function") dynamicAttack(unit, target, overrideDelta || 1/60);
+  // 🔥 МЫ ДАЛЕКО: Убеждаемся, что построен путь A* для подхода.
+  // А уже applyUnitMovement сам переключит юнита на динамику и стрельбу, когда тот подойдет.
+  if (dist > unit.range) {
+    const lastWaypoint = (unit.pathWaypoints && unit.pathWaypoints.length > 0) 
+      ? unit.pathWaypoints[unit.pathWaypoints.length - 1] 
+      : null;
+    
+    // Используем наш АНТИ-СПАМ порог в 40 пикселей
+    const needsNewPath = !unit.moveTarget || 
+                         !lastWaypoint || 
+                         Math.hypot(lastWaypoint.x - target.x, lastWaypoint.y - target.y) > 40; 
+    
+    if (needsNewPath) {
+      moveUnit(unit, target.x, target.y); // moveUnit сам решит, стоит ли пересчитывать путь
     }
   }
+  // Если dist <= unit.range, мы просто ничего не делаем здесь. 
+  // applyUnitMovement увидит это на следующем кадре и сам включит боевую физику + выстрел!
 }
   else if (command.type === "gather") {
     const resource = command.resource;
@@ -812,28 +717,46 @@ function updateElitePhysics(unit, target, deltaTime) {
 }
 // ЕДИНЫЙ ДВИЖОК ДВИЖЕНИЯ
 function moveUnit(unit, targetX, targetY, callback) {
-  // 🔥 ИСПРАВЛЕНО: Убрали unit.isRetreating из блокировки. 
-  // Теперь отступающие юниты МОГУТ использовать A* pathfinding!
   if (unit.shocked || unit.health <= 0) return;
-  
+
+  // 🔥 1. АНТИ-СПАМ (Ключ к решению проблемы вибрации):
+  // Если у юнита УЖЕ есть путь, и новая цель находится очень близко к старой цели (< 30 пикселей),
+  // МЫ НЕ ПЕРЕСЧИТЫВАЕМ ПУТЬ. Мы просто обновляем callback и продолжаем движение.
+  // Это спасает рабочих от постоянных перерасчетов и военных от застревания.
+  if (unit.pathWaypoints && unit.pathWaypoints.length > 0) {
+    const lastPt = unit.pathWaypoints[unit.pathWaypoints.length - 1];
+    const distToOldTarget = Math.hypot(lastPt.x - targetX, lastPt.y - targetY);
+    if (distToOldTarget < 30) {
+      unit.moveCallback = callback; // Просто обновляем действие по прибытии
+      return; // Сохраняем текущий путь и продолжаем движение!
+    }
+  }
+
   if (unit.currentMovementAnimation) {
     cancelAnimationFrame(unit.currentMovementAnimation);
     unit.currentMovementAnimation = null;
   }
 
-  // Рассчитываем путь через A*
   const rawPath = findPath(unit.x, unit.y, targetX, targetY);
-  unit.pathWaypoints = simplifyPath(rawPath);
+
+  // 🔥 2. ГРАМОТНЫЙ FALLBACK:
+  // Если A* вернул пустоту (например, цель внутри камня), мы НЕ морозим юнита.
+  // Мы даем ему прямой путь, и пусть checkRockCollision мягко обводит его вокруг.
+  if (!rawPath || rawPath.length === 0) {
+    unit.pathWaypoints = [{ x: targetX, y: targetY }];
+  } else {
+    unit.pathWaypoints = simplifyPath(rawPath);
+  }
+
   unit.currentWaypointIndex = 0;
   unit.moveCallback = callback;
-  
-  // Если путь прямой (препятствий нет), сразу ставим цель
+
   if (unit.pathWaypoints.length <= 1) {
     unit.moveTarget = { x: targetX, y: targetY };
   } else {
     unit.moveTarget = unit.pathWaypoints[1]; // Идем к первой точке поворота
   }
-  
+
   unit.angle = Math.atan2(unit.moveTarget.y - unit.y, unit.moveTarget.x - unit.x);
 }
 // 5. ОБЁРТКА ДЛЯ ДВИЖЕНИЯ В БОЮ (сближение/кайтинг)
@@ -848,6 +771,7 @@ function dynamicMove(unit, target, deltaTime) {
   updateFighterPhysics(unit, target, 'approach', deltaTime);
 }
 function dynamicAttack(unit, target, deltaTime) {
+  if (Math.hypot(target.x - unit.x, target.y - unit.y) > unit.range) return;
   if (unit.type === "elite") { dynamicAttackElite(unit, target, deltaTime); return; }
   if (unit.type === "assault") { dynamicAttackAssault(unit, target, deltaTime); return; }
 
@@ -871,6 +795,7 @@ function dynamicAttack(unit, target, deltaTime) {
   }
 }
 function dynamicAttackAssault(unit, target, deltaTime) {
+  if (Math.hypot(target.x - unit.x, target.y - unit.y) > unit.range) return;
   if (unit.health <= 0 || !target) { unit.target = null; return; }
   
   // 🔥 УНИВЕРСАЛЬНАЯ ПРОВЕРКА
@@ -896,6 +821,7 @@ function dynamicAttackAssault(unit, target, deltaTime) {
 // 🔥 ФИЗИКА ШТУРМОВИКА УЖЕ ОБРАБАТЫВАЕТСЯ В applyUnitMovement, здесь только стрельба!
 }
 function dynamicAttackElite(unit, target, deltaTime) {
+  if (Math.hypot(target.x - unit.x, target.y - unit.y) > unit.range) return;
   if (unit.health <= 0 || !target) { unit.target = null; return; }
   
   // 🔥 УНИВЕРСАЛЬНАЯ ПРОВЕРКА
@@ -1049,19 +975,24 @@ function dynamicAttackElite(unit, target, deltaTime) {
 function checkForEnemiesAndAttack(unit) {
   if (!unit || !unit.range || unit.isRetreating || unit.health <= 0) return;
   
-  // Это разрывает злосчастный цикл
+  // 🔥 ВОССТАНОВЛЕНО: Разрешаем прерывать движение, если враг в радиусе атаки!
+  // Но НЕ прерываем, если мы УЖЕ атакуем валидную цель, чтобы не было дерганий.
+  if (unit.target && unit.target.health > 0 && Math.hypot(unit.target.x - unit.x, unit.target.y - unit.y) <= unit.range) {
+    return; 
+  }
+
+  // Разрываем цикл кулдауна после отступления
   if (unit.returnToBattleCooldown && performance.now() < unit.returnToBattleCooldown) {
-    return; // Юнит ещё "остывает" — не ищем врагов
+    return; 
   }
   
-  fxSanitizeOrders(unit); // 🔥 Чистим призрачные приказы перед поиском
+  fxSanitizeOrders(unit);
   
   const enemiesInRange = getEnemiesInRange({ x: unit.x, y: unit.y }, unit.range)
     .filter(e => 
       e.owner !== unit.owner && 
       e.health > 0 && 
       fxValidTarget(e) &&
-      // 🔥 НОВАЯ ПРОВЕРКА: Враг должен быть на прямой видимости! (Теперь ВНУТРИ filter)
       (typeof isLineOfSightBlocked === "function" ? !isLineOfSightBlocked(unit.x, unit.y, e.x, e.y) : true)
     );
 
@@ -1071,12 +1002,12 @@ function checkForEnemiesAndAttack(unit) {
       return;
     }
     
-    // Сохраняем прерванную задачу
+    // Сохраняем прерванную задачу (например, движение к точке)
     if (unit.commandQueue.length > 0 && !unit.suspendedQueue) {
       unit.suspendedQueue = [...unit.commandQueue];
     }
     
-    // Очищаем текущую очередь и цель движения, чтобы включить боевую физику
+    // Очищаем текущую очередь, чтобы начать атаку
     unit.commandQueue = [];
     unit.moveTarget = null;
     unit.moveCallback = null;
@@ -1086,10 +1017,11 @@ function checkForEnemiesAndAttack(unit) {
       Math.hypot(a.x - unit.x, a.y - unit.y) - Math.hypot(b.x - unit.x, b.y - unit.y)
     )[0];
     
-    // Ставим приоритетную команду атаки
+    // Ставим приоритетную команду атаки. 
+    // processCommandQueue сам решит: если далеко - построить A* к врагу, если близко - стрелять.
     unit.commandQueue.push({ type: "attack", target: unit.target });
   } else {
-    // Врагов нет. Проверяем, нужно ли вернуться к старой задаче.
+    // Врагов нет. Проверяем, нужно ли вернуться к старой задаче (например, продолжить движение к точке).
     if (unit.suspendedQueue && unit.suspendedQueue.length > 0) {
       const nextTask = unit.suspendedQueue[0];
       let isTaskValid = true;
@@ -1100,7 +1032,7 @@ function checkForEnemiesAndAttack(unit) {
         unit.commandQueue = [...unit.suspendedQueue];
         unit.suspendedQueue = null;
         unit.target = null;
-        fxSanitizeOrders(unit); // 🔥 Чистим восстановленную очередь
+        fxSanitizeOrders(unit);
       } else {
         unit.suspendedQueue = null;
         unit.target = null;
@@ -1480,13 +1412,13 @@ function startWorkerCycle(worker, warehouse) {
   }
 
   const rockRadius = typeof nearestResource.getCurrentRadius === "function" ? nearestResource.getCurrentRadius() : 20;
-  const stopDistance = rockRadius + 12;
+  const stopDistance = rockRadius + 5;
   const dist = Math.hypot(nearestResource.x - worker.x, nearestResource.y - worker.y);
 
   const attemptMining = () => {
     const currentDist = Math.hypot(worker.x - nearestResource.x, worker.y - nearestResource.y);
 
-    if (currentDist > stopDistance + 30) {
+    if (currentDist > stopDistance + 15) {
       if (worker.assignedResource && worker.assignedResource.currentWorkers > 0) {
         worker.assignedResource.currentWorkers--;
       }

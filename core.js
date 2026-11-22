@@ -405,14 +405,34 @@ function updatePathfindingGrid() {
 function findPath(startX, startY, endX, endY) {
   updatePathfindingGrid();
 
-  const startCol = Math.floor(startX / PATH_GRID_SIZE);
-  const startRow = Math.floor(startY / PATH_GRID_SIZE);
-  const endCol = Math.floor(endX / PATH_GRID_SIZE);
-  const endRow = Math.floor(endY / PATH_GRID_SIZE);
+  let startCol = Math.floor(startX / PATH_GRID_SIZE);
+  let startRow = Math.floor(startY / PATH_GRID_SIZE);
+  let endCol = Math.floor(endX / PATH_GRID_SIZE);
+  let endRow = Math.floor(endY / PATH_GRID_SIZE);
+
+  // 🔥 ЗАЩИТА: Если старт или финиш внутри камня, сдвигаем их на соседнюю свободную клетку
+  const isBlocked = (c, r) => c < 0 || c >= gridCols || r < 0 || r >= gridRows || pathGrid[r * gridCols + c] === 1;
+  
+  if (isBlocked(startCol, startRow)) {
+    for (let offset = 1; offset <= 2; offset++) {
+      if (!isBlocked(startCol + offset, startRow)) { startCol += offset; break; }
+      if (!isBlocked(startCol - offset, startRow)) { startCol -= offset; break; }
+      if (!isBlocked(startCol, startRow + offset)) { startRow += offset; break; }
+      if (!isBlocked(startCol, startRow - offset)) { startRow -= offset; break; }
+    }
+  }
+  
+  if (isBlocked(endCol, endRow)) {
+    for (let offset = 1; offset <= 2; offset++) {
+      if (!isBlocked(endCol + offset, endRow)) { endCol += offset; break; }
+      if (!isBlocked(endCol - offset, endRow)) { endCol -= offset; break; }
+      if (!isBlocked(endCol, endRow + offset)) { endRow += offset; break; }
+      if (!isBlocked(endCol, endRow - offset)) { endRow -= offset; break; }
+    }
+  }
 
   if (startCol === endCol && startRow === endRow) return [];
 
-  // 🔥 ИСПОЛЬЗУЕМ MIN-HEAP ВМЕСТО МАССИВА + SORT
   const openSet = new MinHeap();
   const closedSet = new Uint8Array(gridCols * gridRows);
   const cameFrom = new Int32Array(gridCols * gridRows).fill(-1);
@@ -430,13 +450,10 @@ function findPath(startX, startY, endX, endY) {
   ];
 
   let iterations = 0;
-  const MAX_ITERATIONS = 500;
+  const MAX_ITERATIONS = 5000; // Достаточно для больших карт
 
-  // 🔥 openSet.size вместо openSet.length
   while (openSet.size > 0 && iterations < MAX_ITERATIONS) {
     iterations++;
-    
-    // 🔥 pop() вместо sort() + shift() — в 10-50 раз быстрее!
     const current = openSet.pop();
     const cRow = Math.floor(current.index / gridCols);
     const cCol = current.index % gridCols;
@@ -474,14 +491,13 @@ function findPath(startX, startY, endX, endY) {
         gScore[nIndex] = tentativeGScore;
         const hScore = Math.hypot(endX - (nCol * PATH_GRID_SIZE + PATH_GRID_SIZE / 2), endY - (nRow * PATH_GRID_SIZE + PATH_GRID_SIZE / 2));
         fScore[nIndex] = gScore[nIndex] + hScore;
-        
-        // 🔥 push() в MinHeap вместо push() в массив
         openSet.push({ index: nIndex, f: fScore[nIndex] });
       }
     }
   }
   
-  return [{ x: endX, y: endY }];
+  // Если не нашли путь, возвращаем пустой массив. moveUnit обработает это как прямой полет.
+  return []; 
 }
 // Превращает ломаную линию сетки в несколько ключевых точек поворота
 function simplifyPath(rawPath) {
